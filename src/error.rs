@@ -15,6 +15,9 @@ pub enum RadioError {
     #[error("connection closed while waiting for a CAT response")]
     ConnectionClosed,
 
+    #[error("timed out during {operation}")]
+    Timeout { operation: &'static str },
+
     #[error("invalid UTF-8 in CAT response: {0}")]
     Utf8(#[from] FromUtf8Error),
 

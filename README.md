@@ -37,13 +37,15 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ## Library Example
 
 ```rust
+use std::time::Duration;
+
 use radio_cat_rs::{create_radio, ConnectionConfig, Frequency, Mode, RadioKind};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let radio = create_radio(
         RadioKind::GenericElecraft,
-        ConnectionConfig::serial("/dev/ttyUSB0", 38_400),
+        ConnectionConfig::serial("/dev/ttyUSB0", 38_400).with_timeout(Duration::from_secs(5)),
     )
     .await?;
 
@@ -62,14 +64,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 You can also connect over TCP:
 
 ```rust
+use std::time::Duration;
+
 use radio_cat_rs::{create_radio, ConnectionConfig, RadioKind};
 
 let radio = create_radio(
     RadioKind::GenericElecraft,
-    ConnectionConfig::tcp("127.0.0.1", 5002),
+    ConnectionConfig::tcp("127.0.0.1", 5002).with_timeout(Duration::from_secs(5)),
 )
 .await?;
 ```
+
+If you do not override it, transport operations use a 2 second timeout by default.
 
 ## Example CLI
 
@@ -113,7 +119,7 @@ The main entry points are:
 - `create_radio(kind, connection)` to build a concrete radio behind a trait object
 - `supported_radio_kinds()` to enumerate supported backends
 - `ControllableRadio` for the common async control surface
-- `ConnectionConfig::serial(...)` and `ConnectionConfig::tcp(...)` for transport selection
+- `ConnectionConfig::serial(...)` and `ConnectionConfig::tcp(...)` for transport selection, with optional `.with_timeout(...)`
 - `Frequency` and the `khz!` / `mhz!` macros for frequency values
 
 ## Current Behavior And Limits
