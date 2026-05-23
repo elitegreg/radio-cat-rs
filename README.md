@@ -93,6 +93,15 @@ Run it over TCP:
 cargo run --example cli -- --radio generic-elecraft --tcp 127.0.0.1:5002
 ```
 
+Enable logging with `RUST_LOG`:
+
+```bash
+RUST_LOG=radio_cat_rs=debug cargo run --example cli -- --radio generic-elecraft --tcp 127.0.0.1:5002
+RUST_LOG=radio_cat_rs=trace cargo run --example cli -- --radio generic-elecraft --tcp 127.0.0.1:5002
+```
+
+`debug` includes connection lifecycle and high-level radio operations. `trace` adds raw CAT commands and responses.
+
 Supported `--radio` names:
 
 - `generic-elecraft`

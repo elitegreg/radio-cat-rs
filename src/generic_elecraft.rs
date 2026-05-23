@@ -1,6 +1,7 @@
 use std::{fmt, num::ParseIntError, str::FromStr, sync::Arc};
 
 use async_trait::async_trait;
+use tracing::{debug, trace};
 
 use crate::{
     transport::{CatTransport, CommandIo},
@@ -26,10 +27,13 @@ impl fmt::Debug for GenericElecraft {
 
 impl GenericElecraft {
     pub async fn connect(connection: ConnectionConfig) -> Result<Self> {
+        debug!(?connection, "connecting GenericElecraft radio");
         let transport = CatTransport::open(&connection).await?;
         let io: Arc<dyn CommandIo> = Arc::new(transport);
 
+        trace!("sending startup command");
         io.send("AI0;").await?;
+        debug!("GenericElecraft radio connected");
 
         Ok(Self { io })
     }
@@ -126,42 +130,56 @@ impl GenericElecraft {
 #[async_trait]
 impl ControllableRadio for GenericElecraft {
     async fn get_frequency(&self) -> Result<Frequency> {
+        debug!("reading radio frequency");
         let response = self.io.query("FA;").await?;
-        Self::parse_frequency_response(&response)
+        let frequency = Self::parse_frequency_response(&response)?;
+        debug!(frequency_hz = frequency.hz(), "read radio frequency");
+        Ok(frequency)
     }
 
     async fn set_frequency(&self, frequency: Frequency) -> Result<()> {
         let command = Self::format_frequency_set(frequency)?;
+        debug!(frequency_hz = frequency.hz(), "setting radio frequency");
         self.io.send(&command).await
     }
 
     async fn get_mode(&self) -> Result<Mode> {
+        debug!("reading radio mode");
         let response = self.io.query("MD;").await?;
-        Self::parse_mode_response(&response)
+        let mode = Self::parse_mode_response(&response)?;
+        debug!(mode = %mode, "read radio mode");
+        Ok(mode)
     }
 
     async fn set_mode(&self, mode: Mode) -> Result<()> {
         let command = Self::format_mode_set(mode);
+        debug!(mode = %mode, "setting radio mode");
         self.io.send(&command).await
     }
 
     async fn send_cw(&self, text: &str) -> Result<()> {
         let command = Self::format_cw_text(text)?;
+        debug!(text, length = text.len(), "queueing CW text");
         self.io.send(&command).await
     }
 
     async fn stop_cw(&self) -> Result<()> {
         // Abort any queued CW text and force the radio back to receive immediately.
+        debug!("stopping queued CW text");
         self.io.send("KY @;RX;").await
     }
 
     async fn get_cw_wpm(&self) -> Result<u16> {
+        debug!("reading CW speed");
         let response = self.io.query("KS;").await?;
-        Self::parse_numeric_response(&response, "KS")
+        let wpm = Self::parse_numeric_response(&response, "KS")?;
+        debug!(wpm, "read CW speed");
+        Ok(wpm)
     }
 
     async fn set_cw_wpm(&self, wpm: u16) -> Result<()> {
         let command = Self::format_cw_speed_set(wpm)?;
+        debug!(wpm, "setting CW speed");
         self.io.send(&command).await
     }
 }

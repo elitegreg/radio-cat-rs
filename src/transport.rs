@@ -6,6 +6,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tokio_serial::SerialPortBuilderExt;
+use tracing::{debug, trace};
 
 use crate::{RadioError, Result};
 
@@ -85,10 +86,12 @@ pub(crate) struct CatTransport {
 impl CatTransport {
     pub(crate) async fn open(connection: &ConnectionConfig) -> Result<Self> {
         let timeout_duration = connection.timeout();
+        debug!(?connection, timeout = ?timeout_duration, "opening CAT transport");
         let io: BoxedPort = match connection {
             ConnectionConfig::Serial {
                 path, baud_rate, ..
             } => {
+                debug!(path = %path.display(), baud_rate = *baud_rate, "opening serial CAT transport");
                 let stream = tokio_serial::new(path.to_string_lossy().into_owned(), *baud_rate)
                     .open_native_async()?;
                 Box::new(stream)
@@ -99,6 +102,7 @@ impl CatTransport {
                 timeout: connect_timeout,
                 ..
             } => {
+                debug!(host, port = *port, timeout = ?connect_timeout, "opening TCP CAT transport");
                 let stream = timeout(*connect_timeout, TcpStream::connect((host.as_str(), *port)))
                     .await
                     .map_err(|_| RadioError::Timeout {
@@ -118,6 +122,7 @@ impl CatTransport {
     where
         T: AsyncWrite + Unpin + ?Sized,
     {
+        trace!(command, timeout = ?timeout_duration, "sending CAT command");
         timeout(timeout_duration, async {
             io.write_all(command.as_bytes()).await?;
             io.flush().await?;
@@ -133,7 +138,7 @@ impl CatTransport {
     where
         T: AsyncRead + Unpin + ?Sized,
     {
-        timeout(timeout_duration, async {
+        let response = timeout(timeout_duration, async {
             let mut response = Vec::new();
 
             loop {
@@ -156,7 +161,9 @@ impl CatTransport {
         .await
         .map_err(|_| RadioError::Timeout {
             operation: "read response",
-        })?
+        })??;
+        trace!(response, timeout = ?timeout_duration, "received CAT response");
+        Ok(response)
     }
 }
 

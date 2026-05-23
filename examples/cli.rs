@@ -5,6 +5,7 @@ use std::{
 };
 
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use radio_cat_rs::{
     create_radio, supported_radio_kinds, ConnectionConfig, ControllableRadio, Frequency, Mode,
@@ -259,6 +260,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::registry()
+        .with(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("radio_cat_rs=debug")),
+        )
+        .with(tracing_subscriber::fmt::layer().with_target(false))
+        .init();
+
     if let Err(error) = run().await {
         eprintln!("{error}");
         process::exit(1);

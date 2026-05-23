@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use tracing::debug;
 
 use crate::{ConnectionConfig, ControllableRadio, GenericElecraft, RadioError, Result};
 
@@ -40,6 +41,7 @@ pub async fn create_radio(
     kind: RadioKind,
     connection: ConnectionConfig,
 ) -> Result<Box<dyn ControllableRadio>> {
+    debug!(radio_kind = kind.as_str(), ?connection, "creating radio");
     match kind {
         RadioKind::GenericElecraft => Ok(Box::new(GenericElecraft::connect(connection).await?)),
     }
