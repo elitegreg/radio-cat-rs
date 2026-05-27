@@ -35,6 +35,10 @@ pub enum Mode {
     NxdnN,
     Dcr,
     Dd,
+    Fmn,
+    Amn,
+    C4fm,
+    PktFmn,
     Tune,
 }
 
@@ -72,6 +76,10 @@ impl fmt::Display for Mode {
             Self::NxdnN => "NXDN-N",
             Self::Dcr => "DCR",
             Self::Dd => "DD",
+            Self::Fmn => "FMN",
+            Self::Amn => "AMN",
+            Self::C4fm => "C4FM",
+            Self::PktFmn => "PKTFMN",
             Self::Tune => "TUNE",
         };
 
@@ -90,8 +98,10 @@ impl FromStr for Mode {
             "usb" => Ok(Self::Usb),
             "cw" => Ok(Self::Cw),
             "cwr" | "cwrev" | "cwreverse" => Ok(Self::Cwr),
-            "fm" | "fmn" | "nfm" => Ok(Self::Fm),
+            "fm" => Ok(Self::Fm),
+            "fmn" | "nfm" => Ok(Self::Fmn),
             "am" => Ok(Self::Am),
+            "amn" => Ok(Self::Amn),
             "rtty" => Ok(Self::Rtty),
             "rttyr" | "rttyrev" | "rttyreverse" => Ok(Self::Rttyr),
             "psk" => Ok(Self::Psk),
@@ -117,6 +127,8 @@ impl FromStr for Mode {
             "nxdnn" => Ok(Self::NxdnN),
             "dcr" => Ok(Self::Dcr),
             "dd" => Ok(Self::Dd),
+            "c4fm" => Ok(Self::C4fm),
+            "pktfmn" => Ok(Self::PktFmn),
             "tune" => Ok(Self::Tune),
             _ => Err(RadioError::InvalidMode(value.to_string())),
         }
@@ -150,5 +162,9 @@ mod tests {
         assert_eq!("sam".parse::<Mode>().unwrap(), Mode::Sam);
         assert_eq!("d-star".parse::<Mode>().unwrap(), Mode::DStar);
         assert_eq!("nxdn-vn".parse::<Mode>().unwrap(), Mode::NxdnVn);
+        assert_eq!("fmn".parse::<Mode>().unwrap(), Mode::Fmn);
+        assert_eq!("amn".parse::<Mode>().unwrap(), Mode::Amn);
+        assert_eq!("c4fm".parse::<Mode>().unwrap(), Mode::C4fm);
+        assert_eq!("pktfmn".parse::<Mode>().unwrap(), Mode::PktFmn);
     }
 }

@@ -6,6 +6,7 @@ use crate::{
     icom_civ::{IcomCivRadio, IcomModel},
     kenwood::KenwoodProfile,
     options::RadioOptions,
+    yaesu_newcat::{YaesuModel, YaesuNewCatRadio},
     ConnectionConfig, ControllableRadio, KenwoodRadio, RadioError, Result,
 };
 
@@ -31,6 +32,7 @@ pub enum RadioKind {
     Flex6xxx,
     PowerSdrThetis,
     Icom(IcomModel),
+    Yaesu(YaesuModel),
 }
 
 impl RadioKind {
@@ -113,6 +115,20 @@ impl RadioKind {
         Self::Icom(IcomModel::X6200),
         Self::Icom(IcomModel::G90),
         Self::Icom(IcomModel::X5105),
+        Self::Yaesu(YaesuModel::Ft450),
+        Self::Yaesu(YaesuModel::Ft950),
+        Self::Yaesu(YaesuModel::Ft2000),
+        Self::Yaesu(YaesuModel::Ftdx1200),
+        Self::Yaesu(YaesuModel::Ftdx3000),
+        Self::Yaesu(YaesuModel::Ftdx5000),
+        Self::Yaesu(YaesuModel::Ftdx9000),
+        Self::Yaesu(YaesuModel::Ftdx9000Old),
+        Self::Yaesu(YaesuModel::Ft991),
+        Self::Yaesu(YaesuModel::Ft891),
+        Self::Yaesu(YaesuModel::Ft710),
+        Self::Yaesu(YaesuModel::Ftdx10),
+        Self::Yaesu(YaesuModel::Ftdx101d),
+        Self::Yaesu(YaesuModel::Ftdx101mp),
     ];
 
     pub const fn all() -> &'static [Self] {
@@ -141,6 +157,7 @@ impl RadioKind {
             Self::Flex6xxx => "flex-6xxx",
             Self::PowerSdrThetis => "powersdr-thetis",
             Self::Icom(model) => model.as_str(),
+            Self::Yaesu(model) => model.as_str(),
         }
     }
 
@@ -165,7 +182,7 @@ impl RadioKind {
             Self::Ic10Derived => Some(KenwoodProfile::Ic10Derived),
             Self::Flex6xxx => Some(KenwoodProfile::Flex6xxx),
             Self::PowerSdrThetis => Some(KenwoodProfile::PowerSdrThetis),
-            Self::Icom(_) => None,
+            Self::Icom(_) | Self::Yaesu(_) => None,
         }
     }
 }
@@ -216,6 +233,10 @@ impl FromStr for RadioKind {
 
         if let Some(model) = IcomModel::from_alias(value) {
             return Ok(Self::Icom(model));
+        }
+
+        if let Some(model) = YaesuModel::from_alias(value) {
+            return Ok(Self::Yaesu(model));
         }
 
         Err(RadioError::UnknownRadio(value.to_string()))
@@ -271,14 +292,17 @@ pub async fn create_radio_with_options(
         RadioKind::Icom(model) => Ok(Box::new(
             IcomCivRadio::connect(connection, model, &parsed_options).await?,
         )),
-        _ => unreachable!("all non-Icom kinds are mapped through kenwood_profile"),
+        RadioKind::Yaesu(model) => Ok(Box::new(
+            YaesuNewCatRadio::connect(connection, model, &parsed_options).await?,
+        )),
+        _ => unreachable!("all non-Icom/Yaesu kinds are mapped through kenwood_profile"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{supported_radio_kinds, RadioKind};
-    use crate::IcomModel;
+    use crate::{IcomModel, YaesuModel};
 
     #[test]
     fn lists_supported_radio_kinds() {
@@ -286,6 +310,8 @@ mod tests {
         assert!(kinds.contains(&RadioKind::KenwoodTs590));
         assert!(kinds.contains(&RadioKind::Icom(IcomModel::Ic7300)));
         assert!(kinds.contains(&RadioKind::Icom(IcomModel::Ic7610)));
+        assert!(kinds.contains(&RadioKind::Yaesu(YaesuModel::Ft991)));
+        assert!(kinds.contains(&RadioKind::Yaesu(YaesuModel::Ftdx101mp)));
     }
 
     #[test]
@@ -302,6 +328,9 @@ mod tests {
             ("x6200", RadioKind::Icom(IcomModel::X6200)),
             ("g90", RadioKind::Icom(IcomModel::G90)),
             ("x5105", RadioKind::Icom(IcomModel::X5105)),
+            ("ft-991", RadioKind::Yaesu(YaesuModel::Ft991)),
+            ("ftdx101mp", RadioKind::Yaesu(YaesuModel::Ftdx101mp)),
+            ("ftdx-9000-old", RadioKind::Yaesu(YaesuModel::Ftdx9000Old)),
         ] {
             assert_eq!(alias.parse::<RadioKind>().unwrap(), expected);
         }

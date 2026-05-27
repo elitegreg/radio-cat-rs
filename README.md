@@ -7,6 +7,7 @@ The crate currently includes:
 - Kenwood/Kenwood-like CAT profiles (text/`;` protocol)
 - Icom CI-V profiles (binary framed protocol)
 - CI-V-compatible Xiegu profiles: `X108G`, `X6100`, `X6200`, `G90`, `X5105`
+- Yaesu New-CAT profiles: `FT-450`, `FT-950`, `FT-2000`, `FTDX-1200`, `FTDX-3000`, `FTDX-5000`, `FTDX-9000`, `FTDX-9000 Old`, `FT-991`, `FT-891`, `FT-710`, `FTDX-10`, `FTDX-101D`, `FTDX-101MP`
 
 ## ControllableRadio scope
 
@@ -62,10 +63,16 @@ let radio = create_radio_with_options(
 
 Unknown option keys are ignored.
 
+Yaesu-specific optional keys:
+
+- `yaesu.retry_max`
+- `yaesu.retry_backoff_ms`
+- `yaesu.stop_cw_cmd` (if unset, `stop_cw()` is unsupported for Yaesu New-CAT profiles)
+
 ## Radio names
 
 - Call `supported_radio_kinds()` for canonical names.
-- `FromStr` parsing also accepts many model aliases (e.g. `ic-7300`, `ic7610`, `ic-706mkiig`, `x6100`, `g90`).
+- `FromStr` parsing also accepts many model aliases (e.g. `ic-7300`, `ic7610`, `ic-706mkiig`, `x6100`, `g90`, `ft-991`, `ftdx101mp`).
 
 ## Development
 

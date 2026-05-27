@@ -6,6 +6,7 @@ mod kenwood;
 mod mode;
 mod options;
 mod transport;
+mod yaesu_newcat;
 
 use async_trait::async_trait;
 
@@ -16,6 +17,7 @@ pub use icom_civ::{IcomCivRadio, IcomModel};
 pub use kenwood::KenwoodRadio;
 pub use mode::Mode;
 pub use transport::ConnectionConfig;
+pub use yaesu_newcat::{YaesuModel, YaesuNewCatRadio};
 
 #[async_trait]
 pub trait ControllableRadio: Send + Sync {

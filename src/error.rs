@@ -64,6 +64,16 @@ pub enum RadioError {
     #[error("CI-V protocol error: {0}")]
     CivProtocol(String),
 
+    #[error("operation `{operation}` exhausted its retry budget")]
+    RetriesExhausted { operation: &'static str },
+
+    #[error("verification failed for `{operation}`: expected `{expected}`, got `{actual}`")]
+    VerificationFailed {
+        operation: &'static str,
+        expected: String,
+        actual: String,
+    },
+
     #[error("frequency {0} Hz is outside the supported range for this radio profile")]
     FrequencyOutOfRange(u64),
 
