@@ -62,6 +62,356 @@ impl KenwoodProfile {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum KenwoodModel {
+    Ts140s,
+    Ts680s,
+    Ts711,
+    Ts790,
+    Ts811,
+    Ts690s,
+    Ts50s,
+    Ts930,
+    Ts940s,
+    Ts950s,
+    Ts950Sdx,
+    Ts440s,
+    R5000,
+    Ts450s,
+    Ts850,
+    Ts870s,
+    Ts570s,
+    Ts570d,
+    Ts2000,
+    SdrConsole,
+    Ts480,
+    TrUsdx,
+    Qcx,
+    Qdx,
+    Qmx,
+    Pt8000a,
+    SdrUno,
+    DspMalachite,
+    Ts590s,
+    Ts590sg,
+    Fx4,
+    Fx4c,
+    Fx4cr,
+    Fx4l,
+    Ts890s,
+    Ts990s,
+    Trc80,
+    K2,
+    K3,
+    K3s,
+    K4,
+    Kx3,
+    Kx2,
+    Flex6xxx,
+    PowerSdr,
+    Thetis,
+    PiHpsdr,
+    UsdxHamgeek,
+    Tx500,
+}
+
+impl KenwoodModel {
+    pub const ALL: &'static [Self] = &[
+        Self::Ts140s,
+        Self::Ts680s,
+        Self::Ts711,
+        Self::Ts790,
+        Self::Ts811,
+        Self::Ts690s,
+        Self::Ts50s,
+        Self::Ts930,
+        Self::Ts940s,
+        Self::Ts950s,
+        Self::Ts950Sdx,
+        Self::Ts440s,
+        Self::R5000,
+        Self::Ts450s,
+        Self::Ts850,
+        Self::Ts870s,
+        Self::Ts570s,
+        Self::Ts570d,
+        Self::Ts2000,
+        Self::SdrConsole,
+        Self::Ts480,
+        Self::TrUsdx,
+        Self::Qcx,
+        Self::Qdx,
+        Self::Qmx,
+        Self::Pt8000a,
+        Self::SdrUno,
+        Self::DspMalachite,
+        Self::Ts590s,
+        Self::Ts590sg,
+        Self::Fx4,
+        Self::Fx4c,
+        Self::Fx4cr,
+        Self::Fx4l,
+        Self::Ts890s,
+        Self::Ts990s,
+        Self::Trc80,
+        Self::K2,
+        Self::K3,
+        Self::K3s,
+        Self::K4,
+        Self::Kx3,
+        Self::Kx2,
+        Self::Flex6xxx,
+        Self::PowerSdr,
+        Self::Thetis,
+        Self::PiHpsdr,
+        Self::UsdxHamgeek,
+        Self::Tx500,
+    ];
+
+    pub const fn all() -> &'static [Self] {
+        Self::ALL
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ts140s => "ts-140s",
+            Self::Ts680s => "ts-680s",
+            Self::Ts711 => "ts-711",
+            Self::Ts790 => "ts-790",
+            Self::Ts811 => "ts-811",
+            Self::Ts690s => "ts-690s",
+            Self::Ts50s => "ts-50s",
+            Self::Ts930 => "ts-930",
+            Self::Ts940s => "ts-940s",
+            Self::Ts950s => "ts-950s",
+            Self::Ts950Sdx => "ts-950sdx",
+            Self::Ts440s => "ts-440s",
+            Self::R5000 => "r-5000",
+            Self::Ts450s => "ts-450s",
+            Self::Ts850 => "ts-850",
+            Self::Ts870s => "ts-870s",
+            Self::Ts570s => "ts-570s",
+            Self::Ts570d => "ts-570d",
+            Self::Ts2000 => "ts-2000",
+            Self::SdrConsole => "sdrconsole",
+            Self::Ts480 => "ts-480",
+            Self::TrUsdx => "trusdx",
+            Self::Qcx => "qcx",
+            Self::Qdx => "qdx",
+            Self::Qmx => "qmx",
+            Self::Pt8000a => "pt-8000a",
+            Self::SdrUno => "sdruno",
+            Self::DspMalachite => "dsp (malachite)",
+            Self::Ts590s => "ts-590s",
+            Self::Ts590sg => "ts-590sg",
+            Self::Fx4 => "fx4",
+            Self::Fx4c => "fx4c",
+            Self::Fx4cr => "fx4cr",
+            Self::Fx4l => "fx4l",
+            Self::Ts890s => "ts-890s",
+            Self::Ts990s => "ts-990s",
+            Self::Trc80 => "trc-80",
+            Self::K2 => "k2",
+            Self::K3 => "k3",
+            Self::K3s => "k3s",
+            Self::K4 => "k4",
+            Self::Kx3 => "kx3",
+            Self::Kx2 => "kx2",
+            Self::Flex6xxx => "flex-6xxx (kenwood compat.)",
+            Self::PowerSdr => "powersdr",
+            Self::Thetis => "thetis",
+            Self::PiHpsdr => "pihpsdr",
+            Self::UsdxHamgeek => "usdx (hamgeek)",
+            Self::Tx500 => "tx-500",
+        }
+    }
+
+    pub(crate) fn from_alias(value: &str) -> Option<Self> {
+        let normalized = normalize_kenwood_name(value);
+
+        Self::all().iter().copied().find(|model| {
+            let info = model.info();
+            normalize_kenwood_name(info.name) == normalized
+                || info
+                    .aliases
+                    .iter()
+                    .any(|alias| normalize_kenwood_name(alias) == normalized)
+        })
+    }
+
+    pub(crate) fn profile(self) -> KenwoodProfile {
+        self.info().profile
+    }
+
+    fn info(self) -> KenwoodModelInfo {
+        match self {
+            Self::Ts140s => KenwoodModelInfo::new("ts-140s", KenwoodProfile::KenwoodClassic, &[]),
+            Self::Ts680s => KenwoodModelInfo::new("ts-680s", KenwoodProfile::KenwoodClassic, &[]),
+            Self::Ts711 => KenwoodModelInfo::new("ts-711", KenwoodProfile::KenwoodClassic, &[]),
+            Self::Ts790 => KenwoodModelInfo::new("ts-790", KenwoodProfile::KenwoodClassic, &[]),
+            Self::Ts811 => KenwoodModelInfo::new("ts-811", KenwoodProfile::KenwoodClassic, &[]),
+            Self::Ts690s => KenwoodModelInfo::new(
+                "ts-690s",
+                KenwoodProfile::KenwoodClassic,
+                &["kenwood", "kenwood-classic"],
+            ),
+            Self::Ts50s => KenwoodModelInfo::new(
+                "ts-50s",
+                KenwoodProfile::KenwoodClassicKeyer,
+                &["kenwood-classic-keyer"],
+            ),
+            Self::Ts930 => {
+                KenwoodModelInfo::new("ts-930", KenwoodProfile::KenwoodClassicKeyer, &[])
+            }
+            Self::Ts940s => {
+                KenwoodModelInfo::new("ts-940s", KenwoodProfile::KenwoodTs940, &["kenwood-ts940"])
+            }
+            Self::Ts950s => KenwoodModelInfo::new(
+                "ts-950s",
+                KenwoodProfile::KenwoodClassicMorse,
+                &["kenwood-classic-morse"],
+            ),
+            Self::Ts950Sdx => {
+                KenwoodModelInfo::new("ts-950sdx", KenwoodProfile::KenwoodClassicMorse, &[])
+            }
+            Self::Ts440s => {
+                KenwoodModelInfo::new("ts-440s", KenwoodProfile::Ic10Derived, &["ic10-derived"])
+            }
+            Self::R5000 => KenwoodModelInfo::new("r-5000", KenwoodProfile::Ic10Derived, &[]),
+            Self::Ts450s => KenwoodModelInfo::new("ts-450s", KenwoodProfile::KenwoodClassic, &[]),
+            Self::Ts850 => KenwoodModelInfo::new("ts-850", KenwoodProfile::KenwoodClassic, &[]),
+            Self::Ts870s => {
+                KenwoodModelInfo::new("ts-870s", KenwoodProfile::KenwoodClassicMorse, &[])
+            }
+            Self::Ts570s => {
+                KenwoodModelInfo::new("ts-570s", KenwoodProfile::KenwoodTs570, &["kenwood-ts570"])
+            }
+            Self::Ts570d => KenwoodModelInfo::new("ts-570d", KenwoodProfile::KenwoodTs570, &[]),
+            Self::Ts2000 => KenwoodModelInfo::new(
+                "ts-2000",
+                KenwoodProfile::KenwoodClassicKeyerMorse,
+                &["kenwood-classic-keyer-morse"],
+            ),
+            Self::SdrConsole => {
+                KenwoodModelInfo::new("sdrconsole", KenwoodProfile::KenwoodClassic, &[])
+            }
+            Self::Ts480 => {
+                KenwoodModelInfo::new("ts-480", KenwoodProfile::KenwoodTs480, &["kenwood-ts480"])
+            }
+            Self::TrUsdx => KenwoodModelInfo::new("trusdx", KenwoodProfile::KenwoodTs480, &[]),
+            Self::Qcx => KenwoodModelInfo::new(
+                "qcx",
+                KenwoodProfile::KenwoodTs480PlainCw,
+                &["kenwood-ts480-plain-cw"],
+            ),
+            Self::Qdx => KenwoodModelInfo::new("qdx", KenwoodProfile::KenwoodTs480PlainCw, &[]),
+            Self::Qmx => KenwoodModelInfo::new(
+                "qmx",
+                KenwoodProfile::KenwoodTs480Minimal,
+                &["kenwood-ts480-minimal"],
+            ),
+            Self::Pt8000a => {
+                KenwoodModelInfo::new("pt-8000a", KenwoodProfile::KenwoodTs480Minimal, &[])
+            }
+            Self::SdrUno => KenwoodModelInfo::new(
+                "sdruno",
+                KenwoodProfile::KenwoodTs480SdrUno,
+                &["kenwood-ts480-sdruno"],
+            ),
+            Self::DspMalachite => KenwoodModelInfo::new(
+                "dsp (malachite)",
+                KenwoodProfile::KenwoodTs480Minimal,
+                &["dsp", "malachite"],
+            ),
+            Self::Ts590s => {
+                KenwoodModelInfo::new("ts-590s", KenwoodProfile::KenwoodTs590, &["kenwood-ts590"])
+            }
+            Self::Ts590sg => KenwoodModelInfo::new("ts-590sg", KenwoodProfile::KenwoodTs590, &[]),
+            Self::Fx4 => KenwoodModelInfo::new("fx4", KenwoodProfile::KenwoodTs590, &[]),
+            Self::Fx4c => KenwoodModelInfo::new("fx4c", KenwoodProfile::KenwoodTs590, &[]),
+            Self::Fx4cr => KenwoodModelInfo::new("fx4cr", KenwoodProfile::KenwoodTs590, &[]),
+            Self::Fx4l => KenwoodModelInfo::new("fx4l", KenwoodProfile::KenwoodTs590, &[]),
+            Self::Ts890s => {
+                KenwoodModelInfo::new("ts-890s", KenwoodProfile::KenwoodTs890, &["kenwood-ts890"])
+            }
+            Self::Ts990s => {
+                KenwoodModelInfo::new("ts-990s", KenwoodProfile::KenwoodTs990, &["kenwood-ts990"])
+            }
+            Self::Trc80 => KenwoodModelInfo::new("trc-80", KenwoodProfile::KenwoodClassic, &[]),
+            Self::K2 => KenwoodModelInfo::new("k2", KenwoodProfile::ElecraftK2, &["elecraft-k2"]),
+            Self::K3 => KenwoodModelInfo::new("k3", KenwoodProfile::ElecraftK3, &["elecraft-k3"]),
+            Self::K3s => KenwoodModelInfo::new("k3s", KenwoodProfile::ElecraftK3, &[]),
+            Self::K4 => KenwoodModelInfo::new(
+                "k4",
+                KenwoodProfile::ElecraftK4,
+                &["elecraft-k4", "elecraft"],
+            ),
+            Self::Kx3 => KenwoodModelInfo::new("kx3", KenwoodProfile::ElecraftK3, &[]),
+            Self::Kx2 => KenwoodModelInfo::new("kx2", KenwoodProfile::ElecraftK3, &[]),
+            Self::Flex6xxx => KenwoodModelInfo::new(
+                "flex-6xxx (kenwood compat.)",
+                KenwoodProfile::Flex6xxx,
+                &["flex-6xxx", "flex", "6xxx", "flex6xxxkenwoodcompat"],
+            ),
+            Self::PowerSdr => KenwoodModelInfo::new(
+                "powersdr",
+                KenwoodProfile::PowerSdrThetis,
+                &["powersdr-thetis"],
+            ),
+            Self::Thetis => KenwoodModelInfo::new("thetis", KenwoodProfile::PowerSdrThetis, &[]),
+            Self::PiHpsdr => {
+                KenwoodModelInfo::new("pihpsdr", KenwoodProfile::KenwoodClassicKeyerMorse, &[])
+            }
+            Self::UsdxHamgeek => KenwoodModelInfo::new(
+                "usdx (hamgeek)",
+                KenwoodProfile::KenwoodClassic,
+                &["usdx", "hamgeek-usdx", "hamgeekusdx"],
+            ),
+            Self::Tx500 => {
+                KenwoodModelInfo::new("tx-500", KenwoodProfile::KenwoodClassicKeyerMorse, &[])
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct KenwoodModelInfo {
+    name: &'static str,
+    profile: KenwoodProfile,
+    aliases: &'static [&'static str],
+}
+
+impl KenwoodModelInfo {
+    const fn new(
+        name: &'static str,
+        profile: KenwoodProfile,
+        aliases: &'static [&'static str],
+    ) -> Self {
+        Self {
+            name,
+            profile,
+            aliases,
+        }
+    }
+}
+
+fn normalize_kenwood_name(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .filter(|character| {
+            !character.is_ascii_whitespace()
+                && *character != '-'
+                && *character != '_'
+                && *character != '/'
+                && *character != '('
+                && *character != ')'
+                && *character != '.'
+        })
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
 #[derive(Clone, Copy)]
 struct ModeCode {
     code: &'static str,

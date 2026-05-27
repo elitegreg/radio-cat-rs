@@ -26,10 +26,10 @@ Unsupported operations for a given model return `RadioError::UnsupportedOperatio
 ```rust
 use std::time::Duration;
 
-use radio_cat_rs::{create_radio, ConnectionConfig, RadioKind};
+use radio_cat_rs::{create_radio, ConnectionConfig, KenwoodModel, RadioKind};
 
 let radio = create_radio(
-    RadioKind::KenwoodTs590,
+    RadioKind::Kenwood(KenwoodModel::Ts590s),
     ConnectionConfig::serial("/dev/ttyUSB0", 38_400).with_timeout(Duration::from_secs(5)),
 )
 .await?;

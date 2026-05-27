@@ -16,7 +16,7 @@ pub use factory::{create_radio, create_radio_with_options, supported_radio_kinds
 pub use flex_native::{FlexNativeModel, FlexNativeRadio};
 pub use frequency::Frequency;
 pub use icom_civ::{IcomCivRadio, IcomModel};
-pub use kenwood::KenwoodRadio;
+pub use kenwood::{KenwoodModel, KenwoodRadio};
 pub use mode::Mode;
 pub use transport::ConnectionConfig;
 pub use yaesu_newcat::{YaesuModel, YaesuNewCatRadio};

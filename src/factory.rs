@@ -5,7 +5,7 @@ use tracing::debug;
 use crate::{
     flex_native::{FlexNativeModel, FlexNativeRadio},
     icom_civ::{IcomCivRadio, IcomModel},
-    kenwood::KenwoodProfile,
+    kenwood::KenwoodModel,
     options::RadioOptions,
     yaesu_newcat::{YaesuModel, YaesuNewCatRadio},
     ConnectionConfig, ControllableRadio, KenwoodRadio, RadioError, Result,
@@ -13,25 +13,7 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RadioKind {
-    KenwoodClassic,
-    KenwoodClassicKeyer,
-    KenwoodClassicMorse,
-    KenwoodClassicKeyerMorse,
-    KenwoodTs940,
-    KenwoodTs570,
-    KenwoodTs480,
-    KenwoodTs480PlainCw,
-    KenwoodTs480Minimal,
-    KenwoodTs480SdrUno,
-    KenwoodTs590,
-    KenwoodTs890,
-    KenwoodTs990,
-    ElecraftK2,
-    ElecraftK3,
-    ElecraftK4,
-    Ic10Derived,
-    Flex6xxx,
-    PowerSdrThetis,
+    Kenwood(KenwoodModel),
     Icom(IcomModel),
     Yaesu(YaesuModel),
     FlexNative(FlexNativeModel),
@@ -39,25 +21,55 @@ pub enum RadioKind {
 
 impl RadioKind {
     pub const ALL: &'static [Self] = &[
-        Self::KenwoodClassic,
-        Self::KenwoodClassicKeyer,
-        Self::KenwoodClassicMorse,
-        Self::KenwoodClassicKeyerMorse,
-        Self::KenwoodTs940,
-        Self::KenwoodTs570,
-        Self::KenwoodTs480,
-        Self::KenwoodTs480PlainCw,
-        Self::KenwoodTs480Minimal,
-        Self::KenwoodTs480SdrUno,
-        Self::KenwoodTs590,
-        Self::KenwoodTs890,
-        Self::KenwoodTs990,
-        Self::ElecraftK2,
-        Self::ElecraftK3,
-        Self::ElecraftK4,
-        Self::Ic10Derived,
-        Self::Flex6xxx,
-        Self::PowerSdrThetis,
+        Self::Kenwood(KenwoodModel::Ts140s),
+        Self::Kenwood(KenwoodModel::Ts680s),
+        Self::Kenwood(KenwoodModel::Ts711),
+        Self::Kenwood(KenwoodModel::Ts790),
+        Self::Kenwood(KenwoodModel::Ts811),
+        Self::Kenwood(KenwoodModel::Ts690s),
+        Self::Kenwood(KenwoodModel::Ts50s),
+        Self::Kenwood(KenwoodModel::Ts930),
+        Self::Kenwood(KenwoodModel::Ts940s),
+        Self::Kenwood(KenwoodModel::Ts950s),
+        Self::Kenwood(KenwoodModel::Ts950Sdx),
+        Self::Kenwood(KenwoodModel::Ts440s),
+        Self::Kenwood(KenwoodModel::R5000),
+        Self::Kenwood(KenwoodModel::Ts450s),
+        Self::Kenwood(KenwoodModel::Ts850),
+        Self::Kenwood(KenwoodModel::Ts870s),
+        Self::Kenwood(KenwoodModel::Ts570s),
+        Self::Kenwood(KenwoodModel::Ts570d),
+        Self::Kenwood(KenwoodModel::Ts2000),
+        Self::Kenwood(KenwoodModel::SdrConsole),
+        Self::Kenwood(KenwoodModel::Ts480),
+        Self::Kenwood(KenwoodModel::TrUsdx),
+        Self::Kenwood(KenwoodModel::Qcx),
+        Self::Kenwood(KenwoodModel::Qdx),
+        Self::Kenwood(KenwoodModel::Qmx),
+        Self::Kenwood(KenwoodModel::Pt8000a),
+        Self::Kenwood(KenwoodModel::SdrUno),
+        Self::Kenwood(KenwoodModel::DspMalachite),
+        Self::Kenwood(KenwoodModel::Ts590s),
+        Self::Kenwood(KenwoodModel::Ts590sg),
+        Self::Kenwood(KenwoodModel::Fx4),
+        Self::Kenwood(KenwoodModel::Fx4c),
+        Self::Kenwood(KenwoodModel::Fx4cr),
+        Self::Kenwood(KenwoodModel::Fx4l),
+        Self::Kenwood(KenwoodModel::Ts890s),
+        Self::Kenwood(KenwoodModel::Ts990s),
+        Self::Kenwood(KenwoodModel::Trc80),
+        Self::Kenwood(KenwoodModel::K2),
+        Self::Kenwood(KenwoodModel::K3),
+        Self::Kenwood(KenwoodModel::K3s),
+        Self::Kenwood(KenwoodModel::K4),
+        Self::Kenwood(KenwoodModel::Kx3),
+        Self::Kenwood(KenwoodModel::Kx2),
+        Self::Kenwood(KenwoodModel::Flex6xxx),
+        Self::Kenwood(KenwoodModel::PowerSdr),
+        Self::Kenwood(KenwoodModel::Thetis),
+        Self::Kenwood(KenwoodModel::PiHpsdr),
+        Self::Kenwood(KenwoodModel::UsdxHamgeek),
+        Self::Kenwood(KenwoodModel::Tx500),
         Self::Icom(IcomModel::Ic707),
         Self::Icom(IcomModel::Ic725),
         Self::Icom(IcomModel::Ic726),
@@ -147,52 +159,16 @@ impl RadioKind {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::KenwoodClassic => "kenwood-classic",
-            Self::KenwoodClassicKeyer => "kenwood-classic-keyer",
-            Self::KenwoodClassicMorse => "kenwood-classic-morse",
-            Self::KenwoodClassicKeyerMorse => "kenwood-classic-keyer-morse",
-            Self::KenwoodTs940 => "kenwood-ts940",
-            Self::KenwoodTs570 => "kenwood-ts570",
-            Self::KenwoodTs480 => "kenwood-ts480",
-            Self::KenwoodTs480PlainCw => "kenwood-ts480-plain-cw",
-            Self::KenwoodTs480Minimal => "kenwood-ts480-minimal",
-            Self::KenwoodTs480SdrUno => "kenwood-ts480-sdruno",
-            Self::KenwoodTs590 => "kenwood-ts590",
-            Self::KenwoodTs890 => "kenwood-ts890",
-            Self::KenwoodTs990 => "kenwood-ts990",
-            Self::ElecraftK2 => "elecraft-k2",
-            Self::ElecraftK3 => "elecraft-k3",
-            Self::ElecraftK4 => "elecraft-k4",
-            Self::Ic10Derived => "ic10-derived",
-            Self::Flex6xxx => "flex-6xxx (kenwood compat.)",
-            Self::PowerSdrThetis => "powersdr-thetis",
+            Self::Kenwood(model) => model.as_str(),
             Self::Icom(model) => model.as_str(),
             Self::Yaesu(model) => model.as_str(),
             Self::FlexNative(model) => model.as_str(),
         }
     }
 
-    fn kenwood_profile(self) -> Option<KenwoodProfile> {
+    fn kenwood_model(self) -> Option<KenwoodModel> {
         match self {
-            Self::KenwoodClassic => Some(KenwoodProfile::KenwoodClassic),
-            Self::KenwoodClassicKeyer => Some(KenwoodProfile::KenwoodClassicKeyer),
-            Self::KenwoodClassicMorse => Some(KenwoodProfile::KenwoodClassicMorse),
-            Self::KenwoodClassicKeyerMorse => Some(KenwoodProfile::KenwoodClassicKeyerMorse),
-            Self::KenwoodTs940 => Some(KenwoodProfile::KenwoodTs940),
-            Self::KenwoodTs570 => Some(KenwoodProfile::KenwoodTs570),
-            Self::KenwoodTs480 => Some(KenwoodProfile::KenwoodTs480),
-            Self::KenwoodTs480PlainCw => Some(KenwoodProfile::KenwoodTs480PlainCw),
-            Self::KenwoodTs480Minimal => Some(KenwoodProfile::KenwoodTs480Minimal),
-            Self::KenwoodTs480SdrUno => Some(KenwoodProfile::KenwoodTs480SdrUno),
-            Self::KenwoodTs590 => Some(KenwoodProfile::KenwoodTs590),
-            Self::KenwoodTs890 => Some(KenwoodProfile::KenwoodTs890),
-            Self::KenwoodTs990 => Some(KenwoodProfile::KenwoodTs990),
-            Self::ElecraftK2 => Some(KenwoodProfile::ElecraftK2),
-            Self::ElecraftK3 => Some(KenwoodProfile::ElecraftK3),
-            Self::ElecraftK4 => Some(KenwoodProfile::ElecraftK4),
-            Self::Ic10Derived => Some(KenwoodProfile::Ic10Derived),
-            Self::Flex6xxx => Some(KenwoodProfile::Flex6xxx),
-            Self::PowerSdrThetis => Some(KenwoodProfile::PowerSdrThetis),
+            Self::Kenwood(model) => Some(model),
             Self::Icom(_) | Self::Yaesu(_) | Self::FlexNative(_) => None,
         }
     }
@@ -202,44 +178,8 @@ impl FromStr for RadioKind {
     type Err = RadioError;
 
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        let normalized = normalize_radio_name(value);
-
-        let kind = match normalized.as_str() {
-            "kenwood" | "kenwoodclassic" | "ts140s" | "ts680s" | "ts711" | "ts790" | "ts811"
-            | "ts690s" | "ts450s" | "ts850" | "trc80" | "sdrconsole" | "usdx" | "hamgeekusdx" => {
-                Some(Self::KenwoodClassic)
-            }
-            "kenwoodclassickeyer" | "ts50s" | "ts930" => Some(Self::KenwoodClassicKeyer),
-            "kenwoodclassicmorse" | "ts950s" | "ts950sdx" | "ts870s" => {
-                Some(Self::KenwoodClassicMorse)
-            }
-            "kenwoodclassickeyermorse" | "ts2000" | "pihpsdr" | "tx500" => {
-                Some(Self::KenwoodClassicKeyerMorse)
-            }
-            "kenwoodts940" | "ts940s" => Some(Self::KenwoodTs940),
-            "kenwoodts570" | "ts570s" | "ts570d" => Some(Self::KenwoodTs570),
-            "kenwoodts480" | "ts480" | "trusdx" => Some(Self::KenwoodTs480),
-            "kenwoodts480plaincw" | "qcx" | "qdx" | "qcxqdx" => Some(Self::KenwoodTs480PlainCw),
-            "kenwoodts480minimal" | "qmx" | "pt8000a" | "dsp" | "malachite" => {
-                Some(Self::KenwoodTs480Minimal)
-            }
-            "kenwoodts480sdruno" | "sdruno" => Some(Self::KenwoodTs480SdrUno),
-            "kenwoodts590" | "ts590s" | "ts590sg" | "fx4" | "fx4c" | "fx4cr" | "fx4l" => {
-                Some(Self::KenwoodTs590)
-            }
-            "kenwoodts890" | "ts890s" => Some(Self::KenwoodTs890),
-            "kenwoodts990" | "ts990s" => Some(Self::KenwoodTs990),
-            "elecraftk2" | "k2" => Some(Self::ElecraftK2),
-            "elecraftk3" | "k3" | "k3s" | "kx2" | "kx3" => Some(Self::ElecraftK3),
-            "elecraftk4" | "k4" | "elecraft" => Some(Self::ElecraftK4),
-            "ic10derived" | "ts440s" | "r5000" => Some(Self::Ic10Derived),
-            "flex6xxx" | "6xxx" | "flex" | "flex6xxxkenwoodcompat" => Some(Self::Flex6xxx),
-            "powersdrthetis" | "powersdr" | "thetis" => Some(Self::PowerSdrThetis),
-            _ => None,
-        };
-
-        if let Some(kind) = kind {
-            return Ok(kind);
+        if let Some(model) = KenwoodModel::from_alias(value) {
+            return Ok(Self::Kenwood(model));
         }
 
         if let Some(model) = IcomModel::from_alias(value) {
@@ -256,23 +196,6 @@ impl FromStr for RadioKind {
 
         Err(RadioError::UnknownRadio(value.to_string()))
     }
-}
-
-fn normalize_radio_name(value: &str) -> String {
-    value
-        .trim()
-        .chars()
-        .filter(|character| {
-            !character.is_ascii_whitespace()
-                && *character != '-'
-                && *character != '_'
-                && *character != '/'
-                && *character != '('
-                && *character != ')'
-                && *character != '.'
-        })
-        .collect::<String>()
-        .to_ascii_lowercase()
 }
 
 pub const fn supported_radio_kinds() -> &'static [RadioKind] {
@@ -300,8 +223,10 @@ pub async fn create_radio_with_options(
 
     let parsed_options = RadioOptions::parse(options);
 
-    if let Some(profile) = kind.kenwood_profile() {
-        return Ok(Box::new(KenwoodRadio::connect(connection, profile).await?));
+    if let Some(model) = kind.kenwood_model() {
+        return Ok(Box::new(
+            KenwoodRadio::connect(connection, model.profile()).await?,
+        ));
     }
 
     match kind {
@@ -315,7 +240,7 @@ pub async fn create_radio_with_options(
             FlexNativeRadio::connect(connection, model, &parsed_options).await?,
         )),
         _ => {
-            unreachable!("all non-Icom/Yaesu/Flex-native kinds are mapped through kenwood_profile")
+            unreachable!("all non-Icom/Yaesu/Flex-native kinds are mapped through kenwood_model")
         }
     }
 }
@@ -323,12 +248,12 @@ pub async fn create_radio_with_options(
 #[cfg(test)]
 mod tests {
     use super::{supported_radio_kinds, RadioKind};
-    use crate::{FlexNativeModel, IcomModel, YaesuModel};
+    use crate::{FlexNativeModel, IcomModel, KenwoodModel, YaesuModel};
 
     #[test]
     fn lists_supported_radio_kinds() {
         let kinds = supported_radio_kinds();
-        assert!(kinds.contains(&RadioKind::KenwoodTs590));
+        assert!(kinds.contains(&RadioKind::Kenwood(KenwoodModel::Ts590s)));
         assert!(kinds.contains(&RadioKind::Icom(IcomModel::Ic7300)));
         assert!(kinds.contains(&RadioKind::Icom(IcomModel::Ic7610)));
         assert!(kinds.contains(&RadioKind::Yaesu(YaesuModel::Ft991)));
@@ -340,9 +265,9 @@ mod tests {
     #[test]
     fn parses_protocol_aliases() {
         for (alias, expected) in [
-            ("ts-590sg", RadioKind::KenwoodTs590),
-            ("k4", RadioKind::ElecraftK4),
-            ("6xxx", RadioKind::Flex6xxx),
+            ("ts-590sg", RadioKind::Kenwood(KenwoodModel::Ts590sg)),
+            ("k4", RadioKind::Kenwood(KenwoodModel::K4)),
+            ("6xxx", RadioKind::Kenwood(KenwoodModel::Flex6xxx)),
             ("ic-7300", RadioKind::Icom(IcomModel::Ic7300)),
             ("IC7610", RadioKind::Icom(IcomModel::Ic7610)),
             ("ic-706mkiig", RadioKind::Icom(IcomModel::Ic706Mkiig)),
@@ -362,7 +287,10 @@ mod tests {
                 "smartsdr-slice-h (native)",
                 RadioKind::FlexNative(FlexNativeModel::SliceH),
             ),
-            ("flex-6xxx (kenwood compat.)", RadioKind::Flex6xxx),
+            (
+                "flex-6xxx (kenwood compat.)",
+                RadioKind::Kenwood(KenwoodModel::Flex6xxx),
+            ),
         ] {
             assert_eq!(alias.parse::<RadioKind>().unwrap(), expected);
         }

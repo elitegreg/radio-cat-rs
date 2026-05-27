@@ -18,8 +18,8 @@ fn usage() -> String {
     format!(
         "\
 Usage:
-  cargo run --example cli -- --radio kenwood-ts590 --serial /dev/ttyUSB0 [--baud 38400]
-  cargo run --example cli -- --radio kenwood-ts590 --tcp host:port
+  cargo run --example cli -- --radio ts-590s --serial /dev/ttyUSB0 [--baud 38400]
+  cargo run --example cli -- --radio ts-590s --tcp host:port
 
 Options:
   --radio <name>     Radio kind. Supported: {supported}
