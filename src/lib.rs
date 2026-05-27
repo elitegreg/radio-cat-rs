@@ -1,5 +1,6 @@
 mod error;
 mod factory;
+mod flex_native;
 mod frequency;
 mod icom_civ;
 mod kenwood;
@@ -12,6 +13,7 @@ use async_trait::async_trait;
 
 pub use error::{RadioError, Result};
 pub use factory::{create_radio, create_radio_with_options, supported_radio_kinds, RadioKind};
+pub use flex_native::{FlexNativeModel, FlexNativeRadio};
 pub use frequency::Frequency;
 pub use icom_civ::{IcomCivRadio, IcomModel};
 pub use kenwood::KenwoodRadio;

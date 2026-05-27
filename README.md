@@ -8,6 +8,7 @@ The crate currently includes:
 - Icom CI-V profiles (binary framed protocol)
 - CI-V-compatible Xiegu profiles: `X108G`, `X6100`, `X6200`, `G90`, `X5105`
 - Yaesu New-CAT profiles: `FT-450`, `FT-950`, `FT-2000`, `FTDX-1200`, `FTDX-3000`, `FTDX-5000`, `FTDX-9000`, `FTDX-9000 Old`, `FT-991`, `FT-891`, `FT-710`, `FTDX-10`, `FTDX-101D`, `FTDX-101MP`
+- Flex SmartSDR native slice profiles: `SmartSDR Slice A` through `SmartSDR Slice H`
 
 ## ControllableRadio scope
 
@@ -69,10 +70,18 @@ Yaesu-specific optional keys:
 - `yaesu.retry_backoff_ms`
 - `yaesu.stop_cw_cmd` (if unset, `stop_cw()` is unsupported for Yaesu New-CAT profiles)
 
+Flex native options:
+
+- `flex.retry_max`
+- `flex.retry_backoff_ms`
+- `flex.verify_timeout_ms`
+
 ## Radio names
 
 - Call `supported_radio_kinds()` for canonical names.
-- `FromStr` parsing also accepts many model aliases (e.g. `ic-7300`, `ic7610`, `ic-706mkiig`, `x6100`, `g90`, `ft-991`, `ftdx101mp`).
+- `FromStr` parsing also accepts many model aliases (e.g. `ic-7300`, `ic7610`, `ic-706mkiig`, `x6100`, `g90`, `ft-991`, `ftdx101mp`, `smartsdr-slice-a`).
+- The Kenwood-compatible Flex profile is named `flex-6xxx (kenwood compat.)`.
+- Native SmartSDR slice profiles are named `smartsdr-slice-<a..h> (native)`.
 
 ## Development
 

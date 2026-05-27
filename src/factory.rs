@@ -3,6 +3,7 @@ use std::str::FromStr;
 use tracing::debug;
 
 use crate::{
+    flex_native::{FlexNativeModel, FlexNativeRadio},
     icom_civ::{IcomCivRadio, IcomModel},
     kenwood::KenwoodProfile,
     options::RadioOptions,
@@ -33,6 +34,7 @@ pub enum RadioKind {
     PowerSdrThetis,
     Icom(IcomModel),
     Yaesu(YaesuModel),
+    FlexNative(FlexNativeModel),
 }
 
 impl RadioKind {
@@ -129,6 +131,14 @@ impl RadioKind {
         Self::Yaesu(YaesuModel::Ftdx10),
         Self::Yaesu(YaesuModel::Ftdx101d),
         Self::Yaesu(YaesuModel::Ftdx101mp),
+        Self::FlexNative(FlexNativeModel::SliceA),
+        Self::FlexNative(FlexNativeModel::SliceB),
+        Self::FlexNative(FlexNativeModel::SliceC),
+        Self::FlexNative(FlexNativeModel::SliceD),
+        Self::FlexNative(FlexNativeModel::SliceE),
+        Self::FlexNative(FlexNativeModel::SliceF),
+        Self::FlexNative(FlexNativeModel::SliceG),
+        Self::FlexNative(FlexNativeModel::SliceH),
     ];
 
     pub const fn all() -> &'static [Self] {
@@ -154,10 +164,11 @@ impl RadioKind {
             Self::ElecraftK3 => "elecraft-k3",
             Self::ElecraftK4 => "elecraft-k4",
             Self::Ic10Derived => "ic10-derived",
-            Self::Flex6xxx => "flex-6xxx",
+            Self::Flex6xxx => "flex-6xxx (kenwood compat.)",
             Self::PowerSdrThetis => "powersdr-thetis",
             Self::Icom(model) => model.as_str(),
             Self::Yaesu(model) => model.as_str(),
+            Self::FlexNative(model) => model.as_str(),
         }
     }
 
@@ -182,7 +193,7 @@ impl RadioKind {
             Self::Ic10Derived => Some(KenwoodProfile::Ic10Derived),
             Self::Flex6xxx => Some(KenwoodProfile::Flex6xxx),
             Self::PowerSdrThetis => Some(KenwoodProfile::PowerSdrThetis),
-            Self::Icom(_) | Self::Yaesu(_) => None,
+            Self::Icom(_) | Self::Yaesu(_) | Self::FlexNative(_) => None,
         }
     }
 }
@@ -222,7 +233,7 @@ impl FromStr for RadioKind {
             "elecraftk3" | "k3" | "k3s" | "kx2" | "kx3" => Some(Self::ElecraftK3),
             "elecraftk4" | "k4" | "elecraft" => Some(Self::ElecraftK4),
             "ic10derived" | "ts440s" | "r5000" => Some(Self::Ic10Derived),
-            "flex6xxx" | "6xxx" | "flex" => Some(Self::Flex6xxx),
+            "flex6xxx" | "6xxx" | "flex" | "flex6xxxkenwoodcompat" => Some(Self::Flex6xxx),
             "powersdrthetis" | "powersdr" | "thetis" => Some(Self::PowerSdrThetis),
             _ => None,
         };
@@ -237,6 +248,10 @@ impl FromStr for RadioKind {
 
         if let Some(model) = YaesuModel::from_alias(value) {
             return Ok(Self::Yaesu(model));
+        }
+
+        if let Some(model) = FlexNativeModel::from_alias(value) {
+            return Ok(Self::FlexNative(model));
         }
 
         Err(RadioError::UnknownRadio(value.to_string()))
@@ -254,6 +269,7 @@ fn normalize_radio_name(value: &str) -> String {
                 && *character != '/'
                 && *character != '('
                 && *character != ')'
+                && *character != '.'
         })
         .collect::<String>()
         .to_ascii_lowercase()
@@ -295,14 +311,19 @@ pub async fn create_radio_with_options(
         RadioKind::Yaesu(model) => Ok(Box::new(
             YaesuNewCatRadio::connect(connection, model, &parsed_options).await?,
         )),
-        _ => unreachable!("all non-Icom/Yaesu kinds are mapped through kenwood_profile"),
+        RadioKind::FlexNative(model) => Ok(Box::new(
+            FlexNativeRadio::connect(connection, model, &parsed_options).await?,
+        )),
+        _ => {
+            unreachable!("all non-Icom/Yaesu/Flex-native kinds are mapped through kenwood_profile")
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{supported_radio_kinds, RadioKind};
-    use crate::{IcomModel, YaesuModel};
+    use crate::{FlexNativeModel, IcomModel, YaesuModel};
 
     #[test]
     fn lists_supported_radio_kinds() {
@@ -312,6 +333,8 @@ mod tests {
         assert!(kinds.contains(&RadioKind::Icom(IcomModel::Ic7610)));
         assert!(kinds.contains(&RadioKind::Yaesu(YaesuModel::Ft991)));
         assert!(kinds.contains(&RadioKind::Yaesu(YaesuModel::Ftdx101mp)));
+        assert!(kinds.contains(&RadioKind::FlexNative(FlexNativeModel::SliceA)));
+        assert!(kinds.contains(&RadioKind::FlexNative(FlexNativeModel::SliceH)));
     }
 
     #[test]
@@ -331,6 +354,15 @@ mod tests {
             ("ft-991", RadioKind::Yaesu(YaesuModel::Ft991)),
             ("ftdx101mp", RadioKind::Yaesu(YaesuModel::Ftdx101mp)),
             ("ftdx-9000-old", RadioKind::Yaesu(YaesuModel::Ftdx9000Old)),
+            (
+                "smartsdr-slice-a",
+                RadioKind::FlexNative(FlexNativeModel::SliceA),
+            ),
+            (
+                "smartsdr-slice-h (native)",
+                RadioKind::FlexNative(FlexNativeModel::SliceH),
+            ),
+            ("flex-6xxx (kenwood compat.)", RadioKind::Flex6xxx),
         ] {
             assert_eq!(alias.parse::<RadioKind>().unwrap(), expected);
         }

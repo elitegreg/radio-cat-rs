@@ -64,6 +64,16 @@ pub enum RadioError {
     #[error("CI-V protocol error: {0}")]
     CivProtocol(String),
 
+    #[error("Flex SmartSDR protocol error: {0}")]
+    FlexProtocol(String),
+
+    #[error("Flex SmartSDR command failed (seq={sequence}, code={code}): {message}")]
+    FlexCommandFailed {
+        sequence: u64,
+        code: i64,
+        message: String,
+    },
+
     #[error("operation `{operation}` exhausted its retry budget")]
     RetriesExhausted { operation: &'static str },
 
