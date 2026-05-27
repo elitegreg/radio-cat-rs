@@ -33,7 +33,6 @@ impl RadioKind {
         Self::Kenwood(KenwoodModel::Ts950s),
         Self::Kenwood(KenwoodModel::Ts950Sdx),
         Self::Kenwood(KenwoodModel::Ts440s),
-        Self::Kenwood(KenwoodModel::R5000),
         Self::Kenwood(KenwoodModel::Ts450s),
         Self::Kenwood(KenwoodModel::Ts850),
         Self::Kenwood(KenwoodModel::Ts870s),
@@ -48,7 +47,6 @@ impl RadioKind {
         Self::Kenwood(KenwoodModel::Qmx),
         Self::Kenwood(KenwoodModel::Pt8000a),
         Self::Kenwood(KenwoodModel::SdrUno),
-        Self::Kenwood(KenwoodModel::DspMalachite),
         Self::Kenwood(KenwoodModel::Ts590s),
         Self::Kenwood(KenwoodModel::Ts590sg),
         Self::Kenwood(KenwoodModel::Fx4),
@@ -331,9 +329,6 @@ mod tests {
             RadioKind::Icom(IcomModel::X6100).display_name(),
             "Xiegu X6100"
         );
-        assert_eq!(
-            RadioKind::Icom(IcomModel::G90).display_name(),
-            "g90"
-        );
+        assert_eq!(RadioKind::Icom(IcomModel::G90).display_name(), "Xiegu G90");
     }
 }

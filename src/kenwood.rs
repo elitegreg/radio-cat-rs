@@ -84,7 +84,6 @@ pub enum KenwoodModel {
     Ts950s,
     Ts950Sdx,
     Ts440s,
-    R5000,
     Ts450s,
     Ts850,
     Ts870s,
@@ -99,7 +98,6 @@ pub enum KenwoodModel {
     Qmx,
     Pt8000a,
     SdrUno,
-    DspMalachite,
     Ts590s,
     Ts590sg,
     Fx4,
@@ -137,7 +135,6 @@ impl KenwoodModel {
         Self::Ts950s,
         Self::Ts950Sdx,
         Self::Ts440s,
-        Self::R5000,
         Self::Ts450s,
         Self::Ts850,
         Self::Ts870s,
@@ -152,7 +149,6 @@ impl KenwoodModel {
         Self::Qmx,
         Self::Pt8000a,
         Self::SdrUno,
-        Self::DspMalachite,
         Self::Ts590s,
         Self::Ts590sg,
         Self::Fx4,
@@ -194,7 +190,6 @@ impl KenwoodModel {
             Self::Ts950s => "ts-950s",
             Self::Ts950Sdx => "ts-950sdx",
             Self::Ts440s => "ts-440s",
-            Self::R5000 => "r-5000",
             Self::Ts450s => "ts-450s",
             Self::Ts850 => "ts-850",
             Self::Ts870s => "ts-870s",
@@ -209,7 +204,6 @@ impl KenwoodModel {
             Self::Qmx => "qmx",
             Self::Pt8000a => "pt-8000a",
             Self::SdrUno => "sdruno",
-            Self::DspMalachite => "dsp (malachite)",
             Self::Ts590s => "ts-590s",
             Self::Ts590sg => "ts-590sg",
             Self::Fx4 => "fx4",
@@ -235,12 +229,31 @@ impl KenwoodModel {
     }
 
     pub fn display_name(self) -> String {
-        let id = self.as_str();
-        if !id.starts_with("ts-") && !matches!(self, Self::K2 | Self::K3 | Self::K3s | Self::K4 | Self::Kx2 | Self::Kx3 | Self::Flex6xxx) {
-            return id.to_string();
+        match self {
+            Self::SdrConsole => return "SDRConsole".to_string(),
+            Self::TrUsdx => return "TruSDX".to_string(),
+            Self::Qcx => return "QRPLabs QCX".to_string(),
+            Self::Qdx => return "QRPLabs QDX".to_string(),
+            Self::Qmx => return "QRPLabs QMX".to_string(),
+            Self::Pt8000a => return "Hilberling PT-8000A".to_string(),
+            Self::SdrUno => return "SDRPlay SDRUno".to_string(),
+            Self::Fx4 => return "BG2FX FX-4".to_string(),
+            Self::Fx4c => return "BG2FX FX-4C".to_string(),
+            Self::Fx4cr => return "BG2FX FX-4CR".to_string(),
+            Self::Fx4l => return "BG2FX FX-4L".to_string(),
+            Self::PowerSdr => return "PowerSDR".to_string(),
+            Self::Thetis => return "Thetis".to_string(),
+            Self::PiHpsdr => return "PiHPSDR".to_string(),
+            Self::UsdxHamgeek => return "HamGeek USDX".to_string(),
+            Self::Tx500 => return "Lab599 TX-500".to_string(),
+            _ => (),
         }
 
-        format!("{} {}", self.profile().vendor_name(), id.to_ascii_uppercase())
+        format!(
+            "{} {}",
+            self.profile().vendor_name(),
+            self.as_str().to_ascii_uppercase()
+        )
     }
 
     pub(crate) fn from_alias(value: &str) -> Option<Self> {
@@ -294,7 +307,6 @@ impl KenwoodModel {
             Self::Ts440s => {
                 KenwoodModelInfo::new("ts-440s", KenwoodProfile::Ic10Derived, &["ic10-derived"])
             }
-            Self::R5000 => KenwoodModelInfo::new("r-5000", KenwoodProfile::Ic10Derived, &[]),
             Self::Ts450s => KenwoodModelInfo::new("ts-450s", KenwoodProfile::KenwoodClassic, &[]),
             Self::Ts850 => KenwoodModelInfo::new("ts-850", KenwoodProfile::KenwoodClassic, &[]),
             Self::Ts870s => {
@@ -334,11 +346,6 @@ impl KenwoodModel {
                 "sdruno",
                 KenwoodProfile::KenwoodTs480SdrUno,
                 &["kenwood-ts480-sdruno"],
-            ),
-            Self::DspMalachite => KenwoodModelInfo::new(
-                "dsp (malachite)",
-                KenwoodProfile::KenwoodTs480Minimal,
-                &["dsp", "malachite"],
             ),
             Self::Ts590s => {
                 KenwoodModelInfo::new("ts-590s", KenwoodProfile::KenwoodTs590, &["kenwood-ts590"])
