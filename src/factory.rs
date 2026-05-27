@@ -166,6 +166,15 @@ impl RadioKind {
         }
     }
 
+    pub fn display_name(self) -> String {
+        match self {
+            Self::Kenwood(model) => model.display_name(),
+            Self::Icom(model) => model.display_name(),
+            Self::Yaesu(model) => model.display_name(),
+            Self::FlexNative(model) => model.display_name(),
+        }
+    }
+
     fn kenwood_model(self) -> Option<KenwoodModel> {
         match self {
             Self::Kenwood(model) => Some(model),
@@ -294,5 +303,37 @@ mod tests {
         ] {
             assert_eq!(alias.parse::<RadioKind>().unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn provides_pretty_display_names() {
+        assert_eq!(
+            RadioKind::Kenwood(KenwoodModel::Ts590s).display_name(),
+            "Kenwood TS-590S"
+        );
+        assert_eq!(
+            RadioKind::Icom(IcomModel::Ic7300).display_name(),
+            "Icom IC-7300"
+        );
+        assert_eq!(
+            RadioKind::Yaesu(YaesuModel::Ftdx101mp).display_name(),
+            "Yaesu FTDX-101MP"
+        );
+        assert_eq!(
+            RadioKind::Kenwood(KenwoodModel::K3s).display_name(),
+            "Elecraft K3S"
+        );
+        assert_eq!(
+            RadioKind::FlexNative(FlexNativeModel::SliceA).display_name(),
+            "FlexRadio SMARTSDR-SLICE-A"
+        );
+        assert_eq!(
+            RadioKind::Icom(IcomModel::X6100).display_name(),
+            "Xiegu X6100"
+        );
+        assert_eq!(
+            RadioKind::Icom(IcomModel::G90).display_name(),
+            "g90"
+        );
     }
 }

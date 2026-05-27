@@ -228,6 +228,22 @@ impl IcomModel {
         }
     }
 
+    pub fn display_name(self) -> String {
+        let id = self.as_str();
+        if id.starts_with("ic-") {
+            return format!("Icom {}", id.to_ascii_uppercase());
+        }
+
+        if matches!(
+            self,
+            Self::G90 | Self::X6100 | Self::X6200 | Self::X5105 | Self::X108g
+        ) {
+            return format!("Xiegu {}", id.to_ascii_uppercase());
+        }
+
+        id.to_string()
+    }
+
     pub(crate) fn from_alias(value: &str) -> Option<Self> {
         let normalized = normalize_model_name(value);
 

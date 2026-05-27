@@ -33,7 +33,7 @@ Options:
 fn supported_radio_names() -> String {
     supported_radio_kinds()
         .iter()
-        .map(|kind| kind.as_str())
+        .map(|kind| format!("{} ({})", kind.as_str(), kind.display_name()))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -253,7 +253,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliArgs::parse(env::args().skip(1)).map_err(io::Error::other)?;
     let radio = create_radio(args.radio, args.connection).await?;
 
-    println!("Connected to {}. Type ? for help.", args.radio.as_str());
+    println!(
+        "Connected to {} ({}). Type ? for help.",
+        args.radio.as_str(),
+        args.radio.display_name()
+    );
 
     repl(radio.as_ref()).await
 }

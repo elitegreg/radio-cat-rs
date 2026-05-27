@@ -78,7 +78,7 @@ Flex native options:
 
 ## Radio names
 
-- Call `supported_radio_kinds()` for canonical names.
+- Call `supported_radio_kinds()` for canonical names; use `RadioKind::display_name()` for UI-friendly names.
 - `FromStr` parsing also accepts many model aliases (e.g. `ic-7300`, `ic7610`, `ic-706mkiig`, `x6100`, `g90`, `ft-991`, `ftdx101mp`, `smartsdr-slice-a`).
 - The Kenwood-compatible Flex profile is named `flex-6xxx (kenwood compat.)`.
 - Native SmartSDR slice profiles are named `smartsdr-slice-<a..h> (native)`.

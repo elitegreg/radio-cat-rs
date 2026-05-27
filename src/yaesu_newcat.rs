@@ -77,6 +77,10 @@ impl YaesuModel {
         }
     }
 
+    pub fn display_name(self) -> String {
+        format!("Yaesu {}", self.as_str().to_ascii_uppercase())
+    }
+
     pub(crate) fn from_alias(value: &str) -> Option<Self> {
         let normalized = normalize_model_name(value);
 

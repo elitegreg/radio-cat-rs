@@ -63,6 +63,11 @@ impl FlexNativeModel {
         }
     }
 
+    pub fn display_name(self) -> String {
+        let id = self.as_str().trim_end_matches(" (native)");
+        format!("FlexRadio {}", id.to_ascii_uppercase())
+    }
+
     fn slice_index(self) -> u8 {
         match self {
             Self::SliceA => 0,

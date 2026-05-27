@@ -60,6 +60,14 @@ impl KenwoodProfile {
             Self::PowerSdrThetis => &PROFILE_POWER_SDR_THETIS,
         }
     }
+
+    const fn vendor_name(self) -> &'static str {
+        match self {
+            Self::ElecraftK2 | Self::ElecraftK3 | Self::ElecraftK4 => "Elecraft",
+            Self::Flex6xxx => "FlexRadio",
+            _ => "Kenwood",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -224,6 +232,15 @@ impl KenwoodModel {
             Self::UsdxHamgeek => "usdx (hamgeek)",
             Self::Tx500 => "tx-500",
         }
+    }
+
+    pub fn display_name(self) -> String {
+        let id = self.as_str();
+        if !id.starts_with("ts-") && !matches!(self, Self::K2 | Self::K3 | Self::K3s | Self::K4 | Self::Kx2 | Self::Kx3 | Self::Flex6xxx) {
+            return id.to_string();
+        }
+
+        format!("{} {}", self.profile().vendor_name(), id.to_ascii_uppercase())
     }
 
     pub(crate) fn from_alias(value: &str) -> Option<Self> {
