@@ -134,7 +134,6 @@ impl RadioKind {
         Self::Yaesu(YaesuModel::Ftdx3000),
         Self::Yaesu(YaesuModel::Ftdx5000),
         Self::Yaesu(YaesuModel::Ftdx9000),
-        Self::Yaesu(YaesuModel::Ftdx9000Old),
         Self::Yaesu(YaesuModel::Ft991),
         Self::Yaesu(YaesuModel::Ft891),
         Self::Yaesu(YaesuModel::Ft710),
@@ -285,7 +284,6 @@ mod tests {
             ("x5105", RadioKind::Icom(IcomModel::X5105)),
             ("ft-991", RadioKind::Yaesu(YaesuModel::Ft991)),
             ("ftdx101mp", RadioKind::Yaesu(YaesuModel::Ftdx101mp)),
-            ("ftdx-9000-old", RadioKind::Yaesu(YaesuModel::Ftdx9000Old)),
             (
                 "smartsdr-slice-a",
                 RadioKind::FlexNative(FlexNativeModel::SliceA),

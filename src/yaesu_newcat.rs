@@ -27,7 +27,6 @@ pub enum YaesuModel {
     Ftdx3000,
     Ftdx5000,
     Ftdx9000,
-    Ftdx9000Old,
     Ft991,
     Ft891,
     Ft710,
@@ -45,7 +44,6 @@ impl YaesuModel {
         Self::Ftdx3000,
         Self::Ftdx5000,
         Self::Ftdx9000,
-        Self::Ftdx9000Old,
         Self::Ft991,
         Self::Ft891,
         Self::Ft710,
@@ -67,7 +65,6 @@ impl YaesuModel {
             Self::Ftdx3000 => "ftdx-3000",
             Self::Ftdx5000 => "ftdx-5000",
             Self::Ftdx9000 => "ftdx-9000",
-            Self::Ftdx9000Old => "ftdx-9000-old",
             Self::Ft991 => "ft-991",
             Self::Ft891 => "ft-891",
             Self::Ft710 => "ft-710",
@@ -103,11 +100,6 @@ impl YaesuModel {
             Self::Ftdx3000 => YaesuModelInfo::new("ftdx-3000", YaesuProfile::Mid, &["ftdx3000"]),
             Self::Ftdx5000 => YaesuModelInfo::new("ftdx-5000", YaesuProfile::Mid, &["ftdx5000"]),
             Self::Ftdx9000 => YaesuModelInfo::new("ftdx-9000", YaesuProfile::Early, &["ftdx9000"]),
-            Self::Ftdx9000Old => YaesuModelInfo::new(
-                "ftdx-9000-old",
-                YaesuProfile::Early,
-                &["ftdx9000old", "ftdx-9000old"],
-            ),
             Self::Ft991 => YaesuModelInfo::new("ft-991", YaesuProfile::Ft991, &["ft991"]),
             Self::Ft891 => YaesuModelInfo::new("ft-891", YaesuProfile::Mid, &["ft891"]),
             Self::Ft710 => YaesuModelInfo::new("ft-710", YaesuProfile::Modern, &["ft710"]),
@@ -863,8 +855,8 @@ mod tests {
             Some(YaesuModel::Ftdx101mp)
         );
         assert_eq!(
-            YaesuModel::from_alias("ftdx-9000-old"),
-            Some(YaesuModel::Ftdx9000Old)
+            YaesuModel::from_alias("ftdx-9000"),
+            Some(YaesuModel::Ftdx9000)
         );
     }
 
