@@ -108,7 +108,6 @@ impl RadioKind {
         Self::Icom(IcomModel::Ic7851),
         Self::Icom(IcomModel::Ic905),
         Self::Icom(IcomModel::Ic9700),
-        Self::Icom(IcomModel::IcF8101),
         Self::Icom(IcomModel::X108g),
         Self::Icom(IcomModel::X6100),
         Self::Icom(IcomModel::X6200),

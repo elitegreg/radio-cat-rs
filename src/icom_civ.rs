@@ -22,12 +22,6 @@ const CIV_DEFAULT_CONTROLLER_ADDR: u8 = 0xE0;
 const CIV_DEFAULT_RETRY_MAX: u8 = 3;
 const CIV_DEFAULT_RETRY_BACKOFF_MS: u64 = 25;
 
-// NOTE: We could not source-verify every model's default CI-V address from authoritative
-// manufacturer manuals in this repository. For models that use UNKNOWN_CIV_ADDR, treat it as a
-// placeholder and override at runtime via options:
-//   civ.rig_addr=0xNN,civ.controller_addr=0xE0
-const UNKNOWN_CIV_ADDR: u8 = 0x94;
-
 const MAX_CW_TEXT_BYTES: usize = 60;
 const CIV_CW_CHUNK_BYTES: usize = 30;
 const MIN_CW_WPM: u16 = 1;
@@ -96,7 +90,6 @@ pub enum IcomModel {
     Ic7851,
     Ic905,
     Ic9700,
-    IcF8101,
     X108g,
     X6100,
     X6200,
@@ -160,7 +153,6 @@ impl IcomModel {
         Self::Ic7851,
         Self::Ic905,
         Self::Ic9700,
-        Self::IcF8101,
         Self::X108g,
         Self::X6100,
         Self::X6200,
@@ -228,7 +220,6 @@ impl IcomModel {
             Self::Ic7851 => "ic-7851",
             Self::Ic905 => "ic-905",
             Self::Ic9700 => "ic-9700",
-            Self::IcF8101 => "ic-f8101",
             Self::X108g => "x108g",
             Self::X6100 => "x6100",
             Self::X6200 => "x6200",
@@ -252,202 +243,100 @@ impl IcomModel {
 
     fn info(self) -> IcomModelInfo {
         match self {
-            Self::Ic707 => {
-                IcomModelInfo::new("ic-707", IcomProfile::EarlyHf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic725 => {
-                IcomModelInfo::new("ic-725", IcomProfile::EarlyHf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic726 => {
-                IcomModelInfo::new("ic-726", IcomProfile::EarlyHf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic728 => {
-                IcomModelInfo::new("ic-728", IcomProfile::EarlyHf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic729 => {
-                IcomModelInfo::new("ic-729", IcomProfile::EarlyHf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic735 => {
-                IcomModelInfo::new("ic-735", IcomProfile::EarlyHf731, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic736 => {
-                IcomModelInfo::new("ic-736", IcomProfile::EarlyHf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic737 => {
-                IcomModelInfo::new("ic-737", IcomProfile::EarlyHf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic738 => {
-                IcomModelInfo::new("ic-738", IcomProfile::EarlyHf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic751 => {
-                IcomModelInfo::new("ic-751", IcomProfile::EarlyHf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic761 => {
-                IcomModelInfo::new("ic-761", IcomProfile::EarlyHf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic765 => {
-                IcomModelInfo::new("ic-765", IcomProfile::EarlyHf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic775 => {
-                IcomModelInfo::new("ic-775", IcomProfile::EarlyHf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic781 => {
-                IcomModelInfo::new("ic-781", IcomProfile::EarlyHf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic271 => {
-                IcomModelInfo::new("ic-271", IcomProfile::EarlyVhfUhf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic275 => {
-                IcomModelInfo::new("ic-275", IcomProfile::EarlyVhfUhf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic375 => {
-                IcomModelInfo::new("ic-375", IcomProfile::EarlyVhfUhf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic471 => {
-                IcomModelInfo::new("ic-471", IcomProfile::EarlyVhfUhf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic475 => {
-                IcomModelInfo::new("ic-475", IcomProfile::EarlyVhfUhf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic575 => {
-                IcomModelInfo::new("ic-575", IcomProfile::EarlyVhfUhf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic820h => IcomModelInfo::new(
-                "ic-820h",
-                IcomProfile::EarlyVhfUhf731,
-                UNKNOWN_CIV_ADDR,
-                &[],
-            ),
-            Self::Ic821h => IcomModelInfo::new(
-                "ic-821h",
-                IcomProfile::EarlyVhfUhf731,
-                UNKNOWN_CIV_ADDR,
-                &[],
-            ),
-            Self::Ic970 => {
-                IcomModelInfo::new("ic-970", IcomProfile::EarlyVhfUhf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic1275 => {
-                IcomModelInfo::new("ic-1275", IcomProfile::EarlyVhfUhf, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic706 => {
-                IcomModelInfo::new("ic-706", IcomProfile::Icom706Family, UNKNOWN_CIV_ADDR, &[])
-            }
+            Self::Ic707 => IcomModelInfo::new("ic-707", IcomProfile::EarlyHf, 0x3e, &[]),
+            Self::Ic725 => IcomModelInfo::new("ic-725", IcomProfile::EarlyHf, 0x28, &[]),
+            Self::Ic726 => IcomModelInfo::new("ic-726", IcomProfile::EarlyHf, 0x30, &[]),
+            Self::Ic728 => IcomModelInfo::new("ic-728", IcomProfile::EarlyHf, 0x38, &[]),
+            Self::Ic729 => IcomModelInfo::new("ic-729", IcomProfile::EarlyHf, 0x3a, &[]),
+            Self::Ic735 => IcomModelInfo::new("ic-735", IcomProfile::EarlyHf731, 0x04, &[]),
+            Self::Ic736 => IcomModelInfo::new("ic-736", IcomProfile::EarlyHf, 0x40, &[]),
+            Self::Ic737 => IcomModelInfo::new("ic-737", IcomProfile::EarlyHf, 0x3c, &[]),
+            Self::Ic738 => IcomModelInfo::new("ic-738", IcomProfile::EarlyHf, 0x44, &[]),
+            Self::Ic751 => IcomModelInfo::new("ic-751", IcomProfile::EarlyHf, 0x1c, &[]),
+            Self::Ic761 => IcomModelInfo::new("ic-761", IcomProfile::EarlyHf, 0x1e, &[]),
+            Self::Ic765 => IcomModelInfo::new("ic-765", IcomProfile::EarlyHf, 0x2c, &[]),
+            Self::Ic775 => IcomModelInfo::new("ic-775", IcomProfile::EarlyHf, 0x46, &[]),
+            Self::Ic781 => IcomModelInfo::new("ic-781", IcomProfile::EarlyHf, 0x26, &[]),
+            Self::Ic271 => IcomModelInfo::new("ic-271", IcomProfile::EarlyVhfUhf, 0x20, &[]),
+            Self::Ic275 => IcomModelInfo::new("ic-275", IcomProfile::EarlyVhfUhf, 0x10, &[]),
+            Self::Ic375 => IcomModelInfo::new("ic-375", IcomProfile::EarlyVhfUhf, 0x12, &[]),
+            Self::Ic471 => IcomModelInfo::new("ic-471", IcomProfile::EarlyVhfUhf, 0x22, &[]),
+            Self::Ic475 => IcomModelInfo::new("ic-475", IcomProfile::EarlyVhfUhf, 0x14, &[]),
+            Self::Ic575 => IcomModelInfo::new("ic-575", IcomProfile::EarlyVhfUhf, 0x16, &[]),
+            Self::Ic820h => IcomModelInfo::new("ic-820h", IcomProfile::EarlyVhfUhf731, 0x42, &[]),
+            Self::Ic821h => IcomModelInfo::new("ic-821h", IcomProfile::EarlyVhfUhf731, 0x4c, &[]),
+            Self::Ic970 => IcomModelInfo::new("ic-970", IcomProfile::EarlyVhfUhf, 0x2e, &[]),
+            Self::Ic1275 => IcomModelInfo::new("ic-1275", IcomProfile::EarlyVhfUhf, 0x18, &[]),
+            Self::Ic706 => IcomModelInfo::new("ic-706", IcomProfile::Icom706Family, 0x48, &[]),
             Self::Ic706Mkii => IcomModelInfo::new(
                 "ic-706mkii",
                 IcomProfile::Icom706Family,
-                UNKNOWN_CIV_ADDR,
+                0x4e,
                 &["ic706mkii"],
             ),
             Self::Ic706Mkiig => IcomModelInfo::new(
                 "ic-706mkiig",
                 IcomProfile::Icom706Family,
-                UNKNOWN_CIV_ADDR,
+                0x58,
                 &["ic706mkiig"],
             ),
-            Self::Ic78 => IcomModelInfo::new("ic-78", IcomProfile::Icom78, UNKNOWN_CIV_ADDR, &[]),
-            Self::Ic703 => {
-                IcomModelInfo::new("ic-703", IcomProfile::Icom703, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic718 => {
-                IcomModelInfo::new("ic-718", IcomProfile::Icom718, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic746 => {
-                IcomModelInfo::new("ic-746", IcomProfile::Icom746Family, UNKNOWN_CIV_ADDR, &[])
-            }
+            Self::Ic78 => IcomModelInfo::new("ic-78", IcomProfile::Icom78, 0x62, &[]),
+            Self::Ic703 => IcomModelInfo::new("ic-703", IcomProfile::Icom703, 0x68, &[]),
+            Self::Ic718 => IcomModelInfo::new("ic-718", IcomProfile::Icom718, 0x5e, &[]),
+            Self::Ic746 => IcomModelInfo::new("ic-746", IcomProfile::Icom746Family, 0x56, &[]),
             Self::Ic746Pro => IcomModelInfo::new(
                 "ic-746pro",
                 IcomProfile::Icom746Family,
-                UNKNOWN_CIV_ADDR,
+                0x66,
                 &["ic-746pro"],
             ),
-            Self::Ic756 => {
-                IcomModelInfo::new("ic-756", IcomProfile::Icom756Family, UNKNOWN_CIV_ADDR, &[])
-            }
+            Self::Ic756 => IcomModelInfo::new("ic-756", IcomProfile::Icom756Family, 0x50, &[]),
             Self::Ic756Pro => IcomModelInfo::new(
                 "ic-756pro",
                 IcomProfile::Icom756Family,
-                UNKNOWN_CIV_ADDR,
+                0x5C,
                 &["ic-756pro"],
             ),
             Self::Ic756ProIi => IcomModelInfo::new(
                 "ic-756proii",
                 IcomProfile::Icom756Family,
-                UNKNOWN_CIV_ADDR,
+                0x64,
                 &["ic-756proii", "ic756proii"],
             ),
             Self::Ic756ProIii => IcomModelInfo::new(
                 "ic-756proiii",
                 IcomProfile::Icom756Family,
-                UNKNOWN_CIV_ADDR,
+                0x6E,
                 &["ic-756proiii", "ic756proiii"],
             ),
-            Self::Ic7000 => {
-                IcomModelInfo::new("ic-7000", IcomProfile::Icom7000, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic7200 => {
-                IcomModelInfo::new("ic-7200", IcomProfile::Icom7200, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic7410 => {
-                IcomModelInfo::new("ic-7410", IcomProfile::Icom7410, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic910 => {
-                IcomModelInfo::new("ic-910", IcomProfile::Icom910, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic9100 => {
-                IcomModelInfo::new("ic-9100", IcomProfile::Icom9100, UNKNOWN_CIV_ADDR, &[])
-            }
+            Self::Ic7000 => IcomModelInfo::new("ic-7000", IcomProfile::Icom7000, 0x70, &[]),
+            Self::Ic7200 => IcomModelInfo::new("ic-7200", IcomProfile::Icom7200, 0x76, &[]),
+            Self::Ic7410 => IcomModelInfo::new("ic-7410", IcomProfile::Icom7410, 0x80, &[]),
+            Self::Ic910 => IcomModelInfo::new("ic-910", IcomProfile::Icom910, 0x60, &[]),
+            Self::Ic9100 => IcomModelInfo::new("ic-9100", IcomProfile::Icom9100, 0x7C, &[]),
             Self::Ic7100 => IcomModelInfo::new("ic-7100", IcomProfile::Icom7100, 0x88, &[]),
-            Self::Ic7600 => {
-                IcomModelInfo::new("ic-7600", IcomProfile::Icom7600, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic7700 => {
-                IcomModelInfo::new("ic-7700", IcomProfile::Icom7700, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic7800 => {
-                IcomModelInfo::new("ic-7800", IcomProfile::Icom7800, UNKNOWN_CIV_ADDR, &[])
-            }
+            Self::Ic7600 => IcomModelInfo::new("ic-7600", IcomProfile::Icom7600, 0x7A, &[]),
+            Self::Ic7700 => IcomModelInfo::new("ic-7700", IcomProfile::Icom7700, 0x74, &[]),
+            Self::Ic7800 => IcomModelInfo::new("ic-7800", IcomProfile::Icom7800, 0x6A, &[]),
             Self::Ic7300 => IcomModelInfo::new("ic-7300", IcomProfile::ModernDirect, 0x94, &[]),
             Self::Ic7300Mk2 => IcomModelInfo::new(
                 "ic-7300mk2",
                 IcomProfile::ModernDirect,
-                UNKNOWN_CIV_ADDR,
+                0xB6,
                 &["ic-7300mk2"],
             ),
             Self::Ic705 => IcomModelInfo::new("ic-705", IcomProfile::ModernDirect, 0xA4, &[]),
             Self::Ic7610 => IcomModelInfo::new("ic-7610", IcomProfile::ModernDirect, 0x98, &[]),
-            Self::Ic7760 => {
-                IcomModelInfo::new("ic-7760", IcomProfile::ModernDirect, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic7850 => {
-                IcomModelInfo::new("ic-7850", IcomProfile::ModernDirect, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic7851 => {
-                IcomModelInfo::new("ic-7851", IcomProfile::ModernDirect, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::Ic905 => {
-                IcomModelInfo::new("ic-905", IcomProfile::ModernDirect, UNKNOWN_CIV_ADDR, &[])
-            }
+            Self::Ic7760 => IcomModelInfo::new("ic-7760", IcomProfile::ModernDirect, 0xB2, &[]),
+            Self::Ic7850 => IcomModelInfo::new("ic-7850", IcomProfile::ModernDirect, 0x8E, &[]),
+            Self::Ic7851 => IcomModelInfo::new("ic-7851", IcomProfile::ModernDirect, 0x8E, &[]),
+            Self::Ic905 => IcomModelInfo::new("ic-905", IcomProfile::ModernDirect, 0xAC, &[]),
             Self::Ic9700 => IcomModelInfo::new("ic-9700", IcomProfile::ModernDirect, 0xA2, &[]),
-            Self::IcF8101 => {
-                IcomModelInfo::new("ic-f8101", IcomProfile::IcomF8101, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::X108g => IcomModelInfo::new(
-                "x108g",
-                IcomProfile::XieguX108g,
-                UNKNOWN_CIV_ADDR,
-                &["x-108g"],
-            ),
-            Self::X6100 => {
-                IcomModelInfo::new("x6100", IcomProfile::XieguNewer, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::X6200 => {
-                IcomModelInfo::new("x6200", IcomProfile::XieguNewer, UNKNOWN_CIV_ADDR, &[])
-            }
-            Self::G90 => IcomModelInfo::new("g90", IcomProfile::XieguNewer, UNKNOWN_CIV_ADDR, &[]),
-            Self::X5105 => {
-                IcomModelInfo::new("x5105", IcomProfile::XieguNewer, UNKNOWN_CIV_ADDR, &[])
-            }
+            Self::X108g => IcomModelInfo::new("x108g", IcomProfile::XieguX108g, 0x70, &["x-108g"]),
+            Self::X6100 => IcomModelInfo::new("x6100", IcomProfile::XieguNewer, 0xA4, &[]),
+            Self::X6200 => IcomModelInfo::new("x6200", IcomProfile::XieguNewer, 0xA4, &[]),
+            Self::G90 => IcomModelInfo::new("g90", IcomProfile::XieguNewer, 0xA4, &[]),
+            Self::X5105 => IcomModelInfo::new("x5105", IcomProfile::XieguNewer, 0x70, &[]),
         }
     }
 }
@@ -514,7 +403,6 @@ enum IcomProfile {
     Icom7700,
     Icom7800,
     ModernDirect,
-    IcomF8101,
     XieguX108g,
     XieguNewer,
 }
@@ -529,7 +417,6 @@ enum FrequencyFamily {
 enum ModeFamily {
     Generic,
     Icom7800,
-    F8101,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -718,14 +605,6 @@ impl IcomProfile {
                 keyer_supported: true,
                 morse_family: MorseFamily::SendStop,
             },
-            Self::IcomF8101 => ProfileDescriptor {
-                name: "icom-f8101",
-                frequency_family: FrequencyFamily::Bcd5,
-                mode_family: ModeFamily::F8101,
-                data_overlay_family: DataOverlayFamily::None,
-                keyer_supported: false,
-                morse_family: MorseFamily::None,
-            },
             Self::XieguX108g => ProfileDescriptor {
                 name: "xiegu-x108g",
                 frequency_family: FrequencyFamily::Bcd5,
@@ -828,65 +707,6 @@ const MODE_MAP_GENERIC: [ModeCode; 19] = [
     ModeCode {
         code: 0x22,
         mode: Mode::Dd,
-    },
-];
-
-const MODE_MAP_F8101: [ModeCode; 14] = [
-    ModeCode {
-        code: 0x00,
-        mode: Mode::Lsb,
-    },
-    ModeCode {
-        code: 0x01,
-        mode: Mode::Usb,
-    },
-    ModeCode {
-        code: 0x02,
-        mode: Mode::Am,
-    },
-    ModeCode {
-        code: 0x03,
-        mode: Mode::Cw,
-    },
-    ModeCode {
-        code: 0x04,
-        mode: Mode::Rtty,
-    },
-    ModeCode {
-        code: 0x05,
-        mode: Mode::Fm,
-    },
-    ModeCode {
-        code: 0x07,
-        mode: Mode::Cwr,
-    },
-    ModeCode {
-        code: 0x08,
-        mode: Mode::Rttyr,
-    },
-    ModeCode {
-        code: 0x18,
-        mode: Mode::LsbD1,
-    },
-    ModeCode {
-        code: 0x19,
-        mode: Mode::UsbD1,
-    },
-    ModeCode {
-        code: 0x20,
-        mode: Mode::LsbD2,
-    },
-    ModeCode {
-        code: 0x21,
-        mode: Mode::UsbD2,
-    },
-    ModeCode {
-        code: 0x22,
-        mode: Mode::LsbD3,
-    },
-    ModeCode {
-        code: 0x23,
-        mode: Mode::UsbD3,
     },
 ];
 
@@ -1233,7 +1053,6 @@ impl IcomCivRadio {
     fn mode_map(&self) -> &'static [ModeCode] {
         match self.descriptor().mode_family {
             ModeFamily::Generic | ModeFamily::Icom7800 => &MODE_MAP_GENERIC,
-            ModeFamily::F8101 => &MODE_MAP_F8101,
         }
     }
 
