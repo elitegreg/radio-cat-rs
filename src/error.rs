@@ -37,16 +37,25 @@ pub enum RadioError {
     #[error("unsupported radio kind `{0}`")]
     UnknownRadio(String),
 
-    #[error("unsupported Elecraft mode code `{0}`")]
-    UnsupportedMode(u8),
+    #[error("unsupported mode code `{0}`")]
+    UnsupportedModeCode(String),
+
+    #[error("mode `{mode}` is not supported by radio profile `{radio}`")]
+    UnsupportedModeForRadio { mode: String, radio: &'static str },
+
+    #[error("operation `{operation}` is not supported by radio profile `{radio}`")]
+    UnsupportedOperation {
+        operation: &'static str,
+        radio: &'static str,
+    },
 
     #[error("unsupported mode `{0}`")]
     InvalidMode(String),
 
-    #[error("frequency {0} Hz is outside the supported range of 100000-54000000 Hz")]
+    #[error("frequency {0} Hz is outside the supported range for this radio profile")]
     FrequencyOutOfRange(u64),
 
-    #[error("CW speed {0} WPM is outside the supported range of 8-100 WPM")]
+    #[error("CW speed {0} WPM is outside the supported range for this radio profile")]
     CwSpeedOutOfRange(u16),
 
     #[error("CW text may be at most 60 bytes, got {0}")]

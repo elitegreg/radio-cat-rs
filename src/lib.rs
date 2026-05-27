@@ -1,7 +1,7 @@
 mod error;
 mod factory;
 mod frequency;
-mod generic_elecraft;
+mod kenwood;
 mod mode;
 mod transport;
 
@@ -10,7 +10,7 @@ use async_trait::async_trait;
 pub use error::{RadioError, Result};
 pub use factory::{create_radio, supported_radio_kinds, RadioKind};
 pub use frequency::Frequency;
-pub use generic_elecraft::GenericElecraft;
+pub use kenwood::KenwoodRadio;
 pub use mode::Mode;
 pub use transport::ConnectionConfig;
 

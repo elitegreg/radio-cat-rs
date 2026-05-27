@@ -18,8 +18,8 @@ fn usage() -> String {
     format!(
         "\
 Usage:
-  cargo run --example cli -- --radio generic-elecraft --serial /dev/ttyUSB0 [--baud 38400]
-  cargo run --example cli -- --radio generic-elecraft --tcp host:port
+  cargo run --example cli -- --radio kenwood-ts590 --serial /dev/ttyUSB0 [--baud 38400]
+  cargo run --example cli -- --radio kenwood-ts590 --tcp host:port
 
 Options:
   --radio <name>     Radio kind. Supported: {supported}
@@ -136,7 +136,7 @@ fn print_help() {
     println!("  get-freq            Read VFO A frequency");
     println!("  set-freq <hz>       Set VFO A frequency in Hz");
     println!("  get-mode            Read the current mode");
-    println!("  set-mode <mode>     Set mode: CW, USB, LSB, FM");
+    println!("  set-mode <mode>     Set mode (examples: CW, USB, LSB, FM, AM, RTTY, PKTUSB)");
     println!("  send-cw <text>      Queue CW text (max 60 ASCII bytes)");
     println!("  stop-cw             Abort queued CW and return to receive");
     println!("  get-cw-wpm          Read keyer speed in WPM");
