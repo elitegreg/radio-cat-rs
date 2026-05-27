@@ -1,15 +1,18 @@
 mod error;
 mod factory;
 mod frequency;
+mod icom_civ;
 mod kenwood;
 mod mode;
+mod options;
 mod transport;
 
 use async_trait::async_trait;
 
 pub use error::{RadioError, Result};
-pub use factory::{create_radio, supported_radio_kinds, RadioKind};
+pub use factory::{create_radio, create_radio_with_options, supported_radio_kinds, RadioKind};
 pub use frequency::Frequency;
+pub use icom_civ::{IcomCivRadio, IcomModel};
 pub use kenwood::KenwoodRadio;
 pub use mode::Mode;
 pub use transport::ConnectionConfig;

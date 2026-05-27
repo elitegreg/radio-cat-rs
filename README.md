@@ -1,56 +1,71 @@
 # radio-cat-rs
 
-`radio-cat-rs` is an async CAT control library focused on Kenwood-style command families.
+`radio-cat-rs` is an async CAT control library for profile-driven radio control.
 
-It currently implements a generalized Kenwood/Kenwood-like backend driven by protocol profiles, including Kenwood families, Elecraft K2/K3/K4 families, IC-10-derived profiles, and Kenwood-style Flex/PowerSDR emulations.
+The crate currently includes:
 
-## Supported operations
+- Kenwood/Kenwood-like CAT profiles (text/`;` protocol)
+- Icom CI-V profiles (binary framed protocol)
+- CI-V-compatible Xiegu profiles: `X108G`, `X6100`, `X6200`, `G90`, `X5105`
 
-The crate currently targets the `ControllableRadio` interface:
+## ControllableRadio scope
 
-- Get/set frequency (`FA...`)
-- Get/set mode (profile-specific mode maps)
-- Send/stop CW (profile-specific formatting)
-- Get/set CW keyer speed (`KS...`) where supported
+This crate currently focuses on the `ControllableRadio` interface:
 
-Some profiles in the Kenwood document do not expose keyer/CW features; those methods return `RadioError::UnsupportedOperation`.
+- get/set frequency
+- get/set mode
+- send/stop CW text
+- get/set CW keyer speed
 
-## Library example
+Unsupported operations for a given model return `RadioError::UnsupportedOperation`.
+
+## Create a radio
 
 ```rust
 use std::time::Duration;
 
-use radio_cat_rs::{create_radio, ConnectionConfig, Frequency, Mode, RadioKind};
+use radio_cat_rs::{create_radio, ConnectionConfig, RadioKind};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let radio = create_radio(
-        RadioKind::KenwoodTs590,
-        ConnectionConfig::serial("/dev/ttyUSB0", 38_400).with_timeout(Duration::from_secs(5)),
-    )
-    .await?;
-
-    let frequency = radio.get_frequency().await?;
-    println!("Current frequency: {frequency}");
-
-    radio.set_frequency(Frequency::from_hz(14_074_000)).await?;
-    radio.set_mode(Mode::Usb).await?;
-
-    Ok(())
-}
+let radio = create_radio(
+    RadioKind::KenwoodTs590,
+    ConnectionConfig::serial("/dev/ttyUSB0", 38_400).with_timeout(Duration::from_secs(5)),
+)
+.await?;
 ```
 
-## Radio kinds
+For Icom CI-V radios, use per-model kinds:
 
-Call `supported_radio_kinds()` or run the CLI help to see all canonical profile names.
+```rust
+use radio_cat_rs::{create_radio, ConnectionConfig, IcomModel, RadioKind};
 
-Aliases are also accepted for many model names from `docs/KENWOOD_PROTOCOLS.md` (for example `ts-590sg`, `k4`, `qcx`, `ts-440s`, `6xxx`, `powersdr`).
-
-## CLI example
-
-```bash
-cargo run --example cli -- --radio kenwood-ts590 --tcp 127.0.0.1:5002
+let radio = create_radio(
+    RadioKind::Icom(IcomModel::Ic7300),
+    ConnectionConfig::serial("/dev/ttyUSB0", 115_200),
+)
+.await?;
 ```
+
+## Generic options string
+
+Use `create_radio_with_options(...)` for backend/runtime options:
+
+```rust
+use radio_cat_rs::{create_radio_with_options, ConnectionConfig, IcomModel, RadioKind};
+
+let radio = create_radio_with_options(
+    RadioKind::Icom(IcomModel::Ic7300),
+    ConnectionConfig::serial("/dev/ttyUSB0", 115_200),
+    "civ.rig_addr=0x94,civ.controller_addr=0xE0,civ.retry_max=5,civ.retry_backoff_ms=30",
+)
+.await?;
+```
+
+Unknown option keys are ignored.
+
+## Radio names
+
+- Call `supported_radio_kinds()` for canonical names.
+- `FromStr` parsing also accepts many model aliases (e.g. `ic-7300`, `ic7610`, `ic-706mkiig`, `x6100`, `g90`).
 
 ## Development
 

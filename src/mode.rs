@@ -26,6 +26,15 @@ pub enum Mode {
     UsbD3,
     Dsb,
     Sam,
+    Wfm,
+    Ams,
+    P25,
+    DStar,
+    Dpmr,
+    NxdnVn,
+    NxdnN,
+    Dcr,
+    Dd,
     Tune,
 }
 
@@ -54,6 +63,15 @@ impl fmt::Display for Mode {
             Self::UsbD3 => "USBD3",
             Self::Dsb => "DSB",
             Self::Sam => "SAM",
+            Self::Wfm => "WFM",
+            Self::Ams => "AMS",
+            Self::P25 => "P25",
+            Self::DStar => "D-STAR",
+            Self::Dpmr => "DPMR",
+            Self::NxdnVn => "NXDN-VN",
+            Self::NxdnN => "NXDN-N",
+            Self::Dcr => "DCR",
+            Self::Dd => "DD",
             Self::Tune => "TUNE",
         };
 
@@ -90,6 +108,15 @@ impl FromStr for Mode {
             "usbd3" => Ok(Self::UsbD3),
             "dsb" => Ok(Self::Dsb),
             "sam" => Ok(Self::Sam),
+            "wfm" => Ok(Self::Wfm),
+            "ams" => Ok(Self::Ams),
+            "p25" => Ok(Self::P25),
+            "dstar" => Ok(Self::DStar),
+            "dpmr" => Ok(Self::Dpmr),
+            "nxdnvn" => Ok(Self::NxdnVn),
+            "nxdnn" => Ok(Self::NxdnN),
+            "dcr" => Ok(Self::Dcr),
+            "dd" => Ok(Self::Dd),
             "tune" => Ok(Self::Tune),
             _ => Err(RadioError::InvalidMode(value.to_string())),
         }
@@ -121,5 +148,7 @@ mod tests {
         assert_eq!("digu".parse::<Mode>().unwrap(), Mode::PktUsb);
         assert_eq!("lsbd2".parse::<Mode>().unwrap(), Mode::LsbD2);
         assert_eq!("sam".parse::<Mode>().unwrap(), Mode::Sam);
+        assert_eq!("d-star".parse::<Mode>().unwrap(), Mode::DStar);
+        assert_eq!("nxdn-vn".parse::<Mode>().unwrap(), Mode::NxdnVn);
     }
 }

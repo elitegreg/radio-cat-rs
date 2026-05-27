@@ -52,6 +52,18 @@ pub enum RadioError {
     #[error("unsupported mode `{0}`")]
     InvalidMode(String),
 
+    #[error("invalid option `{key}` with value `{value}`")]
+    InvalidOption { key: String, value: String },
+
+    #[error("CI-V command rejected by radio (NAK)")]
+    CivNak,
+
+    #[error("CI-V bus collision after retry budget was exhausted")]
+    CivCollision,
+
+    #[error("CI-V protocol error: {0}")]
+    CivProtocol(String),
+
     #[error("frequency {0} Hz is outside the supported range for this radio profile")]
     FrequencyOutOfRange(u64),
 
@@ -61,7 +73,7 @@ pub enum RadioError {
     #[error("CW text may be at most 60 bytes, got {0}")]
     CwTextTooLong(usize),
 
-    #[error("CW text must be ASCII and may not contain `;`, carriage returns, or line feeds")]
+    #[error("CW text must be ASCII and may not contain carriage returns or line feeds")]
     InvalidCwText,
 }
 
