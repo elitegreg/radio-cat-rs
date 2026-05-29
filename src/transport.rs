@@ -1,10 +1,10 @@
-use std::{path::PathBuf, time::Duration};
+use std::{future::poll_fn, io, path::PathBuf, pin::Pin, task::Poll, time::Duration};
 
 use async_trait::async_trait;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 use tokio_serial::SerialPortBuilderExt;
 use tracing::{debug, trace};
 
@@ -75,6 +75,16 @@ impl ConnectionConfig {
 #[async_trait]
 pub(crate) trait CommandIo: Send + Sync {
     async fn send(&self, command: &str) -> Result<()>;
+    async fn send_with_optional_response(
+        &self,
+        command: &str,
+        response_wait: Duration,
+    ) -> Result<Option<String>> {
+        let _ = response_wait;
+        self.send(command).await?;
+        Ok(None)
+    }
+
     async fn query(&self, command: &str) -> Result<String>;
 }
 
@@ -165,6 +175,55 @@ impl CatTransport {
         trace!(response, timeout = ?timeout_duration, "received CAT response");
         Ok(response)
     }
+
+    async fn read_available_response_locked<T>(io: &mut T) -> Result<Option<String>>
+    where
+        T: AsyncRead + Unpin + ?Sized,
+    {
+        let mut response = Vec::new();
+
+        while let Some(byte) = Self::try_read_byte_locked(io).await? {
+            response.push(byte);
+
+            if byte == b';' {
+                break;
+            }
+        }
+
+        if response.is_empty() {
+            return Ok(None);
+        }
+
+        let response = String::from_utf8(response)?;
+        trace!(response, "received optional CAT response");
+        Ok(Some(response))
+    }
+
+    async fn try_read_byte_locked<T>(io: &mut T) -> Result<Option<u8>>
+    where
+        T: AsyncRead + Unpin + ?Sized,
+    {
+        poll_fn(|cx| {
+            let mut byte = [0_u8; 1];
+            let mut read_buf = ReadBuf::new(&mut byte);
+
+            match Pin::new(&mut *io).poll_read(cx, &mut read_buf) {
+                Poll::Ready(Ok(())) => {
+                    if read_buf.filled().is_empty() {
+                        Poll::Ready(Err(RadioError::ConnectionClosed))
+                    } else {
+                        Poll::Ready(Ok(Some(read_buf.filled()[0])))
+                    }
+                }
+                Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                    Poll::Ready(Ok(None))
+                }
+                Poll::Ready(Err(error)) => Poll::Ready(Err(RadioError::Io(error))),
+                Poll::Pending => Poll::Ready(Ok(None)),
+            }
+        })
+        .await
+    }
 }
 
 #[async_trait]
@@ -172,6 +231,17 @@ impl CommandIo for CatTransport {
     async fn send(&self, command: &str) -> Result<()> {
         let mut io = self.io.lock().await;
         Self::write_locked(&mut *io, command, self.timeout).await
+    }
+
+    async fn send_with_optional_response(
+        &self,
+        command: &str,
+        response_wait: Duration,
+    ) -> Result<Option<String>> {
+        let mut io = self.io.lock().await;
+        Self::write_locked(&mut *io, command, self.timeout).await?;
+        sleep(response_wait).await;
+        Self::read_available_response_locked(&mut *io).await
     }
 
     async fn query(&self, command: &str) -> Result<String> {
@@ -208,5 +278,50 @@ mod tests {
             }
             ConnectionConfig::Tcp { .. } => panic!("expected serial config"),
         }
+    }
+
+    #[tokio::test]
+    async fn send_with_optional_response_reads_ready_response() {
+        let (client, mut peer) = tokio::io::duplex(64);
+        let transport = CatTransport {
+            io: Mutex::new(Box::new(client)),
+            timeout: Duration::from_secs(1),
+        };
+
+        peer.write_all(b"?;").await.unwrap();
+
+        let response = transport
+            .send_with_optional_response("MD2;", Duration::ZERO)
+            .await
+            .unwrap();
+
+        let mut command = [0_u8; 4];
+        peer.read_exact(&mut command).await.unwrap();
+
+        assert_eq!(response.as_deref(), Some("?;"));
+        assert_eq!(&command, b"MD2;");
+    }
+
+    #[tokio::test]
+    async fn send_with_optional_response_returns_none_without_ready_data() {
+        let (client, mut peer) = tokio::io::duplex(64);
+        let transport = CatTransport {
+            io: Mutex::new(Box::new(client)),
+            timeout: Duration::from_secs(1),
+        };
+
+        let response = tokio::time::timeout(
+            Duration::from_millis(100),
+            transport.send_with_optional_response("MD2;", Duration::ZERO),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let mut command = [0_u8; 4];
+        peer.read_exact(&mut command).await.unwrap();
+
+        assert_eq!(response, None);
+        assert_eq!(&command, b"MD2;");
     }
 }

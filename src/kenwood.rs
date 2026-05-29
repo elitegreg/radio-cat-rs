@@ -1,4 +1,4 @@
-use std::{fmt, num::ParseIntError, str::FromStr, sync::Arc};
+use std::{fmt, num::ParseIntError, str::FromStr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use tracing::debug;
@@ -12,6 +12,7 @@ const MAX_FREQUENCY_HZ: u64 = 99_999_999_999;
 const MIN_CW_WPM: u16 = 1;
 const MAX_CW_WPM: u16 = 999;
 const MAX_CW_TEXT_BYTES: usize = 60;
+const POST_SEND_RESPONSE_WAIT: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum KenwoodProfile {
@@ -1311,6 +1312,24 @@ impl KenwoodRadio {
             })
         }
     }
+
+    async fn send_command(&self, command: &str) -> Result<()> {
+        let response = self
+            .io
+            .send_with_optional_response(command, POST_SEND_RESPONSE_WAIT)
+            .await?;
+
+        if let Some(response) = response {
+            if response.contains('?') {
+                return Err(RadioError::CommandRejected {
+                    command: command.to_string(),
+                    response,
+                });
+            }
+        }
+
+        Ok(())
+    }
 }
 
 fn normalize_mode_code(code: &str) -> String {
@@ -1340,7 +1359,7 @@ impl ControllableRadio for KenwoodRadio {
 
     async fn set_frequency(&self, frequency: Frequency) -> Result<()> {
         let command = self.format_frequency_set(frequency)?;
-        self.io.send(&command).await
+        self.send_command(&command).await
     }
 
     async fn get_mode(&self) -> Result<Mode> {
@@ -1350,13 +1369,13 @@ impl ControllableRadio for KenwoodRadio {
 
     async fn set_mode(&self, mode: Mode) -> Result<()> {
         let command = self.format_mode_set(mode)?;
-        self.io.send(&command).await
+        self.send_command(&command).await
     }
 
     async fn send_cw(&self, text: &str) -> Result<()> {
         let commands = self.format_cw_text(text)?;
         for command in commands {
-            self.io.send(&command).await?;
+            self.send_command(&command).await?;
         }
 
         Ok(())
@@ -1370,7 +1389,7 @@ impl ControllableRadio for KenwoodRadio {
             });
         };
 
-        self.io.send(stop_style.command()).await
+        self.send_command(stop_style.command()).await
     }
 
     async fn get_cw_wpm(&self) -> Result<u16> {
@@ -1382,7 +1401,7 @@ impl ControllableRadio for KenwoodRadio {
     async fn set_cw_wpm(&self, wpm: u16) -> Result<()> {
         self.check_keyer_support("set-cw-wpm")?;
         let command = self.format_cw_speed_set(wpm)?;
-        self.io.send(&command).await
+        self.send_command(&command).await
     }
 }
 
@@ -1398,6 +1417,7 @@ mod tests {
     struct MockIo {
         sent: Mutex<Vec<String>>,
         responses: Mutex<VecDeque<(String, String)>>,
+        send_responses: Mutex<VecDeque<String>>,
     }
 
     impl MockIo {
@@ -1406,6 +1426,13 @@ mod tests {
                 .lock()
                 .await
                 .push_back((command.to_string(), response.to_string()));
+        }
+
+        async fn push_send_response(&self, response: &str) {
+            self.send_responses
+                .lock()
+                .await
+                .push_back(response.to_string());
         }
 
         async fn sent_commands(&self) -> Vec<String> {
@@ -1418,6 +1445,15 @@ mod tests {
         async fn send(&self, command: &str) -> Result<()> {
             self.sent.lock().await.push(command.to_string());
             Ok(())
+        }
+
+        async fn send_with_optional_response(
+            &self,
+            command: &str,
+            _response_wait: Duration,
+        ) -> Result<Option<String>> {
+            self.sent.lock().await.push(command.to_string());
+            Ok(self.send_responses.lock().await.pop_front())
         }
 
         async fn query(&self, command: &str) -> Result<String> {
@@ -1511,6 +1547,23 @@ mod tests {
                 operation: "get-cw-wpm",
                 ..
             }
+        ));
+    }
+
+    #[tokio::test]
+    async fn fails_send_when_optional_response_contains_question_mark() {
+        let io = Arc::new(MockIo::default());
+        io.push_send_response("?;").await;
+        let radio = KenwoodRadio::from_io(io, KenwoodProfile::KenwoodTs590);
+
+        let error = radio.set_mode(Mode::Usb).await.unwrap_err();
+
+        assert!(matches!(
+            error,
+            RadioError::CommandRejected {
+                command,
+                response,
+            } if command == "MD2;" && response == "?;"
         ));
     }
 }

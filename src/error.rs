@@ -34,6 +34,9 @@ pub enum RadioError {
         response: String,
     },
 
+    #[error("CAT command `{command}` rejected by radio: `{response}`")]
+    CommandRejected { command: String, response: String },
+
     #[error("unsupported radio kind `{0}`")]
     UnknownRadio(String),
 
