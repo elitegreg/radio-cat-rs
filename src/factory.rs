@@ -1,5 +1,6 @@
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
+use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::debug;
 
 use crate::{
@@ -7,6 +8,7 @@ use crate::{
     icom_civ::{IcomCivRadio, IcomModel},
     kenwood::KenwoodModel,
     options::RadioOptions,
+    transport::BoxedPort,
     yaesu_newcat::{YaesuModel, YaesuNewCatRadio},
     ConnectionConfig, ControllableRadio, KenwoodRadio, RadioError, Result,
 };
@@ -171,13 +173,6 @@ impl RadioKind {
             Self::FlexNative(model) => model.display_name(),
         }
     }
-
-    fn kenwood_model(self) -> Option<KenwoodModel> {
-        match self {
-            Self::Kenwood(model) => Some(model),
-            Self::Icom(_) | Self::Yaesu(_) | Self::FlexNative(_) => None,
-        }
-    }
 }
 
 impl FromStr for RadioKind {
@@ -211,13 +206,6 @@ pub const fn supported_radio_kinds() -> &'static [RadioKind] {
 pub async fn create_radio(
     kind: RadioKind,
     connection: ConnectionConfig,
-) -> Result<Box<dyn ControllableRadio>> {
-    create_radio_with_options(kind, connection, "").await
-}
-
-pub async fn create_radio_with_options(
-    kind: RadioKind,
-    connection: ConnectionConfig,
     options: &str,
 ) -> Result<Box<dyn ControllableRadio>> {
     debug!(
@@ -229,13 +217,10 @@ pub async fn create_radio_with_options(
 
     let parsed_options = RadioOptions::parse(options);
 
-    if let Some(model) = kind.kenwood_model() {
-        return Ok(Box::new(
-            KenwoodRadio::connect(connection, model.profile()).await?,
-        ));
-    }
-
     match kind {
+        RadioKind::Kenwood(model) => Ok(Box::new(
+            KenwoodRadio::connect(connection, model, &parsed_options).await?,
+        )),
         RadioKind::Icom(model) => Ok(Box::new(
             IcomCivRadio::connect(connection, model, &parsed_options).await?,
         )),
@@ -245,15 +230,58 @@ pub async fn create_radio_with_options(
         RadioKind::FlexNative(model) => Ok(Box::new(
             FlexNativeRadio::connect(connection, model, &parsed_options).await?,
         )),
-        _ => {
-            unreachable!("all non-Icom/Yaesu/Flex-native kinds are mapped through kenwood_model")
+    }
+}
+
+pub async fn create_radio_with_io<T>(
+    kind: RadioKind,
+    io: T,
+    timeout: Duration,
+    options: &str,
+) -> Result<Box<dyn ControllableRadio>>
+where
+    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    debug!(
+        radio_kind = kind.as_str(),
+        options,
+        timeout = ?timeout,
+        "creating radio with caller-provided IO"
+    );
+
+    let parsed_options = RadioOptions::parse(options);
+
+    match kind {
+        RadioKind::Kenwood(model) => {
+            let io: BoxedPort = Box::new(io);
+            Ok(Box::new(
+                KenwoodRadio::connect_io(io, timeout, model, &parsed_options).await?,
+            ))
         }
+        RadioKind::Icom(model) => {
+            let io: BoxedPort = Box::new(io);
+            Ok(Box::new(
+                IcomCivRadio::connect_io(io, timeout, model, &parsed_options).await?,
+            ))
+        }
+        RadioKind::Yaesu(model) => {
+            let io: BoxedPort = Box::new(io);
+            Ok(Box::new(
+                YaesuNewCatRadio::connect_io(io, timeout, model, &parsed_options).await?,
+            ))
+        }
+        RadioKind::FlexNative(model) => Err(RadioError::UnsupportedOperation {
+            operation: "native-flex-requires-tcp",
+            radio: model.as_str(),
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{supported_radio_kinds, RadioKind};
+    use std::time::Duration;
+
+    use super::{create_radio_with_io, supported_radio_kinds, RadioKind};
     use crate::{FlexNativeModel, IcomModel, KenwoodModel, YaesuModel};
 
     #[test]
@@ -328,5 +356,65 @@ mod tests {
             "Xiegu X6100"
         );
         assert_eq!(RadioKind::Icom(IcomModel::G90).display_name(), "Xiegu G90");
+    }
+
+    #[tokio::test]
+    async fn creates_text_cat_radio_from_caller_io() {
+        let (io, _peer) = tokio::io::duplex(64);
+
+        create_radio_with_io(
+            RadioKind::Kenwood(KenwoodModel::K4),
+            io,
+            Duration::from_secs(2),
+            "",
+        )
+        .await
+        .expect("radio is created from caller-provided IO");
+    }
+
+    #[tokio::test]
+    async fn creates_yaesu_radio_from_caller_io() {
+        let (io, _peer) = tokio::io::duplex(64);
+
+        create_radio_with_io(
+            RadioKind::Yaesu(YaesuModel::Ft991),
+            io,
+            Duration::from_secs(2),
+            "",
+        )
+        .await
+        .expect("radio is created from caller-provided IO");
+    }
+
+    #[tokio::test]
+    async fn creates_icom_radio_from_caller_io() {
+        let (io, _peer) = tokio::io::duplex(64);
+
+        create_radio_with_io(
+            RadioKind::Icom(IcomModel::Ic7300),
+            io,
+            Duration::from_secs(2),
+            "",
+        )
+        .await
+        .expect("radio is created from caller-provided IO");
+    }
+
+    #[tokio::test]
+    async fn rejects_flex_native_radio_from_caller_io() {
+        let (io, _peer) = tokio::io::duplex(64);
+
+        let result = create_radio_with_io(
+            RadioKind::FlexNative(FlexNativeModel::SliceA),
+            io,
+            Duration::from_secs(2),
+            "",
+        )
+        .await;
+
+        let Err(error) = result else {
+            panic!("native Flex requires TCP");
+        };
+        assert!(error.to_string().contains("native-flex-requires-tcp"));
     }
 }

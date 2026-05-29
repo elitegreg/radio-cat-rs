@@ -2,14 +2,13 @@ use std::{fmt, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout};
-use tokio_serial::SerialPortBuilderExt;
 use tracing::{debug, trace};
 
 use crate::{
-    options::RadioOptions, ConnectionConfig, ControllableRadio, Frequency, Mode, RadioError, Result,
+    options::RadioOptions, transport::BoxedPort, ConnectionConfig, ControllableRadio, Frequency,
+    Mode, RadioError, Result,
 };
 
 const CIV_PREAMBLE: u8 = 0xFE;
@@ -29,10 +28,6 @@ const MAX_CW_WPM: u16 = 255;
 const MAX_FREQUENCY_HZ_5_BCD: u64 = 99_999_999_99;
 const MAX_FREQUENCY_HZ_4_BCD: u64 = 99_999_999;
 const KEYER_SPEED_SUBCOMMAND: u8 = 0x0C;
-
-trait AsyncPort: AsyncRead + AsyncWrite + Send + Unpin {}
-impl<T> AsyncPort for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
-type BoxedPort = Box<dyn AsyncPort>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum IcomModel {
@@ -768,47 +763,11 @@ struct CivTransport {
 }
 
 impl CivTransport {
-    async fn open(connection: &ConnectionConfig) -> Result<Self> {
-        let timeout_duration = match connection {
-            ConnectionConfig::Serial { timeout, .. } | ConnectionConfig::Tcp { timeout, .. } => {
-                *timeout
-            }
-        };
-
-        let io: BoxedPort = match connection {
-            ConnectionConfig::Serial {
-                path, baud_rate, ..
-            } => {
-                debug!(
-                    path = %path.display(),
-                    baud_rate = *baud_rate,
-                    timeout = ?timeout_duration,
-                    "opening CI-V serial transport"
-                );
-                let stream = tokio_serial::new(path.to_string_lossy().into_owned(), *baud_rate)
-                    .open_native_async()?;
-                Box::new(stream)
-            }
-            ConnectionConfig::Tcp {
-                host,
-                port,
-                timeout: connect_timeout,
-                ..
-            } => {
-                debug!(host, port = *port, timeout = ?connect_timeout, "opening CI-V tcp transport");
-                let stream = timeout(*connect_timeout, TcpStream::connect((host.as_str(), *port)))
-                    .await
-                    .map_err(|_| RadioError::Timeout {
-                        operation: "TCP connect",
-                    })??;
-                Box::new(stream)
-            }
-        };
-
-        Ok(Self {
+    fn from_io(io: BoxedPort, timeout: Duration) -> Self {
+        Self {
             io: Mutex::new(io),
-            timeout: timeout_duration,
-        })
+            timeout,
+        }
     }
 
     fn build_frame(addressing: CivAddressing, command_data: &[u8]) -> Vec<u8> {
@@ -1007,6 +966,21 @@ impl IcomCivRadio {
         model: IcomModel,
         options: &RadioOptions,
     ) -> Result<Self> {
+        debug!(
+            ?connection,
+            model = model.info().name,
+            "connecting Icom CI-V radio"
+        );
+        let (io, timeout) = connection.open_io().await?;
+        Self::connect_io(io, timeout, model, options).await
+    }
+
+    pub(crate) async fn connect_io(
+        io: BoxedPort,
+        timeout: Duration,
+        model: IcomModel,
+        options: &RadioOptions,
+    ) -> Result<Self> {
         let info = model.info();
         let profile = info.profile;
 
@@ -1018,7 +992,7 @@ impl IcomCivRadio {
         let retry_backoff_ms = parse_u64_option(options, "civ.retry_backoff_ms")?
             .unwrap_or(CIV_DEFAULT_RETRY_BACKOFF_MS);
 
-        let transport = Arc::new(CivTransport::open(&connection).await?) as Arc<dyn CivIo>;
+        let transport = Arc::new(CivTransport::from_io(io, timeout)) as Arc<dyn CivIo>;
 
         debug!(
             model = info.name,
@@ -1027,7 +1001,8 @@ impl IcomCivRadio {
             controller_addr = format_args!("0x{controller_addr:02X}"),
             retry_max,
             retry_backoff_ms,
-            "connected Icom CI-V radio"
+            timeout = ?timeout,
+            "connected Icom CI-V radio over IO"
         );
 
         Ok(Self {

@@ -10,11 +10,11 @@ use tracing::{debug, trace};
 
 use crate::{RadioError, Result};
 
-trait AsyncPort: AsyncRead + AsyncWrite + Send + Unpin {}
+pub(crate) trait AsyncPort: AsyncRead + AsyncWrite + Send + Unpin {}
 
 impl<T> AsyncPort for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 
-type BoxedPort = Box<dyn AsyncPort>;
+pub(crate) type BoxedPort = Box<dyn AsyncPort>;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,6 +70,36 @@ impl ConnectionConfig {
             Self::Serial { timeout, .. } | Self::Tcp { timeout, .. } => *timeout,
         }
     }
+
+    pub(crate) async fn open_io(&self) -> Result<(BoxedPort, Duration)> {
+        let timeout_duration = self.timeout();
+        let io: BoxedPort = match self {
+            ConnectionConfig::Serial {
+                path, baud_rate, ..
+            } => {
+                debug!(path = %path.display(), baud_rate = *baud_rate, timeout = ?timeout_duration, "opening serial connection");
+                let stream = tokio_serial::new(path.to_string_lossy().into_owned(), *baud_rate)
+                    .open_native_async()?;
+                Box::new(stream)
+            }
+            ConnectionConfig::Tcp {
+                host,
+                port,
+                timeout: connect_timeout,
+                ..
+            } => {
+                debug!(host, port = *port, timeout = ?connect_timeout, "opening TCP connection");
+                let stream = timeout(*connect_timeout, TcpStream::connect((host.as_str(), *port)))
+                    .await
+                    .map_err(|_| RadioError::Timeout {
+                        operation: "TCP connect",
+                    })??;
+                Box::new(stream)
+            }
+        };
+
+        Ok((io, timeout_duration))
+    }
 }
 
 #[async_trait]
@@ -94,38 +124,11 @@ pub(crate) struct CatTransport {
 }
 
 impl CatTransport {
-    pub(crate) async fn open(connection: &ConnectionConfig) -> Result<Self> {
-        let timeout_duration = connection.timeout();
-        debug!(?connection, timeout = ?timeout_duration, "opening CAT transport");
-        let io: BoxedPort = match connection {
-            ConnectionConfig::Serial {
-                path, baud_rate, ..
-            } => {
-                debug!(path = %path.display(), baud_rate = *baud_rate, "opening serial CAT transport");
-                let stream = tokio_serial::new(path.to_string_lossy().into_owned(), *baud_rate)
-                    .open_native_async()?;
-                Box::new(stream)
-            }
-            ConnectionConfig::Tcp {
-                host,
-                port,
-                timeout: connect_timeout,
-                ..
-            } => {
-                debug!(host, port = *port, timeout = ?connect_timeout, "opening TCP CAT transport");
-                let stream = timeout(*connect_timeout, TcpStream::connect((host.as_str(), *port)))
-                    .await
-                    .map_err(|_| RadioError::Timeout {
-                        operation: "TCP connect",
-                    })??;
-                Box::new(stream)
-            }
-        };
-
-        Ok(Self {
+    pub(crate) fn from_io(io: BoxedPort, timeout: Duration) -> Self {
+        Self {
             io: Mutex::new(io),
-            timeout: timeout_duration,
-        })
+            timeout,
+        }
     }
 
     async fn write_locked<T>(io: &mut T, command: &str, timeout_duration: Duration) -> Result<()>

@@ -31,6 +31,7 @@ use radio_cat_rs::{create_radio, ConnectionConfig, KenwoodModel, RadioKind};
 let radio = create_radio(
     RadioKind::Kenwood(KenwoodModel::Ts590s),
     ConnectionConfig::serial("/dev/ttyUSB0", 38_400).with_timeout(Duration::from_secs(5)),
+    "",
 )
 .await?;
 ```
@@ -43,18 +44,19 @@ use radio_cat_rs::{create_radio, ConnectionConfig, IcomModel, RadioKind};
 let radio = create_radio(
     RadioKind::Icom(IcomModel::Ic7300),
     ConnectionConfig::serial("/dev/ttyUSB0", 115_200),
+    "",
 )
 .await?;
 ```
 
 ## Generic options string
 
-Use `create_radio_with_options(...)` for backend/runtime options:
+Pass backend/runtime options as the final `create_radio(...)` argument:
 
 ```rust
-use radio_cat_rs::{create_radio_with_options, ConnectionConfig, IcomModel, RadioKind};
+use radio_cat_rs::{create_radio, ConnectionConfig, IcomModel, RadioKind};
 
-let radio = create_radio_with_options(
+let radio = create_radio(
     RadioKind::Icom(IcomModel::Ic7300),
     ConnectionConfig::serial("/dev/ttyUSB0", 115_200),
     "civ.rig_addr=0x94,civ.controller_addr=0xE0,civ.retry_max=5,civ.retry_backoff_ms=30",

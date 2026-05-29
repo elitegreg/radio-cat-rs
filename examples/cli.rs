@@ -251,7 +251,7 @@ async fn repl(radio: &dyn ControllableRadio) -> Result<(), Box<dyn std::error::E
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliArgs::parse(env::args().skip(1)).map_err(io::Error::other)?;
-    let radio = create_radio(args.radio, args.connection).await?;
+    let radio = create_radio(args.radio, args.connection, "").await?;
 
     println!(
         "Connected to {} ({}). Type ? for help.",

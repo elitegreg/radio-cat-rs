@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use tracing::debug;
 
 use crate::{
-    transport::{CatTransport, CommandIo},
+    options::RadioOptions,
+    transport::{BoxedPort, CatTransport, CommandIo},
     ConnectionConfig, ControllableRadio, Frequency, Mode, RadioError, Result,
 };
 
@@ -1153,15 +1154,27 @@ impl fmt::Debug for KenwoodRadio {
 impl KenwoodRadio {
     pub(crate) async fn connect(
         connection: ConnectionConfig,
-        profile: KenwoodProfile,
+        model: KenwoodModel,
+        options: &RadioOptions,
     ) -> Result<Self> {
+        debug!(?connection, ?model, "connecting radio");
+        let (io, timeout) = connection.open_io().await?;
+        Self::connect_io(io, timeout, model, options).await
+    }
+
+    pub(crate) async fn connect_io(
+        io: BoxedPort,
+        timeout: Duration,
+        model: KenwoodModel,
+        _options: &RadioOptions,
+    ) -> Result<Self> {
+        let profile = model.profile();
         debug!(
-            ?connection,
             profile = profile.descriptor().name,
-            "connecting radio"
+            timeout = ?timeout,
+            "connecting radio over IO"
         );
-        let transport = CatTransport::open(&connection).await?;
-        let io: Arc<dyn CommandIo> = Arc::new(transport);
+        let io: Arc<dyn CommandIo> = Arc::new(CatTransport::from_io(io, timeout));
 
         Ok(Self { io, profile })
     }

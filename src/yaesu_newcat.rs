@@ -6,7 +6,7 @@ use tracing::debug;
 
 use crate::{
     options::RadioOptions,
-    transport::{CatTransport, CommandIo},
+    transport::{BoxedPort, CatTransport, CommandIo},
     ConnectionConfig, ControllableRadio, Frequency, Mode, RadioError, Result,
 };
 
@@ -449,22 +449,41 @@ impl YaesuNewCatRadio {
         options: &RadioOptions,
     ) -> Result<Self> {
         let profile = model.info().profile;
-        let retry_max = parse_u8_option(options, "yaesu.retry_max")?.unwrap_or(DEFAULT_RETRY_MAX);
-        let retry_backoff_ms = parse_u64_option(options, "yaesu.retry_backoff_ms")?
-            .unwrap_or(DEFAULT_RETRY_BACKOFF_MS);
-        let stop_cw_cmd = normalize_stop_cw_command(options.get("yaesu.stop_cw_cmd"));
-
-        let transport = CatTransport::open(&connection).await?;
-        let io: Arc<dyn CommandIo> = Arc::new(transport);
 
         debug!(
             ?connection,
             model = model.as_str(),
             profile = profile.descriptor().name,
+            "connecting Yaesu New-CAT radio"
+        );
+
+        let (io, timeout) = connection.open_io().await?;
+        Self::connect_io(io, timeout, model, options).await
+    }
+
+    pub(crate) async fn connect_io(
+        io: BoxedPort,
+        timeout: Duration,
+        model: YaesuModel,
+        options: &RadioOptions,
+    ) -> Result<Self> {
+        let profile = model.info().profile;
+        let retry_max = parse_u8_option(options, "yaesu.retry_max")?.unwrap_or(DEFAULT_RETRY_MAX);
+        let retry_backoff_ms = parse_u64_option(options, "yaesu.retry_backoff_ms")?
+            .unwrap_or(DEFAULT_RETRY_BACKOFF_MS);
+        let stop_cw_cmd = normalize_stop_cw_command(options.get("yaesu.stop_cw_cmd"));
+
+        let transport = CatTransport::from_io(io, timeout);
+        let io: Arc<dyn CommandIo> = Arc::new(transport);
+
+        debug!(
+            model = model.as_str(),
+            profile = profile.descriptor().name,
             retry_max,
             retry_backoff_ms,
             stop_cw_cmd = stop_cw_cmd.as_deref().unwrap_or("<unset>"),
-            "connected Yaesu New-CAT radio"
+            timeout = ?timeout,
+            "connected Yaesu New-CAT radio over IO"
         );
 
         Ok(Self {
