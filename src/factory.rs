@@ -4,6 +4,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::debug;
 
 use crate::{
+    dummy::DummyRadio,
     flex_native::{FlexNativeModel, FlexNativeRadio},
     icom_civ::{IcomCivRadio, IcomModel},
     kenwood::KenwoodModel,
@@ -19,6 +20,7 @@ pub enum RadioKind {
     Icom(IcomModel),
     Yaesu(YaesuModel),
     FlexNative(FlexNativeModel),
+    Dummy,
 }
 
 impl RadioKind {
@@ -150,6 +152,7 @@ impl RadioKind {
         Self::FlexNative(FlexNativeModel::SliceF),
         Self::FlexNative(FlexNativeModel::SliceG),
         Self::FlexNative(FlexNativeModel::SliceH),
+        Self::Dummy,
     ];
 
     pub const fn all() -> &'static [Self] {
@@ -162,6 +165,7 @@ impl RadioKind {
             Self::Icom(model) => model.as_str(),
             Self::Yaesu(model) => model.as_str(),
             Self::FlexNative(model) => model.as_str(),
+            Self::Dummy => DummyRadio::as_str(),
         }
     }
 
@@ -171,6 +175,7 @@ impl RadioKind {
             Self::Icom(model) => model.display_name(),
             Self::Yaesu(model) => model.display_name(),
             Self::FlexNative(model) => model.display_name(),
+            Self::Dummy => DummyRadio::display_name().to_string(),
         }
     }
 }
@@ -193,6 +198,10 @@ impl FromStr for RadioKind {
 
         if let Some(model) = FlexNativeModel::from_alias(value) {
             return Ok(Self::FlexNative(model));
+        }
+
+        if DummyRadio::from_alias(value) {
+            return Ok(Self::Dummy);
         }
 
         Err(RadioError::UnknownRadio(value.to_string()))
@@ -230,6 +239,7 @@ pub async fn create_radio(
         RadioKind::FlexNative(model) => Ok(Box::new(
             FlexNativeRadio::connect(connection, model, &parsed_options).await?,
         )),
+        RadioKind::Dummy => Ok(Box::new(DummyRadio::new())),
     }
 }
 
@@ -274,6 +284,7 @@ where
             operation: "native-flex-requires-tcp",
             radio: model.as_str(),
         }),
+        RadioKind::Dummy => Ok(Box::new(DummyRadio::new())),
     }
 }
 
@@ -281,8 +292,10 @@ where
 mod tests {
     use std::time::Duration;
 
-    use super::{create_radio_with_io, supported_radio_kinds, RadioKind};
-    use crate::{FlexNativeModel, IcomModel, KenwoodModel, YaesuModel};
+    use super::{create_radio, create_radio_with_io, supported_radio_kinds, RadioKind};
+    use crate::{
+        ConnectionConfig, FlexNativeModel, Frequency, IcomModel, KenwoodModel, Mode, YaesuModel,
+    };
 
     #[test]
     fn lists_supported_radio_kinds() {
@@ -294,6 +307,7 @@ mod tests {
         assert!(kinds.contains(&RadioKind::Yaesu(YaesuModel::Ftdx101mp)));
         assert!(kinds.contains(&RadioKind::FlexNative(FlexNativeModel::SliceA)));
         assert!(kinds.contains(&RadioKind::FlexNative(FlexNativeModel::SliceH)));
+        assert!(kinds.contains(&RadioKind::Dummy));
     }
 
     #[test]
@@ -324,6 +338,8 @@ mod tests {
                 "flex-6xxx (kenwood compat.)",
                 RadioKind::Kenwood(KenwoodModel::Flex6xxx),
             ),
+            ("dummy", RadioKind::Dummy),
+            ("Dummy (test)", RadioKind::Dummy),
         ] {
             assert_eq!(alias.parse::<RadioKind>().unwrap(), expected);
         }
@@ -356,6 +372,7 @@ mod tests {
             "Xiegu X6100"
         );
         assert_eq!(RadioKind::Icom(IcomModel::G90).display_name(), "Xiegu G90");
+        assert_eq!(RadioKind::Dummy.display_name(), "Dummy (test)");
     }
 
     #[tokio::test]
@@ -398,6 +415,35 @@ mod tests {
         )
         .await
         .expect("radio is created from caller-provided IO");
+    }
+
+    #[tokio::test]
+    async fn creates_dummy_radio_and_persists_state() {
+        let radio = create_radio(
+            RadioKind::Dummy,
+            ConnectionConfig::serial("/dev/ttyDOES_NOT_EXIST", 9_600),
+            "",
+        )
+        .await
+        .expect("dummy radio is created without opening a transport");
+
+        assert_eq!(
+            radio.get_frequency().await.unwrap(),
+            Frequency::from_hz(14_000_000)
+        );
+        assert_eq!(radio.get_mode().await.unwrap(), Mode::Cw);
+
+        radio
+            .set_frequency(Frequency::from_hz(7_040_000))
+            .await
+            .unwrap();
+        radio.set_mode(Mode::Usb).await.unwrap();
+
+        assert_eq!(
+            radio.get_frequency().await.unwrap(),
+            Frequency::from_hz(7_040_000)
+        );
+        assert_eq!(radio.get_mode().await.unwrap(), Mode::Usb);
     }
 
     #[tokio::test]

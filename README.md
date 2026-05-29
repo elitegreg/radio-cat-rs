@@ -9,6 +9,7 @@ The crate currently includes:
 - CI-V-compatible Xiegu profiles: `X108G`, `X6100`, `X6200`, `G90`, `X5105`
 - Yaesu New-CAT profiles: `FT-450`, `FT-950`, `FT-2000`, `FTDX-1200`, `FTDX-3000`, `FTDX-5000`, `FTDX-9000`, `FTDX-9000 Old`, `FT-991`, `FT-891`, `FT-710`, `FTDX-10`, `FTDX-101D`, `FTDX-101MP`
 - Flex SmartSDR native slice profiles: `SmartSDR Slice A` through `SmartSDR Slice H`
+- Dummy in-memory test profile: `dummy` (`Dummy (test)`)
 
 ## ControllableRadio scope
 
@@ -81,9 +82,10 @@ Flex native options:
 ## Radio names
 
 - Call `supported_radio_kinds()` for canonical names; use `RadioKind::display_name()` for UI-friendly names.
-- `FromStr` parsing also accepts many model aliases (e.g. `ic-7300`, `ic7610`, `ic-706mkiig`, `x6100`, `g90`, `ft-991`, `ftdx101mp`, `smartsdr-slice-a`).
+- `FromStr` parsing also accepts many model aliases (e.g. `ic-7300`, `ic7610`, `ic-706mkiig`, `x6100`, `g90`, `ft-991`, `ftdx101mp`, `smartsdr-slice-a`, `dummy`).
 - The Kenwood-compatible Flex profile is named `flex-6xxx (kenwood compat.)`.
 - Native SmartSDR slice profiles are named `smartsdr-slice-<a..h> (native)`.
+- The dummy test profile is named `dummy` with display name `Dummy (test)`.
 
 ## Development
 

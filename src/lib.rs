@@ -1,3 +1,4 @@
+mod dummy;
 mod error;
 mod factory;
 mod flex_native;
@@ -11,6 +12,7 @@ mod yaesu_newcat;
 
 use async_trait::async_trait;
 
+pub use dummy::DummyRadio;
 pub use error::{RadioError, Result};
 pub use factory::{create_radio, create_radio_with_io, supported_radio_kinds, RadioKind};
 pub use flex_native::{FlexNativeModel, FlexNativeRadio};
