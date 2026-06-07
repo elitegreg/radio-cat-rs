@@ -3,17 +3,20 @@ use std::{fmt, sync::Arc};
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::{ControllableRadio, Frequency, Mode, Result};
+use crate::{ControllableRadio, Frequency, Mode, RadioError, Result};
 
 const DEFAULT_FREQUENCY_HZ: u64 = 14_000_000;
 const DEFAULT_MODE: Mode = Mode::Cw;
 const DEFAULT_CW_WPM: u16 = 20;
+const DEFAULT_RIT_HZ: i32 = 0;
+const MAX_RIT_OFFSET_HZ: i32 = 9_999;
 
 #[derive(Clone, Copy, Debug)]
 struct DummyState {
     frequency: Frequency,
     mode: Mode,
     cw_wpm: u16,
+    rit_hz: i32,
 }
 
 #[derive(Clone)]
@@ -49,6 +52,7 @@ impl DummyRadio {
                 frequency: Frequency::from_hz(DEFAULT_FREQUENCY_HZ),
                 mode: DEFAULT_MODE,
                 cw_wpm: DEFAULT_CW_WPM,
+                rit_hz: DEFAULT_RIT_HZ,
             })),
         }
     }
@@ -104,6 +108,24 @@ impl ControllableRadio for DummyRadio {
 
     async fn set_cw_wpm(&self, wpm: u16) -> Result<()> {
         self.state.lock().await.cw_wpm = wpm;
+        Ok(())
+    }
+
+    async fn get_rit(&self) -> Result<i32> {
+        Ok(self.state.lock().await.rit_hz)
+    }
+
+    async fn set_rit(&self, offset_hz: i32) -> Result<()> {
+        if !(-MAX_RIT_OFFSET_HZ..=MAX_RIT_OFFSET_HZ).contains(&offset_hz) {
+            return Err(RadioError::RitOffsetOutOfRange(offset_hz));
+        }
+
+        self.state.lock().await.rit_hz = offset_hz;
+        Ok(())
+    }
+
+    async fn clear_rit(&self) -> Result<()> {
+        self.state.lock().await.rit_hz = 0;
         Ok(())
     }
 }

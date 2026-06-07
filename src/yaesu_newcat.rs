@@ -14,6 +14,7 @@ const MAX_FREQUENCY_HZ: u64 = 99_999_999_999;
 const MIN_CW_WPM: u16 = 1;
 const MAX_CW_WPM: u16 = 999;
 const MAX_CW_TEXT_BYTES: usize = 60;
+const MAX_RIT_OFFSET_HZ: i32 = 9_999;
 
 const DEFAULT_RETRY_MAX: u8 = 3;
 const DEFAULT_RETRY_BACKOFF_MS: u64 = 25;
@@ -638,6 +639,37 @@ impl YaesuNewCatRadio {
 
         Ok(format!("KM1{text};"))
     }
+
+    fn validate_rit_offset(offset_hz: i32) -> Result<()> {
+        if (-MAX_RIT_OFFSET_HZ..=MAX_RIT_OFFSET_HZ).contains(&offset_hz) {
+            Ok(())
+        } else {
+            Err(RadioError::RitOffsetOutOfRange(offset_hz))
+        }
+    }
+
+    fn parse_if_rit_response(response: &str) -> Result<i32> {
+        let body = Self::response_body(response, "IF")?;
+        if body.len() < 23 {
+            return Err(RadioError::InvalidResponse {
+                command: "IF",
+                response: response.to_string(),
+            });
+        }
+
+        let offset = body[16..22]
+            .parse::<i32>()
+            .map_err(|source| RadioError::parse_int(response, source))?;
+        let rit_on = body.as_bytes().get(22).copied() == Some(b'1');
+        Ok(if rit_on { offset } else { 0 })
+    }
+
+    fn format_standard_rit_set(offset_hz: i32) -> Result<String> {
+        Self::validate_rit_offset(offset_hz)?;
+        let magnitude = offset_hz.unsigned_abs();
+        let prefix = if offset_hz < 0 { "RD" } else { "RU" };
+        Ok(format!("RC;{prefix}{magnitude:04};"))
+    }
 }
 
 #[async_trait]
@@ -754,6 +786,44 @@ impl ControllableRadio for YaesuNewCatRadio {
         Err(RadioError::RetriesExhausted {
             operation: "set-cw-wpm",
         })
+    }
+
+    async fn get_rit(&self) -> Result<i32> {
+        if self.model == YaesuModel::Ft710 {
+            return Err(RadioError::UnsupportedOperation {
+                operation: "get-rit",
+                radio: self.model.as_str(),
+            });
+        }
+
+        let response = self.query_with_retry("IF;", "get-rit").await?;
+        Self::parse_if_rit_response(&response)
+    }
+
+    async fn set_rit(&self, offset_hz: i32) -> Result<()> {
+        Self::validate_rit_offset(offset_hz)?;
+
+        if self.model == YaesuModel::Ft710 {
+            return Err(RadioError::UnsupportedOperation {
+                operation: "set-rit",
+                radio: self.model.as_str(),
+            });
+        }
+
+        self.io.send("RT1;").await?;
+        let command = Self::format_standard_rit_set(offset_hz)?;
+        self.io.send(&command).await
+    }
+
+    async fn clear_rit(&self) -> Result<()> {
+        if self.model == YaesuModel::Ft710 {
+            return Err(RadioError::UnsupportedOperation {
+                operation: "clear-rit",
+                radio: self.model.as_str(),
+            });
+        }
+
+        self.io.send("RC;").await
     }
 }
 

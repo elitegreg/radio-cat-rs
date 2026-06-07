@@ -16,6 +16,7 @@ const DEFAULT_RETRY_BACKOFF_MS: u64 = 25;
 const DEFAULT_VERIFY_TIMEOUT_MS: u64 = 2_000;
 
 const MAX_CW_TEXT_BYTES: usize = 120;
+const MAX_RIT_OFFSET_HZ: i32 = 9_999;
 
 type BoxedPort = Box<dyn AsyncPort>;
 
@@ -164,6 +165,8 @@ struct RetryPolicy {
 struct FlexState {
     frequency_hz: Option<u64>,
     mode: Option<Mode>,
+    rit_on: bool,
+    rit_freq_hz: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -503,8 +506,10 @@ impl FlexNativeRadio {
         let frequency_hz = find_key_value(payload, "RF_frequency")
             .and_then(|value| parse_frequency_value(value).ok());
         let mode = find_key_value(payload, "mode").and_then(mode_from_token);
+        let rit_on = find_key_value(payload, "rit_on").and_then(parse_bool_value);
+        let rit_freq_hz = find_key_value(payload, "rit_freq").and_then(parse_rit_freq_value);
 
-        if frequency_hz.is_none() && mode.is_none() {
+        if frequency_hz.is_none() && mode.is_none() && rit_on.is_none() && rit_freq_hz.is_none() {
             return;
         }
 
@@ -514,6 +519,12 @@ impl FlexNativeRadio {
         }
         if let Some(mode) = mode {
             state.mode = Some(mode);
+        }
+        if let Some(rit_on) = rit_on {
+            state.rit_on = rit_on;
+        }
+        if let Some(rit_freq_hz) = rit_freq_hz {
+            state.rit_freq_hz = rit_freq_hz;
         }
     }
 
@@ -558,6 +569,14 @@ impl FlexNativeRadio {
                 }
             })
             .collect())
+    }
+
+    fn validate_rit_offset(offset_hz: i32) -> Result<()> {
+        if (-MAX_RIT_OFFSET_HZ..=MAX_RIT_OFFSET_HZ).contains(&offset_hz) {
+            Ok(())
+        } else {
+            Err(RadioError::RitOffsetOutOfRange(offset_hz))
+        }
     }
 }
 
@@ -650,6 +669,49 @@ impl ControllableRadio for FlexNativeRadio {
             radio: self.model.as_str(),
         })
     }
+
+    async fn get_rit(&self) -> Result<i32> {
+        let state = self.state.lock().await;
+        if state.rit_on {
+            Ok(state.rit_freq_hz)
+        } else {
+            Ok(0)
+        }
+    }
+
+    async fn set_rit(&self, offset_hz: i32) -> Result<()> {
+        Self::validate_rit_offset(offset_hz)?;
+
+        let lock = self.command_lock.lock().await;
+
+        let enable_command = format!("slice s {} rit_on=1", self.slice);
+        self.execute_command_with_retry_locked(&lock, &enable_command, "flex-set-rit-on")
+            .await?;
+
+        self.wait_for_condition_locked(&lock, "flex-verify-rit-on", |state| state.rit_on)
+            .await?;
+
+        let set_command = format!("slice s {} rit_freq={offset_hz}", self.slice);
+        self.execute_command_with_retry_locked(&lock, &set_command, "flex-set-rit-freq")
+            .await?;
+
+        self.wait_for_condition_locked(&lock, "flex-verify-rit-freq", |state| {
+            state.rit_on && state.rit_freq_hz == offset_hz
+        })
+        .await
+    }
+
+    async fn clear_rit(&self) -> Result<()> {
+        let lock = self.command_lock.lock().await;
+        let command = format!("slice s {} rit_freq=0", self.slice);
+        self.execute_command_with_retry_locked(&lock, &command, "flex-clear-rit")
+            .await?;
+
+        self.wait_for_condition_locked(&lock, "flex-verify-clear-rit", |state| {
+            state.rit_freq_hz == 0
+        })
+        .await
+    }
 }
 
 fn status_payload(line: &str) -> &str {
@@ -702,6 +764,33 @@ fn parse_frequency_value(value: &str) -> Result<u64> {
     };
 
     Ok(hz)
+}
+
+fn parse_bool_value(value: &str) -> Option<bool> {
+    let normalized = value.trim().trim_matches('"').to_ascii_lowercase();
+
+    match normalized.as_str() {
+        "1" | "true" => Some(true),
+        "0" | "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_rit_freq_value(value: &str) -> Option<i32> {
+    let value = value.trim().trim_matches('"');
+
+    let parsed = value.parse::<i32>().ok().or_else(|| {
+        value
+            .parse::<f64>()
+            .ok()
+            .map(|number| number.round() as i32)
+    })?;
+
+    if (-MAX_RIT_OFFSET_HZ..=MAX_RIT_OFFSET_HZ).contains(&parsed) {
+        Some(parsed)
+    } else {
+        None
+    }
 }
 
 fn mode_from_token(token: &str) -> Option<Mode> {
@@ -853,7 +942,7 @@ mod tests {
     async fn sets_mode_and_frequency_with_verification() {
         let io = Arc::new(MockLineIo::default());
 
-        io.push_line("S0|slice 0 mode=USB RF_frequency=14.074000")
+        io.push_line("S0|slice 0 mode=USB RF_frequency=14.074000 rit_on=0 rit_freq=0")
             .await;
         io.push_line("R0|0|").await;
 
@@ -902,6 +991,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sets_and_clears_rit_with_verification() {
+        let io = Arc::new(MockLineIo::default());
+
+        io.push_line("S0|slice 0 mode=USB RF_frequency=14.074000 rit_on=0 rit_freq=0")
+            .await;
+        io.push_line("R0|0|").await;
+
+        io.push_line("S0|slice 0 rit_on=1").await;
+        io.push_line("R1|0|").await;
+
+        io.push_line("S0|slice 0 rit_freq=40").await;
+        io.push_line("R2|0|").await;
+
+        io.push_line("S0|slice 0 rit_freq=0").await;
+        io.push_line("R3|0|").await;
+
+        let radio = FlexNativeRadio::from_io(
+            io.clone(),
+            FlexNativeModel::SliceA,
+            default_retry(),
+            Duration::from_millis(250),
+            FlexState::default(),
+        );
+
+        radio.bootstrap().await.unwrap();
+        assert_eq!(radio.get_rit().await.unwrap(), 0);
+
+        radio.set_rit(40).await.unwrap();
+        assert_eq!(radio.get_rit().await.unwrap(), 40);
+
+        radio.clear_rit().await.unwrap();
+        assert_eq!(radio.get_rit().await.unwrap(), 0);
+
+        assert_eq!(
+            io.sent_lines().await,
+            vec![
+                "C0|sub slice 0\n",
+                "C1|slice s 0 rit_on=1\n",
+                "C2|slice s 0 rit_freq=40\n",
+                "C3|slice s 0 rit_freq=0\n",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_out_of_range_rit() {
+        let radio = FlexNativeRadio::from_io(
+            Arc::new(MockLineIo::default()),
+            FlexNativeModel::SliceA,
+            default_retry(),
+            Duration::from_millis(250),
+            FlexState::default(),
+        );
+
+        let error = radio.set_rit(10_000).await.unwrap_err();
+        assert!(matches!(error, RadioError::RitOffsetOutOfRange(10_000)));
+    }
+
+    #[tokio::test]
     async fn rtty_set_is_strictly_unsupported() {
         let radio = FlexNativeRadio::from_io(
             Arc::new(MockLineIo::default()),
@@ -911,6 +1059,7 @@ mod tests {
             FlexState {
                 frequency_hz: Some(14_074_000),
                 mode: Some(Mode::Usb),
+                ..FlexState::default()
             },
         );
 
@@ -928,6 +1077,7 @@ mod tests {
             FlexState {
                 frequency_hz: Some(14_074_000),
                 mode: Some(Mode::Usb),
+                ..FlexState::default()
             },
         );
 

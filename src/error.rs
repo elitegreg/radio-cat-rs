@@ -93,6 +93,9 @@ pub enum RadioError {
     #[error("CW speed {0} WPM is outside the supported range for this radio profile")]
     CwSpeedOutOfRange(u16),
 
+    #[error("RIT offset {0} Hz is outside the supported range (-9999..=9999 Hz)")]
+    RitOffsetOutOfRange(i32),
+
     #[error("CW text may be at most 60 bytes, got {0}")]
     CwTextTooLong(usize),
 

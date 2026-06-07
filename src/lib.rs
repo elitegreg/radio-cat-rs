@@ -36,4 +36,8 @@ pub trait ControllableRadio: Send + Sync {
 
     async fn get_cw_wpm(&self) -> Result<u16>;
     async fn set_cw_wpm(&self, wpm: u16) -> Result<()>;
+
+    async fn get_rit(&self) -> Result<i32>;
+    async fn set_rit(&self, offset_hz: i32) -> Result<()>;
+    async fn clear_rit(&self) -> Result<()>;
 }

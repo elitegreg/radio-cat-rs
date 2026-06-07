@@ -25,9 +25,13 @@ const MAX_CW_TEXT_BYTES: usize = 60;
 const CIV_CW_CHUNK_BYTES: usize = 30;
 const MIN_CW_WPM: u16 = 1;
 const MAX_CW_WPM: u16 = 255;
+const MAX_RIT_OFFSET_HZ: i32 = 9_999;
 const MAX_FREQUENCY_HZ_5_BCD: u64 = 99_999_999_99;
 const MAX_FREQUENCY_HZ_4_BCD: u64 = 99_999_999;
 const KEYER_SPEED_SUBCOMMAND: u8 = 0x0C;
+const RIT_COMMAND: u8 = 0x21;
+const RIT_OFFSET_SUBCOMMAND: u8 = 0x00;
+const RIT_ON_SUBCOMMAND: u8 = 0x01;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum IcomModel {
@@ -634,6 +638,13 @@ impl IcomProfile {
             },
         }
     }
+
+    const fn supports_new_rit(self) -> bool {
+        matches!(
+            self,
+            Self::Icom7600 | Self::Icom7700 | Self::Icom7800 | Self::ModernDirect
+        )
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1238,6 +1249,17 @@ impl IcomCivRadio {
         }
     }
 
+    fn check_rit_support(&self, operation: &'static str) -> Result<()> {
+        if self.profile.supports_new_rit() {
+            Ok(())
+        } else {
+            Err(RadioError::UnsupportedOperation {
+                operation,
+                radio: self.model.as_str(),
+            })
+        }
+    }
+
     fn check_morse_send_support(&self) -> Result<()> {
         if matches!(
             self.descriptor().morse_family,
@@ -1286,6 +1308,61 @@ impl IcomCivRadio {
 
         let [byte0, byte1] = encode_bcd_u16(wpm);
         Ok([0x14, KEYER_SPEED_SUBCOMMAND, byte0, byte1])
+    }
+
+    fn validate_rit_offset(offset_hz: i32) -> Result<()> {
+        if (-MAX_RIT_OFFSET_HZ..=MAX_RIT_OFFSET_HZ).contains(&offset_hz) {
+            Ok(())
+        } else {
+            Err(RadioError::RitOffsetOutOfRange(offset_hz))
+        }
+    }
+
+    fn parse_rit_enabled_response(response: &[u8]) -> Result<bool> {
+        if response.len() < 3 || response[0] != RIT_COMMAND || response[1] != RIT_ON_SUBCOMMAND {
+            return Err(RadioError::CivProtocol(format!(
+                "invalid RIT enabled response: {:?}",
+                response
+            )));
+        }
+
+        Ok(response[2] != 0)
+    }
+
+    fn parse_rit_offset_response(response: &[u8]) -> Result<i32> {
+        if response.len() != 5 || response[0] != RIT_COMMAND || response[1] != RIT_OFFSET_SUBCOMMAND
+        {
+            return Err(RadioError::CivProtocol(format!(
+                "invalid RIT offset response: {:?}",
+                response
+            )));
+        }
+
+        let magnitude = i32::from(decode_bcd_u16(&response[2..4])?);
+        if magnitude > MAX_RIT_OFFSET_HZ {
+            return Err(RadioError::CivProtocol(format!(
+                "RIT offset response is out of range: {:?}",
+                response
+            )));
+        }
+
+        if response[4] == 0 {
+            Ok(magnitude)
+        } else {
+            Ok(-magnitude)
+        }
+    }
+
+    fn format_rit_offset_set(offset_hz: i32) -> Result<[u8; 5]> {
+        Self::validate_rit_offset(offset_hz)?;
+        let [byte0, byte1] = encode_bcd_u16(offset_hz.unsigned_abs() as u16);
+        Ok([
+            RIT_COMMAND,
+            RIT_OFFSET_SUBCOMMAND,
+            byte0,
+            byte1,
+            if offset_hz < 0 { 0x01 } else { 0x00 },
+        ])
     }
 }
 
@@ -1376,6 +1453,50 @@ impl ControllableRadio for IcomCivRadio {
         self.check_keyer_support("set-cw-wpm")?;
         let command = Self::format_keyer_set(wpm)?;
         self.send_command(&command, &[0x14, KEYER_SPEED_SUBCOMMAND])
+            .await
+    }
+
+    async fn get_rit(&self) -> Result<i32> {
+        self.check_rit_support("get-rit")?;
+
+        let enabled_response = self
+            .query_command(
+                &[RIT_COMMAND, RIT_ON_SUBCOMMAND],
+                &[RIT_COMMAND, RIT_ON_SUBCOMMAND],
+            )
+            .await?;
+        if !Self::parse_rit_enabled_response(&enabled_response)? {
+            return Ok(0);
+        }
+
+        let offset_response = self
+            .query_command(
+                &[RIT_COMMAND, RIT_OFFSET_SUBCOMMAND],
+                &[RIT_COMMAND, RIT_OFFSET_SUBCOMMAND],
+            )
+            .await?;
+        Self::parse_rit_offset_response(&offset_response)
+    }
+
+    async fn set_rit(&self, offset_hz: i32) -> Result<()> {
+        self.check_rit_support("set-rit")?;
+        Self::validate_rit_offset(offset_hz)?;
+
+        self.send_command(
+            &[RIT_COMMAND, RIT_ON_SUBCOMMAND, 0x01],
+            &[RIT_COMMAND, RIT_ON_SUBCOMMAND],
+        )
+        .await?;
+
+        let command = Self::format_rit_offset_set(offset_hz)?;
+        self.send_command(&command, &[RIT_COMMAND, RIT_OFFSET_SUBCOMMAND])
+            .await
+    }
+
+    async fn clear_rit(&self) -> Result<()> {
+        self.check_rit_support("clear-rit")?;
+        let command = Self::format_rit_offset_set(0)?;
+        self.send_command(&command, &[RIT_COMMAND, RIT_OFFSET_SUBCOMMAND])
             .await
     }
 }
@@ -1619,6 +1740,120 @@ mod tests {
             io.sent_commands().await,
             vec![vec![0x06, 0x01, 0x01], vec![0x1A, 0x06, 0x01]]
         );
+    }
+
+    #[tokio::test]
+    async fn reads_new_rit_and_returns_zero_when_off() {
+        let io = Arc::new(MockCivIo::default());
+        io.push_response(&[RIT_COMMAND, RIT_ON_SUBCOMMAND, 0x00])
+            .await;
+
+        let radio = IcomCivRadio::from_io(
+            io.clone(),
+            IcomModel::Ic7300,
+            IcomProfile::ModernDirect,
+            default_addressing(),
+            default_retry(),
+        );
+
+        assert_eq!(radio.get_rit().await.unwrap(), 0);
+        assert_eq!(
+            io.sent_commands().await,
+            vec![vec![RIT_COMMAND, RIT_ON_SUBCOMMAND]]
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_new_rit_offset_when_on() {
+        let io = Arc::new(MockCivIo::default());
+        io.push_response(&[RIT_COMMAND, RIT_ON_SUBCOMMAND, 0x01])
+            .await;
+        io.push_response(&[RIT_COMMAND, RIT_OFFSET_SUBCOMMAND, 0x34, 0x12, 0x00])
+            .await;
+
+        let radio = IcomCivRadio::from_io(
+            io.clone(),
+            IcomModel::Ic7300,
+            IcomProfile::ModernDirect,
+            default_addressing(),
+            default_retry(),
+        );
+
+        assert_eq!(radio.get_rit().await.unwrap(), 1234);
+        assert_eq!(
+            io.sent_commands().await,
+            vec![
+                vec![RIT_COMMAND, RIT_ON_SUBCOMMAND],
+                vec![RIT_COMMAND, RIT_OFFSET_SUBCOMMAND]
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn sets_new_rit_by_enabling_then_writing_offset() {
+        let io = Arc::new(MockCivIo::default());
+        io.push_response(&[CIV_ACK]).await;
+        io.push_response(&[CIV_ACK]).await;
+
+        let radio = IcomCivRadio::from_io(
+            io.clone(),
+            IcomModel::Ic7300,
+            IcomProfile::ModernDirect,
+            default_addressing(),
+            default_retry(),
+        );
+
+        radio.set_rit(-987).await.unwrap();
+
+        assert_eq!(
+            io.sent_commands().await,
+            vec![
+                vec![RIT_COMMAND, RIT_ON_SUBCOMMAND, 0x01],
+                vec![RIT_COMMAND, RIT_OFFSET_SUBCOMMAND, 0x87, 0x09, 0x01]
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn clears_new_rit_by_writing_zero_offset() {
+        let io = Arc::new(MockCivIo::default());
+        io.push_response(&[CIV_ACK]).await;
+
+        let radio = IcomCivRadio::from_io(
+            io.clone(),
+            IcomModel::Ic7300,
+            IcomProfile::ModernDirect,
+            default_addressing(),
+            default_retry(),
+        );
+
+        radio.clear_rit().await.unwrap();
+
+        assert_eq!(
+            io.sent_commands().await,
+            vec![vec![RIT_COMMAND, RIT_OFFSET_SUBCOMMAND, 0x00, 0x00, 0x00]]
+        );
+    }
+
+    #[tokio::test]
+    async fn rit_is_unsupported_on_old_icom_profiles() {
+        let io = Arc::new(MockCivIo::default());
+        let radio = IcomCivRadio::from_io(
+            io,
+            IcomModel::Ic7100,
+            IcomProfile::Icom7100,
+            default_addressing(),
+            default_retry(),
+        );
+
+        let error = radio.get_rit().await.unwrap_err();
+        assert!(matches!(
+            error,
+            RadioError::UnsupportedOperation {
+                operation: "get-rit",
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

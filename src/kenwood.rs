@@ -13,6 +13,7 @@ const MAX_FREQUENCY_HZ: u64 = 99_999_999_999;
 const MIN_CW_WPM: u16 = 1;
 const MAX_CW_WPM: u16 = 999;
 const MAX_CW_TEXT_BYTES: usize = 60;
+const MAX_RIT_OFFSET_HZ: i32 = 9_999;
 const POST_SEND_RESPONSE_WAIT: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1326,6 +1327,64 @@ impl KenwoodRadio {
         }
     }
 
+    fn check_rit_support(&self, operation: &'static str) -> Result<()> {
+        if matches!(self.profile, KenwoodProfile::Ic10Derived) {
+            Err(RadioError::UnsupportedOperation {
+                operation,
+                radio: self.descriptor().name,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_rit_offset(offset_hz: i32) -> Result<()> {
+        if (-MAX_RIT_OFFSET_HZ..=MAX_RIT_OFFSET_HZ).contains(&offset_hz) {
+            Ok(())
+        } else {
+            Err(RadioError::RitOffsetOutOfRange(offset_hz))
+        }
+    }
+
+    fn uses_elecraft_rit_commands(&self) -> bool {
+        matches!(
+            self.profile,
+            KenwoodProfile::ElecraftK2 | KenwoodProfile::ElecraftK3 | KenwoodProfile::ElecraftK4
+        )
+    }
+
+    fn parse_if_rit_response(&self, response: &str) -> Result<i32> {
+        let body = Self::response_body(response, "IF")?;
+        if body.len() < 23 {
+            return Err(RadioError::InvalidResponse {
+                command: "IF",
+                response: response.to_string(),
+            });
+        }
+
+        let offset = body[16..22]
+            .parse::<i32>()
+            .map_err(|source| RadioError::parse_int(response, source))?;
+        let rit_on = body.as_bytes().get(22).copied() == Some(b'1');
+        Ok(if rit_on { offset } else { 0 })
+    }
+
+    fn parse_rf_rit_response(response: &str) -> Result<i32> {
+        Self::parse_numeric_response::<i32>(response, "RF")
+    }
+
+    fn format_rit_offset_set(offset_hz: i32) -> Result<String> {
+        Self::validate_rit_offset(offset_hz)?;
+        let magnitude = offset_hz.unsigned_abs();
+        let prefix = if offset_hz < 0 { "RD" } else { "RU" };
+        Ok(format!("{prefix}{magnitude:05};"))
+    }
+
+    fn format_elecraft_rit_offset_set(offset_hz: i32) -> Result<String> {
+        Self::validate_rit_offset(offset_hz)?;
+        Ok(format!("RO{offset_hz:+05};"))
+    }
+
     async fn send_command(&self, command: &str) -> Result<()> {
         let response = self
             .io
@@ -1415,6 +1474,45 @@ impl ControllableRadio for KenwoodRadio {
         self.check_keyer_support("set-cw-wpm")?;
         let command = self.format_cw_speed_set(wpm)?;
         self.send_command(&command).await
+    }
+
+    async fn get_rit(&self) -> Result<i32> {
+        self.check_rit_support("get-rit")?;
+        if matches!(
+            self.profile,
+            KenwoodProfile::KenwoodTs890 | KenwoodProfile::KenwoodTs990
+        ) {
+            let response = self.io.query("RF;").await?;
+            Self::parse_rf_rit_response(&response)
+        } else {
+            let response = self.io.query("IF;").await?;
+            self.parse_if_rit_response(&response)
+        }
+    }
+
+    async fn set_rit(&self, offset_hz: i32) -> Result<()> {
+        self.check_rit_support("set-rit")?;
+        Self::validate_rit_offset(offset_hz)?;
+        self.send_command("RT1;").await?;
+
+        let command = if self.uses_elecraft_rit_commands() {
+            Self::format_elecraft_rit_offset_set(offset_hz)?
+        } else {
+            Self::format_rit_offset_set(offset_hz)?
+        };
+
+        self.send_command(&command).await
+    }
+
+    async fn clear_rit(&self) -> Result<()> {
+        self.check_rit_support("clear-rit")?;
+
+        if self.uses_elecraft_rit_commands() {
+            self.send_command("RC;").await
+        } else {
+            let command = Self::format_rit_offset_set(0)?;
+            self.send_command(&command).await
+        }
     }
 }
 
@@ -1546,6 +1644,17 @@ mod tests {
                 "KY0;",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn elecraft_rit_uses_ro_and_rc_commands() {
+        let io = Arc::new(MockIo::default());
+        let radio = KenwoodRadio::from_io(io.clone(), KenwoodProfile::ElecraftK3);
+
+        radio.set_rit(-123).await.unwrap();
+        radio.clear_rit().await.unwrap();
+
+        assert_eq!(io.sent_commands().await, vec!["RT1;", "RO-0123;", "RC;"]);
     }
 
     #[tokio::test]
