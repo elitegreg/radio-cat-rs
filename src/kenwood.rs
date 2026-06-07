@@ -1373,6 +1373,17 @@ impl KenwoodRadio {
         Self::parse_numeric_response::<i32>(response, "RF")
     }
 
+    fn parse_rt_enabled_response(response: &str) -> Result<bool> {
+        match Self::parse_numeric_response::<u8>(response, "RT")? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(RadioError::InvalidResponse {
+                command: "RT",
+                response: response.to_string(),
+            }),
+        }
+    }
+
     fn format_rit_offset_set(offset_hz: i32) -> Result<String> {
         Self::validate_rit_offset(offset_hz)?;
         let magnitude = offset_hz.unsigned_abs();
@@ -1484,6 +1495,14 @@ impl ControllableRadio for KenwoodRadio {
         ) {
             let response = self.io.query("RF;").await?;
             Self::parse_rf_rit_response(&response)
+        } else if self.uses_elecraft_rit_commands() {
+            let enabled_response = self.io.query("RT;").await?;
+            if !Self::parse_rt_enabled_response(&enabled_response)? {
+                return Ok(0);
+            }
+
+            let offset_response = self.io.query("RO;").await?;
+            Self::parse_numeric_response::<i32>(&offset_response, "RO")
         } else {
             let response = self.io.query("IF;").await?;
             self.parse_if_rit_response(&response)
@@ -1655,6 +1674,29 @@ mod tests {
         radio.clear_rit().await.unwrap();
 
         assert_eq!(io.sent_commands().await, vec!["RT1;", "RO-0123;", "RC;"]);
+    }
+
+    #[tokio::test]
+    async fn elecraft_get_rit_reads_rt_and_ro() {
+        let io = Arc::new(MockIo::default());
+        io.push_query("RT;", "RT1;").await;
+        io.push_query("RO;", "RO+0025;").await;
+
+        let radio = KenwoodRadio::from_io(io.clone(), KenwoodProfile::ElecraftK4);
+
+        assert_eq!(radio.get_rit().await.unwrap(), 25);
+        assert_eq!(io.sent_commands().await, vec!["RT;", "RO;"]);
+    }
+
+    #[tokio::test]
+    async fn elecraft_get_rit_returns_zero_when_off() {
+        let io = Arc::new(MockIo::default());
+        io.push_query("RT;", "RT0;").await;
+
+        let radio = KenwoodRadio::from_io(io.clone(), KenwoodProfile::ElecraftK4);
+
+        assert_eq!(radio.get_rit().await.unwrap(), 0);
+        assert_eq!(io.sent_commands().await, vec!["RT;"]);
     }
 
     #[tokio::test]
