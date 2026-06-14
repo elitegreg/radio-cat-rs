@@ -1,0 +1,63 @@
+use crate::{Frequency, LeveledSetting, Mode, RitXitOffsetHz};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReceiverPath {
+    Main,
+    Sub,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RadioCommand {
+    SetReceiverFrequency {
+        receiver: ReceiverPath,
+        frequency: Frequency,
+    },
+    SetReceiverMode {
+        receiver: ReceiverPath,
+        mode: Mode,
+    },
+    SetReceiverFilterBandwidth {
+        receiver: ReceiverPath,
+        bandwidth_hz: u16,
+    },
+    SetReceiverFilterShift {
+        receiver: ReceiverPath,
+        shift_hz: u16,
+    },
+    SetReceiverPreamp {
+        receiver: ReceiverPath,
+        setting: LeveledSetting,
+    },
+    SetReceiverAttenuator {
+        receiver: ReceiverPath,
+        setting: LeveledSetting,
+    },
+    SetReceiverNoiseBlanker {
+        receiver: ReceiverPath,
+        setting: LeveledSetting,
+    },
+    SetReceiverNoiseReduction {
+        receiver: ReceiverPath,
+        setting: LeveledSetting,
+    },
+    SetReceiverAutoNotch {
+        receiver: ReceiverPath,
+        enabled: bool,
+    },
+
+    SetTxFrequency(Frequency),
+    SetTxMode(Mode),
+    SetTxPowerDeciMw(u32),
+    SetPtt(bool),
+    SetSplit(bool),
+
+    SetRitEnabled(bool),
+    SetXitEnabled(bool),
+    SetRitXitOffset(RitXitOffsetHz),
+
+    SetKeyerSpeed(u8),
+    SendCw(String),
+    StopCw,
+
+    Refresh,
+}

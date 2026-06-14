@@ -1,43 +1,36 @@
-mod dummy;
-mod error;
-mod factory;
-mod flex_native;
+mod actor;
+mod api;
+pub mod capabilities;
+pub mod command;
+pub mod driver;
+pub mod drivers;
+pub mod error;
 mod frequency;
-mod icom_civ;
-mod kenwood;
-mod mode;
-mod options;
-mod transport;
-mod yaesu_newcat;
+pub mod mode;
+pub mod state;
+pub mod transport;
+pub mod update;
 
-use async_trait::async_trait;
-
-pub use dummy::DummyRadio;
-pub use error::{RadioError, Result};
-pub use factory::{create_radio, create_radio_with_io, supported_radio_kinds, RadioKind};
-pub use flex_native::{FlexNativeModel, FlexNativeRadio};
+pub use actor::RadioTask;
+pub use api::{supported_drivers, Radio, RadioConfig};
+pub use capabilities::{
+    Capability, KeyerCapabilities, RadioCapabilities, ReceiverCapabilities, ReceiverRfCapabilities,
+    RitXitCapabilities, StateUpdateCapability, TransmitterCapabilities,
+};
+pub use command::{RadioCommand, ReceiverPath};
+pub use driver::{DriverCommandOutcome, DriverDescriptor, RadioDriver};
+pub use error::{RadioError, RangeError, Result};
 pub use frequency::Frequency;
-pub use icom_civ::{IcomCivRadio, IcomModel};
-pub use kenwood::{KenwoodModel, KenwoodRadio};
-pub use mode::Mode;
-pub use transport::ConnectionConfig;
-pub use yaesu_newcat::{YaesuModel, YaesuNewCatRadio};
-
-#[async_trait]
-pub trait ControllableRadio: Send + Sync {
-    async fn get_frequency(&self) -> Result<Frequency>;
-    async fn set_frequency(&self, frequency: Frequency) -> Result<()>;
-
-    async fn get_mode(&self) -> Result<Mode>;
-    async fn set_mode(&self, mode: Mode) -> Result<()>;
-
-    async fn send_cw(&self, text: &str) -> Result<()>;
-    async fn stop_cw(&self) -> Result<()>;
-
-    async fn get_cw_wpm(&self) -> Result<u16>;
-    async fn set_cw_wpm(&self, wpm: u16) -> Result<()>;
-
-    async fn get_rit(&self) -> Result<i32>;
-    async fn set_rit(&self, offset_hz: i32) -> Result<()>;
-    async fn clear_rit(&self) -> Result<()>;
-}
+pub use mode::{Mode, ParseModeError};
+pub use state::{
+    ConnectionState, KeyerState, LeveledSetting, RadioState, ReceiverFilterState, ReceiverRfState,
+    ReceiverState, RitXitOffsetHz, RitXitState, TransmitterState,
+};
+pub use transport::{
+    boxed_transport, open_transport, AsyncIoTransport, BoxedCatTransport, CatTransport,
+    ConnectionConfig, SerialTransport, TcpTransport, TransportConfig,
+};
+pub use update::{
+    ChangeFlags, ChangeSet, SharedRadioState, StateField, StatePatch, StateReducer, StateUpdate,
+    UpdateSource,
+};
