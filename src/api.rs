@@ -6,7 +6,7 @@ use crate::{
     actor::{send_command, CommandEnvelope, RadioTask},
     command::{RadioCommand, ReceiverPath},
     drivers,
-    drivers::DummyRadioDriver,
+    drivers::{DummyRadioDriver, KenwoodAsciiDriver},
     error::{RadioError, Result},
     transport::{
         boxed_transport, open_transport, BoxedCatTransport, CatTransport, TransportConfig,
@@ -134,11 +134,14 @@ impl Radio {
         let driver_id = config.driver.trim();
         let driver: Box<dyn crate::RadioDriver> = match driver_id.to_ascii_lowercase().as_str() {
             "dummy" => Box::new(DummyRadioDriver::with_options(config.options.clone())),
-            _ => {
-                return Err(RadioError::UnsupportedDriver {
-                    driver: config.driver,
-                })
-            }
+            _ => match KenwoodAsciiDriver::from_driver_id(driver_id, config.options.clone()) {
+                Some(driver) => Box::new(driver),
+                None => {
+                    return Err(RadioError::UnsupportedDriver {
+                        driver: config.driver,
+                    })
+                }
+            },
         };
 
         let descriptor = driver.descriptor();
@@ -483,16 +486,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn supported_driver_list_contains_dummy() {
+    async fn supported_driver_list_contains_dummy_and_kenwood_profiles() {
         assert!(supported_drivers()
             .iter()
             .any(|driver| driver.id == "dummy"));
+        assert!(supported_drivers()
+            .iter()
+            .any(|driver| driver.id == "kenwood-ts590"));
 
         let radio = Radio::connect(RadioConfig::dummy()).await.unwrap();
         assert_eq!(
             radio.capabilities().main_rx.frequency,
             Capability::ReadWrite
         );
+
+        let kenwood = Radio::connect(RadioConfig::new("kenwood-ts590"))
+            .await
+            .unwrap();
+        assert_eq!(kenwood.driver_descriptor().id, "kenwood-ts590");
     }
 
     #[tokio::test]
