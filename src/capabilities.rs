@@ -20,7 +20,7 @@ impl Capability {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RadioCapabilities {
     pub main_rx: ReceiverCapabilities,
     pub sub_rx: Option<ReceiverCapabilities>,
@@ -41,9 +41,27 @@ impl RadioCapabilities {
             state_updates: StateUpdateCapability::Native,
         }
     }
+
+    pub const fn new(
+        main_rx: ReceiverCapabilities,
+        sub_rx: Option<ReceiverCapabilities>,
+        tx: Option<TransmitterCapabilities>,
+        rit_xit: RitXitCapabilities,
+        keyer: Option<KeyerCapabilities>,
+        state_updates: StateUpdateCapability,
+    ) -> Self {
+        Self {
+            main_rx,
+            sub_rx,
+            tx,
+            rit_xit,
+            keyer,
+            state_updates,
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReceiverCapabilities {
     pub frequency: Capability,
     pub mode: Capability,
@@ -62,9 +80,25 @@ impl ReceiverCapabilities {
             rf: ReceiverRfCapabilities::all(),
         }
     }
+
+    pub const fn new(
+        frequency: Capability,
+        mode: Capability,
+        filter_bandwidth: Capability,
+        filter_shift: Capability,
+        rf: ReceiverRfCapabilities,
+    ) -> Self {
+        Self {
+            frequency,
+            mode,
+            filter_bandwidth,
+            filter_shift,
+            rf,
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReceiverRfCapabilities {
     pub preamp: Capability,
     pub attenuator: Capability,
@@ -83,9 +117,25 @@ impl ReceiverRfCapabilities {
             auto_notch: Capability::ReadWrite,
         }
     }
+
+    pub const fn new(
+        preamp: Capability,
+        attenuator: Capability,
+        noise_blanker: Capability,
+        noise_reduction: Capability,
+        auto_notch: Capability,
+    ) -> Self {
+        Self {
+            preamp,
+            attenuator,
+            noise_blanker,
+            noise_reduction,
+            auto_notch,
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransmitterCapabilities {
     pub frequency: Capability,
     pub mode: Capability,
@@ -104,9 +154,25 @@ impl TransmitterCapabilities {
             split: Capability::ReadWrite,
         }
     }
+
+    pub const fn new(
+        frequency: Capability,
+        mode: Capability,
+        power: Capability,
+        ptt: Capability,
+        split: Capability,
+    ) -> Self {
+        Self {
+            frequency,
+            mode,
+            power,
+            ptt,
+            split,
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RitXitCapabilities {
     pub rit_enabled: Capability,
     pub xit_enabled: Capability,
@@ -121,9 +187,17 @@ impl RitXitCapabilities {
             offset: Capability::ReadWrite,
         }
     }
+
+    pub const fn new(rit_enabled: Capability, xit_enabled: Capability, offset: Capability) -> Self {
+        Self {
+            rit_enabled,
+            xit_enabled,
+            offset,
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyerCapabilities {
     pub speed_wpm: Capability,
     pub sending: Capability,
@@ -138,6 +212,20 @@ impl KeyerCapabilities {
             sending: Capability::ReadWrite,
             send_cw: Capability::WriteOnly,
             stop_cw: Capability::WriteOnly,
+        }
+    }
+
+    pub const fn new(
+        speed_wpm: Capability,
+        sending: Capability,
+        send_cw: Capability,
+        stop_cw: Capability,
+    ) -> Self {
+        Self {
+            speed_wpm,
+            sending,
+            send_cw,
+            stop_cw,
         }
     }
 }

@@ -1,6 +1,12 @@
 use std::time::Duration;
 
-use super::AsciiFrame;
+use crate::{
+    capabilities::{
+        Capability, KeyerCapabilities, RadioCapabilities, ReceiverCapabilities,
+        ReceiverRfCapabilities, RitXitCapabilities, StateUpdateCapability, TransmitterCapabilities,
+    },
+    driver::DriverDescriptor,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Brand {
@@ -16,17 +22,22 @@ pub enum FrequencyFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReceiverKind {
+    SingleVfo,
+    DualVfo,
+    DualRx,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StartupStep {
     AutoInfo(&'static str),
     Query(&'static str),
 }
 
 impl StartupStep {
-    pub fn frame(self) -> AsciiFrame {
+    pub const fn label(self) -> &'static str {
         match self {
-            Self::AutoInfo(frame) | Self::Query(frame) => {
-                AsciiFrame::new(frame).expect("startup metadata must contain valid ASCII frames")
-            }
+            Self::AutoInfo(label) | Self::Query(label) => label,
         }
     }
 }
@@ -37,235 +48,721 @@ pub struct PollPlan {
     pub queries: &'static [&'static str],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KenwoodAsciiProfile {
-    pub id: &'static str,
-    pub display_name: &'static str,
+    pub descriptor: DriverDescriptor,
     pub brand: Brand,
+    pub receiver_kind: ReceiverKind,
     pub frequency_format: FrequencyFormat,
+    pub capabilities: RadioCapabilities,
+    pub update_strategy: StateUpdateCapability,
     pub startup: &'static [StartupStep],
     pub poll: Option<PollPlan>,
 }
 
+impl KenwoodAsciiProfile {
+    pub const fn id(self) -> &'static str {
+        self.descriptor.id
+    }
+}
+
+const RW: Capability = Capability::ReadWrite;
+const RO: Capability = Capability::ReadOnly;
+const WO: Capability = Capability::WriteOnly;
+const UNSUPPORTED: Capability = Capability::Unsupported;
+
+const FULL_RF: ReceiverRfCapabilities = ReceiverRfCapabilities::new(RW, RW, RW, RW, RW);
+const NO_AUTO_NOTCH_RF: ReceiverRfCapabilities =
+    ReceiverRfCapabilities::new(RW, RW, RW, RW, UNSUPPORTED);
+const NB_ONLY_RF: ReceiverRfCapabilities =
+    ReceiverRfCapabilities::new(RW, RW, RW, UNSUPPORTED, UNSUPPORTED);
+const NO_RF: ReceiverRfCapabilities = ReceiverRfCapabilities::new(
+    UNSUPPORTED,
+    UNSUPPORTED,
+    UNSUPPORTED,
+    UNSUPPORTED,
+    UNSUPPORTED,
+);
+
+const FULL_RX: ReceiverCapabilities = ReceiverCapabilities::new(RW, RW, RW, RW, FULL_RF);
+const K3_RX: ReceiverCapabilities = ReceiverCapabilities::new(RW, RW, RW, RW, NB_ONLY_RF);
+const NO_AUTO_NOTCH_RX: ReceiverCapabilities =
+    ReceiverCapabilities::new(RW, RW, RW, RW, NO_AUTO_NOTCH_RF);
+const NO_FILTER_NO_AUTO_NOTCH_RX: ReceiverCapabilities =
+    ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, NO_AUTO_NOTCH_RF);
+const BW_ONLY_RX: ReceiverCapabilities =
+    ReceiverCapabilities::new(RW, RW, RW, UNSUPPORTED, NB_ONLY_RF);
+const NO_FILTER_NO_RF_RX: ReceiverCapabilities =
+    ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, NO_RF);
+
+const FULL_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, RW, RW, RW);
+const IF232_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, UNSUPPORTED, RW, RW);
+
+const FULL_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(RW, RW, RW);
+const K2_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(RW, RW, RO);
+
+const FULL_KEYER: KeyerCapabilities = KeyerCapabilities::new(RW, UNSUPPORTED, WO, WO);
+const YAESU_KEYER: KeyerCapabilities =
+    KeyerCapabilities::new(RW, UNSUPPORTED, UNSUPPORTED, UNSUPPORTED);
+
+const HYBRID: StateUpdateCapability = StateUpdateCapability::Hybrid;
+
+const SLOW_POLL: Duration = Duration::from_secs(15);
+const IF232_POLL: Duration = Duration::from_secs(2);
+
 const TS590_STARTUP: &[StartupStep] = &[
     StartupStep::AutoInfo("AI2;"),
-    StartupStep::Query("IF;"),
-    StartupStep::Query("FA;"),
-    StartupStep::Query("FB;"),
-    StartupStep::Query("MD;"),
+    StartupStep::Query("IF"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("FR"),
+    StartupStep::Query("FT"),
+    StartupStep::Query("MD"),
+    StartupStep::Query("DA"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
+    StartupStep::Query("filter-state"),
+    StartupStep::Query("NT"),
+    StartupStep::Query("NB"),
+    StartupStep::Query("NR"),
+    StartupStep::Query("PA"),
+    StartupStep::Query("RA"),
+    StartupStep::Query("PC"),
+    StartupStep::Query("KS"),
 ];
 
 const TS890_STARTUP: &[StartupStep] = &[
     StartupStep::AutoInfo("AI2;"),
-    StartupStep::Query("FA;"),
-    StartupStep::Query("FB;"),
-    StartupStep::Query("SF0;"),
-    StartupStep::Query("SF1;"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("FR"),
+    StartupStep::Query("FT"),
+    StartupStep::Query("SF0"),
+    StartupStep::Query("SF1"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
+    StartupStep::Query("RF"),
+    StartupStep::Query("filter-hi-lo"),
+    StartupStep::Query("NT"),
+    StartupStep::Query("NB1"),
+    StartupStep::Query("NB2"),
+    StartupStep::Query("NR"),
+    StartupStep::Query("PA"),
+    StartupStep::Query("RA"),
+    StartupStep::Query("PC"),
+    StartupStep::Query("KS"),
 ];
 
 const TS990_STARTUP: &[StartupStep] = &[
     StartupStep::AutoInfo("AI2;"),
-    StartupStep::Query("FA;"),
-    StartupStep::Query("FB;"),
-    StartupStep::Query("OM0;"),
-    StartupStep::Query("OM1;"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("SP"),
+    StartupStep::Query("OM0"),
+    StartupStep::Query("OM1"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
+    StartupStep::Query("RF"),
+    StartupStep::Query("filter-hi-lo-main"),
+    StartupStep::Query("filter-hi-lo-sub"),
+    StartupStep::Query("NT0"),
+    StartupStep::Query("NT1"),
+    StartupStep::Query("NB10"),
+    StartupStep::Query("NB11"),
+    StartupStep::Query("NB20"),
+    StartupStep::Query("NB21"),
+    StartupStep::Query("NR0"),
+    StartupStep::Query("NR1"),
+    StartupStep::Query("PA0"),
+    StartupStep::Query("PA1"),
+    StartupStep::Query("RA0"),
+    StartupStep::Query("RA1"),
+    StartupStep::Query("PC"),
+    StartupStep::Query("KS"),
 ];
 
-const TS2000_FAMILY_STARTUP: &[StartupStep] = &[
+const TS2000_STARTUP: &[StartupStep] = &[
     StartupStep::AutoInfo("AI2;"),
-    StartupStep::Query("IF;"),
-    StartupStep::Query("FA;"),
-    StartupStep::Query("FB;"),
-    StartupStep::Query("MD;"),
+    StartupStep::Query("IF"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("FR"),
+    StartupStep::Query("FT"),
+    StartupStep::Query("MD"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
+    StartupStep::Query("filter-state"),
+    StartupStep::Query("NT"),
+    StartupStep::Query("NB"),
+    StartupStep::Query("NR"),
+    StartupStep::Query("PA"),
+    StartupStep::Query("RA"),
+    StartupStep::Query("PC"),
+    StartupStep::Query("KS"),
+];
+
+const TS480_STARTUP: &[StartupStep] = &[
+    StartupStep::AutoInfo("AI2;"),
+    StartupStep::Query("IF"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("FR"),
+    StartupStep::Query("FT"),
+    StartupStep::Query("MD"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
+    StartupStep::Query("filter-state"),
+    StartupStep::Query("NB"),
+    StartupStep::Query("NR"),
+    StartupStep::Query("PA"),
+    StartupStep::Query("RA"),
+    StartupStep::Query("PC"),
+    StartupStep::Query("KS"),
+];
+
+const TS570_TS870_STARTUP: &[StartupStep] = &[
+    StartupStep::AutoInfo("AI2;"),
+    StartupStep::Query("IF"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("FR"),
+    StartupStep::Query("FT"),
+    StartupStep::Query("MD"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
+    StartupStep::Query("NB"),
+    StartupStep::Query("NR"),
+    StartupStep::Query("PA"),
+    StartupStep::Query("RA"),
+    StartupStep::Query("PC"),
+    StartupStep::Query("KS"),
 ];
 
 const IF232_STARTUP: &[StartupStep] = &[
     StartupStep::AutoInfo("AI1;"),
-    StartupStep::Query("IF;"),
-    StartupStep::Query("FA;"),
-    StartupStep::Query("FB;"),
+    StartupStep::Query("IF"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("SP"),
+    StartupStep::Query("MD"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
 ];
 
 const ELECRAFT_K4_STARTUP: &[StartupStep] = &[
     StartupStep::AutoInfo("AI2;"),
     StartupStep::AutoInfo("AID250;"),
-    StartupStep::Query("FA;"),
-    StartupStep::Query("FB;"),
-    StartupStep::Query("MD;"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("FT"),
+    StartupStep::Query("MD"),
+    StartupStep::Query("DT"),
+    StartupStep::Query("MD$"),
+    StartupStep::Query("DT$"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
+    StartupStep::Query("RO"),
+    StartupStep::Query("RT$"),
+    StartupStep::Query("XT$"),
+    StartupStep::Query("RO$"),
+    StartupStep::Query("BW"),
+    StartupStep::Query("BW$"),
+    StartupStep::Query("IS"),
+    StartupStep::Query("IS$"),
+    StartupStep::Query("NA"),
+    StartupStep::Query("NA$"),
+    StartupStep::Query("NB"),
+    StartupStep::Query("NB$"),
+    StartupStep::Query("NR"),
+    StartupStep::Query("NR$"),
+    StartupStep::Query("PA"),
+    StartupStep::Query("PA$"),
+    StartupStep::Query("RA"),
+    StartupStep::Query("RA$"),
+    StartupStep::Query("PC"),
+    StartupStep::Query("KS"),
 ];
 
 const ELECRAFT_K3_STARTUP: &[StartupStep] = &[
     StartupStep::AutoInfo("AI2;"),
-    StartupStep::Query("IF;"),
-    StartupStep::Query("FA;"),
-    StartupStep::Query("FB;"),
-    StartupStep::Query("MD;"),
+    StartupStep::Query("IF"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("FT"),
+    StartupStep::Query("MD"),
+    StartupStep::Query("DT"),
+    StartupStep::Query("MD$"),
+    StartupStep::Query("DT$"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
+    StartupStep::Query("RO"),
+    StartupStep::Query("BW"),
+    StartupStep::Query("BW$"),
+    StartupStep::Query("IS"),
+    StartupStep::Query("IS$"),
+    StartupStep::Query("NB"),
+    StartupStep::Query("NB$"),
+    StartupStep::Query("PA"),
+    StartupStep::Query("PA$"),
+    StartupStep::Query("RA"),
+    StartupStep::Query("RA$"),
+    StartupStep::Query("PC"),
+    StartupStep::Query("KS"),
 ];
 
 const ELECRAFT_K2_STARTUP: &[StartupStep] = &[
-    StartupStep::Query("IF;"),
-    StartupStep::Query("FA;"),
-    StartupStep::Query("FB;"),
-    StartupStep::Query("MD;"),
-];
-
-const YAESU_DUAL_STARTUP: &[StartupStep] = &[
-    StartupStep::AutoInfo("AI2;"),
-    StartupStep::Query("IF;"),
-    StartupStep::Query("FA;"),
-    StartupStep::Query("FB;"),
-    StartupStep::Query("MD0;"),
+    StartupStep::Query("IF"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("FR"),
+    StartupStep::Query("FT"),
+    StartupStep::Query("MD"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
+    StartupStep::Query("FW"),
+    StartupStep::Query("NB"),
+    StartupStep::Query("PA"),
+    StartupStep::Query("RA"),
+    StartupStep::Query("PC"),
+    StartupStep::Query("KS"),
 ];
 
 const YAESU_FTDX101_STARTUP: &[StartupStep] = &[
     StartupStep::AutoInfo("AI2;"),
-    StartupStep::Query("IF;"),
-    StartupStep::Query("FA;"),
-    StartupStep::Query("FB;"),
-    StartupStep::Query("MD0;"),
-    StartupStep::Query("MD1;"),
+    StartupStep::Query("IF"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("FT"),
+    StartupStep::Query("MD0"),
+    StartupStep::Query("MD1"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
+    StartupStep::Query("SH0"),
+    StartupStep::Query("SH1"),
+    StartupStep::Query("IS0"),
+    StartupStep::Query("IS1"),
+    StartupStep::Query("BC0"),
+    StartupStep::Query("BC1"),
+    StartupStep::Query("NB0"),
+    StartupStep::Query("NB1"),
+    StartupStep::Query("NR0"),
+    StartupStep::Query("NR1"),
+    StartupStep::Query("PA0"),
+    StartupStep::Query("PA1"),
+    StartupStep::Query("RA0"),
+    StartupStep::Query("RA1"),
+    StartupStep::Query("PC"),
+    StartupStep::Query("KS"),
 ];
 
-const SLOW_POLL: PollPlan = PollPlan {
-    interval: Duration::from_secs(15),
-    queries: &["PC;", "KS;"],
-};
+const YAESU_FTDX10_FT710_STARTUP: &[StartupStep] = &[
+    StartupStep::AutoInfo("AI2;"),
+    StartupStep::Query("IF"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("FT"),
+    StartupStep::Query("MD0"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
+    StartupStep::Query("SH0"),
+    StartupStep::Query("IS0"),
+    StartupStep::Query("BC0"),
+    StartupStep::Query("NB0"),
+    StartupStep::Query("NR0"),
+    StartupStep::Query("PA0"),
+    StartupStep::Query("RA0"),
+    StartupStep::Query("PC"),
+    StartupStep::Query("KS"),
+];
+
+const YAESU_FT891_STARTUP: &[StartupStep] = &[
+    StartupStep::AutoInfo("AI2;"),
+    StartupStep::Query("IF"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("ST"),
+    StartupStep::Query("MD0"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
+    StartupStep::Query("NA0"),
+    StartupStep::Query("SH0"),
+    StartupStep::Query("IS0"),
+    StartupStep::Query("BC0"),
+    StartupStep::Query("NB0"),
+    StartupStep::Query("NR0"),
+    StartupStep::Query("PA0"),
+    StartupStep::Query("RA0"),
+    StartupStep::Query("PC"),
+    StartupStep::Query("KS"),
+];
+
+const YAESU_FT991_STARTUP: &[StartupStep] = &[
+    StartupStep::AutoInfo("AI2;"),
+    StartupStep::Query("IF"),
+    StartupStep::Query("FA"),
+    StartupStep::Query("FB"),
+    StartupStep::Query("FT"),
+    StartupStep::Query("MD0"),
+    StartupStep::Query("RT"),
+    StartupStep::Query("XT"),
+    StartupStep::Query("NA0"),
+    StartupStep::Query("SH0"),
+    StartupStep::Query("IS0"),
+    StartupStep::Query("BC0"),
+    StartupStep::Query("NB0"),
+    StartupStep::Query("NR0"),
+    StartupStep::Query("PA0"),
+    StartupStep::Query("RA0"),
+    StartupStep::Query("PC"),
+    StartupStep::Query("KS"),
+];
+
+const SLOW_FILTER_RF_KEYER_POWER: &[&str] = &["filter-state", "rf-dsp", "PC", "KS"];
+const SLOW_HILO_RF_KEYER_POWER: &[&str] = &["filter-hi-lo", "NB1", "NB2", "RF", "PC", "KS"];
+const TS990_SLOW_POLL_QUERIES: &[&str] = &[
+    "filter-hi-lo-main",
+    "filter-hi-lo-sub",
+    "NT0",
+    "NT1",
+    "NB10",
+    "NB11",
+    "NB20",
+    "NB21",
+    "NR0",
+    "NR1",
+    "PA0",
+    "PA1",
+    "RA0",
+    "RA1",
+    "PC",
+    "KS",
+];
+const IF232_POLL_QUERIES: &[&str] = &["IF", "FA", "FB", "SP", "MD", "RT", "XT"];
+const K4_SLOW_POLL_QUERIES: &[&str] = &[
+    "BW", "BW$", "IS", "IS$", "NA", "NA$", "NB", "NB$", "NR", "NR$", "PA", "PA$", "RA", "RA$",
+    "PC", "KS",
+];
+const K3_SLOW_POLL_QUERIES: &[&str] = &[
+    "BW", "BW$", "IS", "IS$", "NB", "NB$", "PA", "PA$", "RA", "RA$", "PC", "KS",
+];
+const K2_SLOW_POLL_QUERIES: &[&str] = &["FW", "NB", "PA", "RA", "PC", "KS"];
+const YAESU_DUAL_SLOW_POLL_QUERIES: &[&str] =
+    &["SH0", "IS0", "BC0", "NB0", "NR0", "PA0", "RA0", "PC", "KS"];
+const YAESU_FTDX101_SLOW_POLL_QUERIES: &[&str] = &[
+    "SH0", "SH1", "IS0", "IS1", "BC0", "BC1", "NB0", "NB1", "NR0", "NR1", "PA0", "PA1", "RA0",
+    "RA1", "PC", "KS",
+];
+
+const fn descriptor(
+    id: &'static str,
+    display_name: &'static str,
+    description: &'static str,
+) -> DriverDescriptor {
+    DriverDescriptor {
+        id,
+        display_name,
+        description,
+    }
+}
+
+const fn dual_capabilities(
+    rx: ReceiverCapabilities,
+    tx: TransmitterCapabilities,
+    rit_xit: RitXitCapabilities,
+    keyer: Option<KeyerCapabilities>,
+) -> RadioCapabilities {
+    RadioCapabilities::new(rx, Some(rx), Some(tx), rit_xit, keyer, HYBRID)
+}
 
 pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
     KenwoodAsciiProfile {
-        id: "kenwood-ts590",
-        display_name: "Kenwood TS-590",
+        descriptor: descriptor(
+            "kenwood-ts590",
+            "Kenwood TS-590",
+            "Kenwood ASCII profile metadata for TS-590 radios.",
+        ),
         brand: Brand::Kenwood,
+        receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        update_strategy: HYBRID,
         startup: TS590_STARTUP,
-        poll: Some(SLOW_POLL),
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: SLOW_FILTER_RF_KEYER_POWER,
+        }),
     },
     KenwoodAsciiProfile {
-        id: "kenwood-ts890",
-        display_name: "Kenwood TS-890",
+        descriptor: descriptor(
+            "kenwood-ts890",
+            "Kenwood TS-890",
+            "Kenwood ASCII profile metadata for TS-890 radios.",
+        ),
         brand: Brand::Kenwood,
+        receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        update_strategy: HYBRID,
         startup: TS890_STARTUP,
-        poll: Some(SLOW_POLL),
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: SLOW_HILO_RF_KEYER_POWER,
+        }),
     },
     KenwoodAsciiProfile {
-        id: "kenwood-ts990",
-        display_name: "Kenwood TS-990",
+        descriptor: descriptor(
+            "kenwood-ts990",
+            "Kenwood TS-990",
+            "Kenwood ASCII profile metadata for TS-990 radios.",
+        ),
         brand: Brand::Kenwood,
+        receiver_kind: ReceiverKind::DualRx,
         frequency_format: FrequencyFormat::Hertz11Digit,
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        update_strategy: HYBRID,
         startup: TS990_STARTUP,
-        poll: Some(SLOW_POLL),
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: TS990_SLOW_POLL_QUERIES,
+        }),
     },
     KenwoodAsciiProfile {
-        id: "kenwood-ts2000",
-        display_name: "Kenwood TS-2000",
+        descriptor: descriptor(
+            "kenwood-ts2000",
+            "Kenwood TS-2000",
+            "Kenwood ASCII profile metadata for TS-2000 radios.",
+        ),
         brand: Brand::Kenwood,
+        receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        startup: TS2000_FAMILY_STARTUP,
-        poll: Some(SLOW_POLL),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        update_strategy: HYBRID,
+        startup: TS2000_STARTUP,
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: SLOW_FILTER_RF_KEYER_POWER,
+        }),
     },
     KenwoodAsciiProfile {
-        id: "kenwood-ts480",
-        display_name: "Kenwood TS-480",
+        descriptor: descriptor(
+            "kenwood-ts480",
+            "Kenwood TS-480",
+            "Kenwood ASCII profile metadata for TS-480 radios.",
+        ),
         brand: Brand::Kenwood,
+        receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        startup: TS2000_FAMILY_STARTUP,
-        poll: Some(SLOW_POLL),
+        capabilities: dual_capabilities(NO_AUTO_NOTCH_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        update_strategy: HYBRID,
+        startup: TS480_STARTUP,
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: SLOW_FILTER_RF_KEYER_POWER,
+        }),
     },
     KenwoodAsciiProfile {
-        id: "kenwood-ts570",
-        display_name: "Kenwood TS-570",
+        descriptor: descriptor(
+            "kenwood-ts570",
+            "Kenwood TS-570",
+            "Kenwood ASCII profile metadata for TS-570 radios.",
+        ),
         brand: Brand::Kenwood,
+        receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        startup: TS2000_FAMILY_STARTUP,
-        poll: Some(SLOW_POLL),
+        capabilities: dual_capabilities(
+            NO_FILTER_NO_AUTO_NOTCH_RX,
+            FULL_TX,
+            FULL_RIT_XIT,
+            Some(FULL_KEYER),
+        ),
+        update_strategy: HYBRID,
+        startup: TS570_TS870_STARTUP,
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: &["NB", "NR", "PA", "RA", "PC", "KS"],
+        }),
     },
     KenwoodAsciiProfile {
-        id: "kenwood-ts870",
-        display_name: "Kenwood TS-870",
+        descriptor: descriptor(
+            "kenwood-ts870",
+            "Kenwood TS-870",
+            "Kenwood ASCII profile metadata for TS-870 radios.",
+        ),
         brand: Brand::Kenwood,
+        receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        startup: TS2000_FAMILY_STARTUP,
-        poll: Some(SLOW_POLL),
+        capabilities: dual_capabilities(
+            NO_FILTER_NO_AUTO_NOTCH_RX,
+            FULL_TX,
+            FULL_RIT_XIT,
+            Some(FULL_KEYER),
+        ),
+        update_strategy: HYBRID,
+        startup: TS570_TS870_STARTUP,
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: &["NB", "NR", "PA", "RA", "PC", "KS"],
+        }),
     },
     KenwoodAsciiProfile {
-        id: "kenwood-if232",
-        display_name: "Kenwood IF-232 Protocol",
+        descriptor: descriptor(
+            "kenwood-if232",
+            "Kenwood IF-232 Protocol",
+            "Kenwood IF-232 protocol profile metadata.",
+        ),
         brand: Brand::Kenwood,
+        receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
+        capabilities: dual_capabilities(NO_FILTER_NO_RF_RX, IF232_TX, FULL_RIT_XIT, None),
+        update_strategy: HYBRID,
         startup: IF232_STARTUP,
-        poll: Some(SLOW_POLL),
+        poll: Some(PollPlan {
+            interval: IF232_POLL,
+            queries: IF232_POLL_QUERIES,
+        }),
     },
     KenwoodAsciiProfile {
-        id: "elecraft-k4",
-        display_name: "Elecraft K4",
+        descriptor: descriptor(
+            "elecraft-k4",
+            "Elecraft K4",
+            "Elecraft K4 shared Kenwood-ASCII profile metadata.",
+        ),
         brand: Brand::Elecraft,
+        receiver_kind: ReceiverKind::DualRx,
         frequency_format: FrequencyFormat::Hertz11Digit,
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        update_strategy: HYBRID,
         startup: ELECRAFT_K4_STARTUP,
-        poll: Some(SLOW_POLL),
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: K4_SLOW_POLL_QUERIES,
+        }),
     },
     KenwoodAsciiProfile {
-        id: "elecraft-k3",
-        display_name: "Elecraft K3 Family",
+        descriptor: descriptor(
+            "elecraft-k3",
+            "Elecraft K3 Family",
+            "Elecraft K3/KX profile metadata on the shared Kenwood-ASCII engine.",
+        ),
         brand: Brand::Elecraft,
+        receiver_kind: ReceiverKind::DualRx,
         frequency_format: FrequencyFormat::Hertz11Digit,
+        capabilities: dual_capabilities(K3_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        update_strategy: HYBRID,
         startup: ELECRAFT_K3_STARTUP,
-        poll: Some(SLOW_POLL),
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: K3_SLOW_POLL_QUERIES,
+        }),
     },
     KenwoodAsciiProfile {
-        id: "elecraft-k2",
-        display_name: "Elecraft K2",
+        descriptor: descriptor(
+            "elecraft-k2",
+            "Elecraft K2",
+            "Elecraft K2 profile metadata on the shared Kenwood-ASCII engine.",
+        ),
         brand: Brand::Elecraft,
+        receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
+        capabilities: dual_capabilities(BW_ONLY_RX, FULL_TX, K2_RIT_XIT, Some(FULL_KEYER)),
+        update_strategy: HYBRID,
         startup: ELECRAFT_K2_STARTUP,
-        poll: Some(SLOW_POLL),
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: K2_SLOW_POLL_QUERIES,
+        }),
     },
     KenwoodAsciiProfile {
-        id: "yaesu-ftdx101",
-        display_name: "Yaesu FTDX-101",
+        descriptor: descriptor(
+            "yaesu-ftdx101",
+            "Yaesu FTDX-101",
+            "Yaesu FTDX-101 profile metadata on the shared Kenwood-ASCII engine.",
+        ),
         brand: Brand::Yaesu,
+        receiver_kind: ReceiverKind::DualRx,
         frequency_format: FrequencyFormat::Hertz9Digit,
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(YAESU_KEYER)),
+        update_strategy: HYBRID,
         startup: YAESU_FTDX101_STARTUP,
-        poll: Some(SLOW_POLL),
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: YAESU_FTDX101_SLOW_POLL_QUERIES,
+        }),
     },
     KenwoodAsciiProfile {
-        id: "yaesu-ftdx10",
-        display_name: "Yaesu FTDX-10",
+        descriptor: descriptor(
+            "yaesu-ftdx10",
+            "Yaesu FTDX-10",
+            "Yaesu FTDX-10 profile metadata on the shared Kenwood-ASCII engine.",
+        ),
         brand: Brand::Yaesu,
+        receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        startup: YAESU_DUAL_STARTUP,
-        poll: Some(SLOW_POLL),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(YAESU_KEYER)),
+        update_strategy: HYBRID,
+        startup: YAESU_FTDX10_FT710_STARTUP,
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: YAESU_DUAL_SLOW_POLL_QUERIES,
+        }),
     },
     KenwoodAsciiProfile {
-        id: "yaesu-ft710",
-        display_name: "Yaesu FT-710",
+        descriptor: descriptor(
+            "yaesu-ft710",
+            "Yaesu FT-710",
+            "Yaesu FT-710 profile metadata on the shared Kenwood-ASCII engine.",
+        ),
         brand: Brand::Yaesu,
+        receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        startup: YAESU_DUAL_STARTUP,
-        poll: Some(SLOW_POLL),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(YAESU_KEYER)),
+        update_strategy: HYBRID,
+        startup: YAESU_FTDX10_FT710_STARTUP,
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: YAESU_DUAL_SLOW_POLL_QUERIES,
+        }),
     },
     KenwoodAsciiProfile {
-        id: "yaesu-ft891",
-        display_name: "Yaesu FT-891",
+        descriptor: descriptor(
+            "yaesu-ft891",
+            "Yaesu FT-891",
+            "Yaesu FT-891 profile metadata on the shared Kenwood-ASCII engine.",
+        ),
         brand: Brand::Yaesu,
+        receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        startup: YAESU_DUAL_STARTUP,
-        poll: Some(SLOW_POLL),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(YAESU_KEYER)),
+        update_strategy: HYBRID,
+        startup: YAESU_FT891_STARTUP,
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: YAESU_DUAL_SLOW_POLL_QUERIES,
+        }),
     },
     KenwoodAsciiProfile {
-        id: "yaesu-ft991",
-        display_name: "Yaesu FT-991",
+        descriptor: descriptor(
+            "yaesu-ft991",
+            "Yaesu FT-991",
+            "Yaesu FT-991 profile metadata on the shared Kenwood-ASCII engine.",
+        ),
         brand: Brand::Yaesu,
+        receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        startup: YAESU_DUAL_STARTUP,
-        poll: Some(SLOW_POLL),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(YAESU_KEYER)),
+        update_strategy: HYBRID,
+        startup: YAESU_FT991_STARTUP,
+        poll: Some(PollPlan {
+            interval: SLOW_POLL,
+            queries: YAESU_DUAL_SLOW_POLL_QUERIES,
+        }),
     },
 ];
 
 pub fn profile_by_id(id: &str) -> Option<&'static KenwoodAsciiProfile> {
     SUPPORTED_PROFILES
         .iter()
-        .find(|profile| profile.id.eq_ignore_ascii_case(id))
+        .find(|profile| profile.descriptor.id.eq_ignore_ascii_case(id))
 }
 
 #[cfg(test)]
@@ -281,12 +778,57 @@ mod tests {
     }
 
     #[test]
-    fn startup_steps_expand_to_valid_frames() {
+    fn metadata_contains_startup_and_poll_plans() {
         let profile = profile_by_id("elecraft-k4").unwrap();
-        let frames: Vec<_> = profile.startup.iter().map(|step| step.frame()).collect();
+        assert_eq!(profile.startup[0].label(), "AI2;");
+        assert_eq!(profile.startup[1].label(), "AID250;");
+        assert!(profile.startup.iter().any(|step| step.label() == "BW$"));
+        assert_eq!(profile.poll.unwrap().queries, K4_SLOW_POLL_QUERIES);
+    }
 
-        assert_eq!(frames[0].as_str(), "AI2;");
-        assert_eq!(frames[1].as_str(), "AID250;");
-        assert!(frames.iter().all(|frame| frame.as_str().ends_with(';')));
+    #[test]
+    fn capabilities_follow_profile_caveats() {
+        let if232 = profile_by_id("kenwood-if232").unwrap();
+        assert_eq!(
+            if232.capabilities.main_rx.filter_bandwidth,
+            Capability::Unsupported
+        );
+        assert_eq!(
+            if232.capabilities.tx.unwrap().power,
+            Capability::Unsupported
+        );
+        assert!(if232.capabilities.keyer.is_none());
+
+        let k2 = profile_by_id("elecraft-k2").unwrap();
+        assert_eq!(
+            k2.capabilities.main_rx.filter_shift,
+            Capability::Unsupported
+        );
+        assert_eq!(k2.capabilities.rit_xit.offset, Capability::ReadOnly);
+
+        let yaesu = profile_by_id("yaesu-ftdx10").unwrap();
+        let keyer = yaesu.capabilities.keyer.unwrap();
+        assert_eq!(keyer.send_cw, Capability::Unsupported);
+        assert_eq!(keyer.stop_cw, Capability::Unsupported);
+        assert_eq!(keyer.speed_wpm, Capability::ReadWrite);
+    }
+
+    #[test]
+    fn receiver_kind_and_update_strategy_match_capabilities_shape() {
+        for profile in SUPPORTED_PROFILES {
+            assert_eq!(profile.capabilities.state_updates, profile.update_strategy);
+            match profile.receiver_kind {
+                ReceiverKind::SingleVfo => assert!(profile.capabilities.sub_rx.is_none()),
+                ReceiverKind::DualVfo | ReceiverKind::DualRx => {
+                    assert!(profile.capabilities.sub_rx.is_some())
+                }
+            }
+        }
+
+        let ts990 = profile_by_id("kenwood-ts990").unwrap();
+        assert_eq!(ts990.receiver_kind, ReceiverKind::DualRx);
+
+        let if232 = profile_by_id("kenwood-if232").unwrap();
+        assert_eq!(if232.poll.unwrap().interval, IF232_POLL);
     }
 }
