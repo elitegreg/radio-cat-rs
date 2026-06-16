@@ -1,46 +1,22 @@
 # Kenwood Protocol Radio Implementation Plan
 
 This document outlines how `radio-cat-rs` should implement the Kenwood
-protocol family described in `/home/greg/cat.csv`.
+protocol family. It is intended to be self-contained: implementation work
+should be able to proceed from this document alone.
 
 In this document, "Kenwood protocol" means the shared ASCII,
 semicolon-delimited CAT protocol style used by the listed Kenwood, Elecraft,
 and Yaesu radios. It is not limited to Kenwood-branded radios.
 
-The current frontend API in `src/api.rs`, `src/command.rs`, `src/state.rs`,
-and `src/capabilities.rs` is a good fit for most of this protocol family:
+The current frontend API shape is a good fit for most of this protocol family:
 applications operate on normalized main/sub receiver paths, transmitter state,
 RIT/XIT state, keyer state, capabilities, and async state updates. The driver
 should keep that semantic API and hide model-specific VFO, mode, and CAT syntax
 behind profile-specific codecs.
 
-## Source Inputs
-
-- `/home/greg/cat.csv`: authoritative model/command matrix for this plan.
-- `docs/radio-cat-rs-design.md`: current library architecture and frontend API
-  intent.
-- `docs/radio_cat_rs_kenwood_ascii_driver_design.md`: prior shared ASCII
-  protocol driver design notes.
-- `docs/KENWOOD_PROTOCOLS.md`: broader source-derived Kenwood-style protocol
-  notes.
-
-The CSV references external filter tables that were not present under
-`/home/greg` when this document was drafted:
-
-- `Kenwood-HiLoFiltering-ts590.txt`
-- `Kenwood-HiLoFiltering-ts890.txt`
-- `Kenwood-HiLoFiltering-ts990.txt`
-- `Kenwood-HiLoFiltering-ts480.txt`
-- `ftdx101-bandwidth.csv`
-- `ftdx891-bandwidth.csv`
-- `ft991-bandwidth.csv`
-
-Those files are required before the filter conversion tables can be implemented
-precisely.
-
 ## Covered Radios
 
-The first implementation pass should cover every model column in the CSV:
+The first implementation pass should cover these profiles:
 
 | Profile | Brand | Notes |
 | --- | --- | --- |
@@ -51,7 +27,7 @@ The first implementation pass should cover every model column in the CSV:
 | `kenwood-ts480` | Kenwood | 11-digit VFO, `MD`, `IF` status, hi/lo cut conversion. |
 | `kenwood-ts570` | Kenwood | 11-digit VFO, `MD`, limited filter support. |
 | `kenwood-ts870` | Kenwood | 11-digit VFO, `MD`, limited filter support. |
-| `kenwood-if232` | Kenwood | Limited async: `IF;` only, no filters/RF extras in this matrix. |
+| `kenwood-if232` | Kenwood | Limited async: `IF;` only, no filters/RF extras. |
 | `elecraft-k4` | Elecraft | Main/sub style commands using optional `$`; `AI2;AID250;`. |
 | `elecraft-k3-family` | Elecraft | K3S/K3/KX3/KX2; optional `$` means sub VFO; `DT` data-mode composition. |
 | `elecraft-k2` | Elecraft | More limited command surface; `FR` can cancel split. |
@@ -179,6 +155,9 @@ The K3 family driver can initially share one profile ID if the CAT behavior is
 identical for `K3S`, `K3`, `KX3`, and `KX2`; otherwise split those into separate
 profile IDs later.
 
+The first implementation should use explicit profile IDs only. Do not add model
+auto-detection to the initial driver.
+
 ## Engine/Profile Split
 
 The engine owns transport mechanics:
@@ -260,7 +239,8 @@ Responsibilities:
   targets
 - update `MainRxFrequency`, `SubRxFrequency`, or `TxFrequency` patches based on
   profile VFO mapping
-- avoid treating VFO B as `sub_rx` on radios without a true sub receiver
+- expose VFO B or the secondary main/sub VFO as `sub_rx` for every listed
+  profile, even when the radio cannot receive both VFOs at once
 
 ### Info/Status Codec
 
@@ -347,11 +327,12 @@ Responsibilities:
 - route CW/FSK direct `FW`/`IS` profiles separately from phone/data hi/lo cut
   conversion profiles
 - implement Elecraft `BW`/`IS` and `$` variants
-- implement Yaesu `SH` table lookup after bandwidth CSV files are available
-- preserve signed Yaesu `IS` semantics once the public filter-shift API is
-  changed
-- emit bandwidth and shift patches only for values the current API can
-  represent honestly
+- implement Yaesu `SH` table lookup from the tables in this document
+- store and set filter shift as signed `i16`
+- round requested table-backed bandwidth upward to the next supported value
+- round requested table-backed shift to the closest supported value
+- emit bandwidth and shift patches only after decoding values into the
+  documented normalized `bandwidth_hz` plus signed `shift_hz` representation
 
 ### RF/DSP Codec
 
@@ -366,27 +347,34 @@ Inputs:
 
 Responsibilities:
 
-- map profile values to `LeveledSetting` or boolean auto-notch state
-- keep physical dB levels where the profile exposes them
+- map profile values to capability-backed indexes
+- replace the current leveled-setting API with an indexed setting before
+  implementing these drivers
+- expose allowed index labels in capabilities, for example
+  `["off", "6db", "12db", "18db"]` for values `0`, `1`, `2`, and `3`
 - handle target-prefixed main/sub commands for TS-990 and FTDX-101
 - handle Elecraft `$` variants for sub receiver/VFO commands
-- avoid claiming complete support for multiple independent controls when the
-  public API has only one field
+- collapse paired controls such as `NB1` and `NB2` into one indexed setting
+  where possible
 - implement cycling controls such as K2 `NB1;` only with query/confirm loops
 
 ### TX Codec
 
 Inputs:
 
-- `SetTxPowerDeciMw`
-- `SetPtt(bool)`
+- `SetTxPower { value, units }`
+- `Transmit(method: Option<TransmitMethod>)`
+- `Receive`
 - startup/poll `PC;` and transmitting-state queries where available
 
 Responsibilities:
 
-- convert `power_deci_mw` to profile power units and validate range before send
+- convert API power units to profile power units and validate range before send
 - encode K4 `PCNNNR` ranges without losing low-power precision
-- map boolean PTT to each profile's normal send/receive commands
+- map `TransmitMethod::Default`, `TransmitMethod::Data`, and
+  `TransmitMethod::Tune` to the best supported profile command
+- if a radio does not support the requested transmit method, fall back to
+  `TransmitMethod::Default`
 - track local transmitting state for profiles without a getter
 - prefer confirmed `IF`, `TX`, or `RX` frames over optimistic local state
 
@@ -418,18 +406,25 @@ Recommended startup:
 2. Set connection state to `Connecting`.
 3. Flush stale input if the transport supports it.
 4. Set connection state to `Identifying`.
-5. Optionally query identity if the profile supports an identity command.
-6. Enable auto-info with the profile's configured `AI` command.
-7. Execute the profile's explicit startup query plan.
-8. Apply decoded state patches through `StateReducer`.
-9. Set connection state to `Ready`.
-10. Start normal async receive handling and the poll scheduler.
+5. Enable auto-info with the profile's configured `AI` command.
+6. Execute the profile's explicit startup query plan.
+7. Apply decoded state patches through `StateReducer`.
+8. Set connection state to `Ready`.
+9. Start normal async receive handling and the poll scheduler.
+
+Do not add model auto-detection or identity-query metadata to the first
+implementation. Identity queries can be introduced later with an explicit
+auto-detection feature.
 
 Auto-info frames may arrive while the startup query plan is running. The driver
 must decode them and apply them through the same reducer used for query
 responses.
 
 ## Auto-Info Commands
+
+Auto-info should be profile metadata with a configurable override. The default
+may contain multiple semicolon-terminated frames; the engine must split and send
+them as separate frames while preserving order.
 
 | Profile | Auto-info command |
 | --- | --- |
@@ -458,31 +453,35 @@ opaque frame.
 The public API promise remains: applications subscribe to async state updates.
 The implementation may use native unsolicited frames, polling, or a hybrid.
 
-The CSV marks most profiles as full async, and `kenwood-if232` as limited
-async. Even for full-async profiles, the driver should still poll fields that
-are not represented in the profile's async frames.
+Most profiles have full async support, and `kenwood-if232` has limited async
+support through `IF;` only. The driver must not decide that data is absent from
+async merely because a frame has not arrived for a long time. Polling of
+non-async fields must come from profile metadata or explicit driver options.
 
 Default polling policy:
 
 | Category | Default interval | Examples |
 | --- | --- | --- |
-| Native async | no poll unless missing from async data | frames emitted after `AI` command |
+| Native async | no poll unless listed in poll metadata/options | frames emitted after `AI` command |
 | Limited async gap fill | 2 seconds, configurable | fields not available from `IF;` |
 | Slow background confirmation | 10 to 30 seconds, configurable | keyer speed, RF power, filter settings |
 | Manual refresh | immediate | explicit `RadioCommand::Refresh` |
 
-The user requirement says limited-async radios need slow configurable polling
-starting at once per 2 seconds for data not available in `IF;`. Implement this
-as profile poll metadata rather than hard-coded loops.
+Limited-async radios need configurable polling starting at once per 2 seconds
+for data not available in `IF;`. Implement this as profile poll metadata plus
+driver options rather than hard-coded loops.
 
 Suggested config option syntax:
 
 ```text
-poll_gap_ms=2000;poll_slow_ms=10000
+non_async_poll_commands="ZX;ZY;ZZ;",non_async_poll_seconds=2
 ```
 
-If `RadioConfig::options` remains a raw string, parse it conservatively. A
-typed options struct would be better before implementing several real drivers.
+`non_async_poll_commands` is an optional override/addition to the profile's
+poll plan. Each listed command must be parsed as a normal semicolon-terminated
+frame. If `RadioConfig::options` remains a raw string, parse it conservatively.
+A typed options struct would be better before implementing several real
+drivers.
 
 ## Initial Query Plan
 
@@ -526,11 +525,11 @@ same query list seeds the poll plan for fields not carried by async `IF;`.
 | --- | --- | --- |
 | `kenwood-ts590` | `IF`, `FA`, `FB`, `FR`, `FT`, `MD`, `DA`, `RT`, `XT`, filter state, `NT`, `NB`, `NR`, `PA`, `RA`, `PC`, `KS`. | Poll filter/RF/keyer/power slowly unless auto-info proves those frames arrive. Poll inactive VFO if `IF` only reports active VFO changes. |
 | `kenwood-ts890` | `FA`, `FB`, `FR`, `FT`, `SF0`, `SF1`, `RT`, `XT`, `RF`, hi/lo filter state, `NT`, `NB1`, `NB2`, `NR`, `PA`, `RA`, `PC`, `KS`. | Poll hi/lo filter state, `NB1`/`NB2`, RF power, and keyer speed slowly. |
-| `kenwood-ts990` | `FA`, `FB`, `SP`, `OM0`, `OM1`, `RT`, `XT`, `RF`, hi/lo filter state for main/sub, `NT0`, `NT1`, `NB10`, `NB11`, `NB20`, `NB21`, `NR0`, `NR1`, `PA0`, `PA1`, `RA0`, `RA1`, `PC`, `KS`. | Poll main/sub filter and RF/DSP state slowly. This profile has no generic `IF` row in the CSV, so do not depend on `IF` snapshots. |
+| `kenwood-ts990` | `FA`, `FB`, `SP`, `OM0`, `OM1`, `RT`, `XT`, `RF`, hi/lo filter state for main/sub, `NT0`, `NT1`, `NB10`, `NB11`, `NB20`, `NB21`, `NR0`, `NR1`, `PA0`, `PA1`, `RA0`, `RA1`, `PC`, `KS`. | Poll main/sub filter and RF/DSP state slowly. This profile has no generic `IF` status command, so do not depend on `IF` snapshots. |
 | `kenwood-ts2000` | `IF`, `FA`, `FB`, `FR`, `FT`, `MD`, `RT`, `XT`, filter state, `NT`, `NB`, `NR`, `PA`, `RA`, `PC`, `KS`. | Poll filter/RF/keyer/power slowly. Poll inactive VFO if needed. |
-| `kenwood-ts480` | `IF`, `FA`, `FB`, `FR`, `FT`, `MD`, `RT`, `XT`, filter state, `NB`, `NR`, `PA`, `RA`, `PC`, `KS`. | Poll filter/RF/keyer/power slowly. Auto notch is unsupported by this matrix. |
-| `kenwood-ts570` | `IF`, `FA`, `FB`, `FR`, `FT`, `MD`, `RT`, `XT`, `NB`, `NR`, `PA`, `RA`, `PC`, `KS`. | Poll RF/keyer/power slowly. Filter bandwidth/shift is unsupported by this matrix. |
-| `kenwood-ts870` | `IF`, `FA`, `FB`, `FR`, `FT`, `MD`, `RT`, `XT`, `NB`, `NR`, `PA`, `RA`, `PC`, `KS`. | Poll RF/keyer/power slowly. Filter bandwidth/shift is unsupported by this matrix. |
+| `kenwood-ts480` | `IF`, `FA`, `FB`, `FR`, `FT`, `MD`, `RT`, `XT`, filter state, `NB`, `NR`, `PA`, `RA`, `PC`, `KS`. | Poll filter/RF/keyer/power slowly. Auto notch is unsupported. |
+| `kenwood-ts570` | `IF`, `FA`, `FB`, `FR`, `FT`, `MD`, `RT`, `XT`, `NB`, `NR`, `PA`, `RA`, `PC`, `KS`. | Poll RF/keyer/power slowly. Filter bandwidth/shift is unsupported. |
+| `kenwood-ts870` | `IF`, `FA`, `FB`, `FR`, `FT`, `MD`, `RT`, `XT`, `NB`, `NR`, `PA`, `RA`, `PC`, `KS`. | Poll RF/keyer/power slowly. Filter bandwidth/shift is unsupported. |
 | `kenwood-if232` | `IF`, `FA`, `FB`, `SP`, `MD`, `RT`, `XT`. | Limited async: use `AI1;` for `IF` events, then poll `FA`/`FB` and any supported non-`IF` fields every 2 seconds by default. |
 | `elecraft-k4` | `FA`, `FB`, `FT`, `MD`, `DT`, `MD$`, `DT$`, `RT`, `XT`, `RO`, `RT$`, `XT$`, `RO$`, `BW`, `BW$`, `IS`, `IS$`, `NA`, `NA$`, `NB`, `NB$`, `NR`, `NR$`, `PA`, `PA$`, `RA`, `RA$`, `PC`, `KS`. | Poll RF/filter/keyer/power slowly if not emitted after `AI2;AID250;`. `$` variants are sub receiver/VFO queries. |
 | `elecraft-k3-family` | `IF`, `FA`, `FB`, `FT`, `MD`, `DT`, `MD$`, `DT$`, `RT`, `XT`, `RO`, `BW`, `BW$`, `IS`, `IS$`, `NB`, `NB$`, `PA`, `PA$`, `RA`, `RA$`, `PC`, `KS`. | Poll filter/RF/keyer/power slowly. Re-assert split after `FR` operations if the operation cancels split. |
@@ -538,8 +537,8 @@ same query list seeds the poll plan for fields not carried by async `IF;`.
 | `yaesu-ftdx101` | `IF`, `FA`, `FB`, `FT`, `MD0`, `MD1`, `RT`, `XT`, `SH0`, `SH1`, `IS0`, `IS1`, `BC0`, `BC1`, `NB0`, `NB1`, `NR0`, `NR1`, `PA0`, `PA1`, `RA0`, `RA1`, `PC`, `KS`. | Poll table-backed filter state, RF/DSP state, RF power, and keyer speed slowly. |
 | `yaesu-ftdx10` | `IF`, `FA`, `FB`, `FT`, `MD0`, `RT`, `XT`, `SH0`, `IS0`, `BC0`, `NB0`, `NR0`, `PA0`, `RA0`, `PC`, `KS`. | Poll table-backed filter state, RF/DSP state, RF power, and keyer speed slowly. |
 | `yaesu-ft710` | `IF`, `FA`, `FB`, `FT`, `MD0`, `RT`, `XT`, `SH0`, `IS0`, `BC0`, `NB0`, `NR0`, `PA0`, `RA0`, `PC`, `KS`. | Same poll shape as `yaesu-ftdx10`. |
-| `yaesu-ft891` | `IF`, `FA`, `FB`, `ST`, `MD0`, `RT`, `XT`, `SH0`, `IS0`, `BC0`, `NB0`, `NR0`, `PA0`, `RA0`, `PC`, `KS`. | Poll table-backed filter state, RF/DSP state, RF power, and keyer speed slowly. Use `ST`, not `FT`, for split. |
-| `yaesu-ft991` | `IF`, `FA`, `FB`, `FT`, `MD0`, `RT`, `XT`, `SH0`, `IS0`, `BC0`, `NB0`, `NR0`, `PA0`, `RA0`, `PC`, `KS`. | Poll table-backed filter state, RF/DSP state, RF power, and keyer speed slowly. Mode code `E` is `C4FM`. |
+| `yaesu-ft891` | `IF`, `FA`, `FB`, `ST`, `MD0`, `RT`, `XT`, `NA0`, `SH0`, `IS0`, `BC0`, `NB0`, `NR0`, `PA0`, `RA0`, `PC`, `KS`. | Poll table-backed filter state, RF/DSP state, RF power, and keyer speed slowly. Use `ST`, not `FT`, for split. `NA0` is private decoder state for `SH0`. |
+| `yaesu-ft991` | `IF`, `FA`, `FB`, `FT`, `MD0`, `RT`, `XT`, `NA0`, `SH0`, `IS0`, `BC0`, `NB0`, `NR0`, `PA0`, `RA0`, `PC`, `KS`. | Poll table-backed filter state, RF/DSP state, RF power, and keyer speed slowly. Mode code `E` is `C4FM`. `NA0` is private decoder state for `SH0`. |
 
 The profile's startup plan should omit unsupported fields entirely rather than
 query and ignore a predictable error response.
@@ -553,7 +552,7 @@ FA00014074000;
 FB00014074000;
 ```
 
-Yaesu profiles in the CSV use 9 decimal digits in Hz:
+Yaesu profiles use 9 decimal digits in Hz:
 
 ```text
 FA014074000;
@@ -582,26 +581,38 @@ The normalized API continues to use `Frequency`.
 
 The public API uses `ReceiverPath::Main` and `ReceiverPath::Sub`.
 
+Receiver layout should be represented by a public enum:
+
+```rust
+enum ReceiverKind {
+    SingleVFO,
+    DualVFO,
+    DualRx,
+}
+```
+
 Profile mapping rules:
 
-- Radios with VFO A/B but no sub receiver expose only `main_rx`.
-- VFO B frequency is still useful for split and TX frequency, but should not
-  imply `sub_rx: Some(...)` unless the radio has an independent sub receiver.
-- Radios marked `Has Sub Rx = Yes` expose `sub_rx`.
+- `SingleVFO` means there is no `sub_rx`.
+- `DualVFO` means `sub_rx` is the secondary VFO. The app can read and set VFO B
+  frequency/mode, but the radio cannot listen to both VFOs at once.
+- `DualRx` means `sub_rx` is an independently listenable sub receiver.
+- Every listed profile has VFO A/B or main/sub VFOs, so every listed profile is
+  either `DualVFO` or `DualRx`.
 - `tx.frequency` should be populated from the active TX VFO when known.
 - `tx.split` should represent whether TX and RX are separated, not merely the
   raw value of `FT`, `SP`, or `ST`.
 
-Profiles with sub receiver in the CSV:
+Profiles with `ReceiverKind::DualRx`:
 
-| Profile | Sub receiver |
+| Profile | Receiver kind |
 | --- | --- |
-| Kenwood TS-990 | yes |
-| Elecraft K4 | yes |
-| Elecraft K3S/K3/KX3/KX2 | yes |
-| Yaesu FTDX-101 | yes |
+| Kenwood TS-990 | `DualRx` |
+| Elecraft K4 | `DualRx` |
+| Elecraft K3S/K3/KX3/KX2 | `DualRx` |
+| Yaesu FTDX-101 | `DualRx` |
 
-All other listed profiles expose VFO A/B without an independent `sub_rx`.
+All other listed profiles are `DualVFO`.
 
 ## Info and Status Frames
 
@@ -609,7 +620,7 @@ All other listed profiles expose VFO A/B without an independent `sub_rx`.
 
 The Kenwood-style `IF` response is listed as `IF` plus 35 characters and `;`.
 
-Fields from the CSV:
+Fields:
 
 | Position | Meaning |
 | --- | --- |
@@ -631,7 +642,7 @@ Implement this parser once for the profiles that share it.
 
 The Yaesu profiles use `IF` plus 25 characters and `;`.
 
-Fields from the CSV:
+Fields:
 
 | Position | Meaning |
 | --- | --- |
@@ -647,36 +658,70 @@ Fields from the CSV:
 Implement this as a separate status parser from the Kenwood 35-character
 parser.
 
-### Profiles Without `IF` in the Matrix
+### Profiles Without Generic `IF`
 
-The CSV lists `Get Info` as `n/a` for TS-890, TS-990, and K4. Those profiles
-must load state from explicit field queries and their profile-specific async
-frames instead of relying on a generic `IF` startup snapshot.
+TS-890, TS-990, and K4 do not have the generic `IF` status query in this
+protocol plan. Those profiles must load state from explicit field queries and
+their profile-specific async frames instead of relying on a generic `IF`
+startup snapshot.
 
 ## Mode Codec
 
-Mode handling must be profile-specific. The current `Mode` enum is too small
-for the CSV because it lacks at least:
+Mode handling must be profile-specific, and the public API should move from the
+current flat enum to a hierarchical enum that can represent the listed analog,
+CW, and digital modes without lossy normalization.
 
-- `FSK` as a named public value, unless it intentionally remains normalized to
-  `RTTY`
-- `PSK`
-- `PSK-R`
-- `DATA-AM`
-- `DATA-FM-N`
-- `FM-N`
-- `AM-N`
-- `AFSK`
-- `C4FM`
+Recommended API shape:
 
-Decision needed: expand `Mode`, add a `DigitalMode`/submode structure, or map
-unsupported variants to `Mode::Digital`. The least lossy implementation is to
-expand `Mode` for all modes listed in the CSV.
+```rust
+enum Mode {
+    Cw(CwMode),
+    Phone(PhoneMode),
+    Digital(DigitalMode),
+}
 
-Decision needed: the CSV uses `FSK`/`FSK-R`, while the current API exposes
-`Rtty`/`RttyReverse`. Decide whether the public API should keep normalizing FSK
-to RTTY, rename/add FSK variants, or support aliases while preserving the
-current Rust enum names.
+enum CwMode {
+    Normal,
+    Reversed,
+}
+
+enum PhoneMode {
+    Usb,
+    Lsb,
+    Fm,
+    FmNarrow,
+    Am,
+    AmNarrow,
+}
+
+enum DigitalMode {
+    Fsk,
+    FskReverse,
+    Psk,
+    PskReverse,
+    Afsk,
+    Usb,
+    Lsb,
+    Fm,
+    FmNarrow,
+    Am,
+    AmNarrow,
+    C4fm,
+}
+```
+
+Display and parse strings should remain CAT/user familiar:
+
+```text
+CW, CW-R,
+USB, LSB, FM, FM-N, AM, AM-N,
+FSK, FSK-R, PSK, PSK-R, AFSK, C4FM,
+DATA-USB, DATA-LSB, DATA-FM, DATA-FM-N, DATA-AM, DATA-AM-N
+```
+
+`FSK` and `FSK-R` should be represented directly as digital modes rather than
+being renamed to RTTY in the public API. If legacy aliases are useful, parsing
+can accept `RTTY` and `RTTY-R` as aliases for `FSK` and `FSK-R`.
 
 ### Shared Kenwood `MD` Table
 
@@ -701,7 +746,7 @@ TS-590 composes the final mode from `MD` plus `DA`:
 - CW and FSK modes do not use the data flag.
 
 TS-2000, TS-480, TS-570, TS-870, and IF-232 use the simpler `MD` table in the
-CSV.
+table above.
 
 ### TS-890 `SF`
 
@@ -811,7 +856,7 @@ Profiles must translate this into model-specific VFO routing.
 | --- | --- |
 | TS-590/890/2000/480/570/870/K2 | `FT;`, `FT0;`, `FT1;` where `FT` selects TX VFO. Split means TX VFO differs from RX VFO. |
 | TS-990 and Kenwood IF-232 | `SP;`, `SP0;`, `SP1;` |
-| Elecraft K4 | `FT;`, `FT0;`, `FT1;` where CSV describes off/on. |
+| Elecraft K4 | `FT;`, `FT0;`, `FT1;` where values are off/on. |
 | Elecraft K3 family | enable with `FT1;`, disable with `FR0;`; `FR` cancels split. |
 | Yaesu FTDX-101/10/710/991 | `FTX;`, set `FT2;` or `FT3;`, response `FT0;` or `FT1;`. |
 | Yaesu FT-891 | `ST;`, `ST0;`, `ST1;` |
@@ -869,8 +914,8 @@ up/down commands. The driver should:
 If current offset is unknown and the profile only supports relative set,
 absolute set should query before sending.
 
-K2 is a special case: the CSV lists `RU;` and `RD;` with a fixed radio-defined
-step instead of an explicit Hz argument. Absolute `SetRitXitOffset` cannot be
+K2 is a special case: `RU;` and `RD;` use a fixed radio-defined step instead of
+an explicit Hz argument. Absolute `SetRitXitOffset` cannot be
 implemented exactly for K2 unless the driver iterates fixed steps and confirms
 the result. Until that behavior is proven, K2 offset setting should be exposed
 as unsupported or as a profile-specific extension rather than pretending to be
@@ -883,14 +928,14 @@ The public API exposes:
 ```rust
 ReceiverFilterState {
     bandwidth_hz: Option<u16>,
-    shift_hz: Option<u16>,
+    shift_hz: Option<i16>,
 }
 ```
 
-This matches Kenwood and Elecraft absolute-width style reasonably well, but it
-does not fully match Yaesu signed IF shift. Decision needed: change
-`shift_hz` and `SetReceiverFilterShift` from `u16` to `i16`, or introduce a
-new signed `FilterShiftHz` newtype.
+`RadioCommand::SetReceiverFilterShift` should also take `i16`. The signed value
+is required for Yaesu IF shift. At this stage the API should not promise that
+shift is normalized identically across all radios; profile codecs translate the
+signed API value into the profile's native filter representation.
 
 ### Bandwidth
 
@@ -898,12 +943,12 @@ new signed `FilterShiftHz` newtype.
 | --- | --- |
 | TS-590/TS-2000/TS-480 | CW/FSK use `FW`; phone/data use hi/lo cut conversion. |
 | TS-890/TS-990 | Convert API bandwidth/shift to hi/lo cut. |
-| TS-570/TS-870/IF-232 | Unsupported in CSV. |
+| TS-570/TS-870/IF-232 | Unsupported. |
 | Elecraft K4/K3 family | `BW` or `BW$`; value is Hz divided by 10. |
 | Elecraft K2 | `FW`; direct Hz. |
-| Yaesu FTDX-101/10/710 | `SH...` with table lookup from `ftdx101-bandwidth.csv`. |
-| Yaesu FT-891 | `SH...` with table lookup from `ftdx891-bandwidth.csv`. |
-| Yaesu FT-991 | `SH...` with table lookup from `ft991-bandwidth.csv`. |
+| Yaesu FTDX-101/10/710 | `SH...` with table lookup below. |
+| Yaesu FT-891 | `SH...` with table lookup below and narrow/wide state. |
+| Yaesu FT-991 | `SH...` with table lookup below and narrow/wide state. |
 
 ### Shift
 
@@ -911,46 +956,208 @@ new signed `FilterShiftHz` newtype.
 | --- | --- |
 | TS-590/TS-2000/TS-480 | CW/FSK use `IS`; phone/data use hi/lo cut conversion. |
 | TS-890/TS-990 | Convert API bandwidth/shift to hi/lo cut. |
-| TS-570/TS-870/IF-232/K2 | Unsupported in CSV. |
+| TS-570/TS-870/IF-232/K2 | Unsupported. |
 | Elecraft K4/K3 family | `IS` or `IS$`; direct Hz. |
 | Yaesu profiles | Signed `IS` offset from center, not absolute frequency. |
 
 The filter implementation should be table-driven by mode family. Do not put the
 hi/lo conversion math in the command router.
 
+Kenwood hi/lo cut conversion must use profile-specific neutral centers. Each
+profile that converts between bandwidth/shift and high/low cut must define its
+neutral center per relevant mode family in profile metadata.
+
+Table-backed selection rules:
+
+- For bandwidth requests, choose the smallest supported value that is greater
+  than or equal to the requested bandwidth. If no value is greater, choose the
+  largest supported value.
+- For shift requests, choose the closest supported value. If two values are
+  equally close, choose the value with the smaller absolute shift.
+- Query decoding must return the actual supported value selected by the radio,
+  not the originally requested value.
+
+### Kenwood Hi/Lo Cut Tables
+
+TS-590 and TS-2000 phone/data modes use `SHXX;` for high cut and `SLXX;` for
+low cut. TS-480 uses the same command shape with slightly different mode
+families. TS-890 uses `SH0XXX;` and `SL0XX;`. TS-990 uses `SHVXXX;` and
+`SLVXX;`, where `V` is `0` main or `1` sub.
+
+TS-590 and TS-2000:
+
+| Mode family | High-cut IDs | Low-cut IDs |
+| --- | --- | --- |
+| SSB/SSB-DATA/FM/FM-DATA | `00=1000`, `01=1200`, `02=1400`, `03=1600`, `04=1800`, `05=2000`, `06=2200`, `07=2400`, `08=2600`, `09=2800`, `10=3000`, `11=3400`, `12=4000`, `13=5000` | `00=0`, `01=50`, `02=100`, `03=200`, `04=300`, `05=400`, `06=500`, `07=600`, `08=700`, `09=800`, `10=900`, `11=1000` |
+| AM/AM-DATA | `00=2500`, `01=3000`, `02=4000`, `03=5000` | `00=0`, `01=100`, `02=200`, `03=300` |
+
+TS-480:
+
+| Mode family | High-cut IDs | Low-cut IDs |
+| --- | --- | --- |
+| SSB/FM | `00=1000`, `01=1200`, `02=1400`, `03=1600`, `04=1800`, `05=2000`, `06=2200`, `07=2400`, `08=2600`, `09=2800`, `10=3000`, `11=3400`, `12=4000`, `13=5000` | `00=0`, `01=50`, `02=100`, `03=200`, `04=300`, `05=400`, `06=500`, `07=600`, `08=700`, `09=800`, `10=900`, `11=1000` |
+| AM | `00=2500`, `01=3000`, `02=4000`, `03=5000` | `00=0`, `01=100`, `02=200`, `03=300` |
+
+TS-590 and TS-480 also expose SSB/SSB-DATA direct bandwidth/shift tables:
+
+| Table | IDs |
+| --- | --- |
+| Bandwidth | `00=50`, `01=80`, `02=100`, `03=150`, `04=200`, `05=250`, `06=300`, `07=400`, `08=500`, `09=600`, `10=1000`, `11=1500`, `12=2000`, `13=2500` |
+| TS-590S shift | `00=1000`, `01=1100`, `02=1200`, `03=1300`, `04=1400`, `05=1500`, `06=1600`, `07=1700`, `08=1800`, `09=1900`, `10=2000`, `11=2100`, `12=2210` |
+| TS-590SG shift | `00=1000`, `01=1100`, `02=1200`, `03=1300`, `04=1400`, `05=1500`, `06=1600`, `07=1700`, `08=1750`, `09=1800`, `10=1900`, `11=2000`, `12=2100`, `13=2210` |
+
+TS-890 and TS-990 high cut:
+
+| ID | USB/LSB/DATA-USB/DATA-LSB | AM/DATA-AM | FM/DATA-FM |
+| --- | --- | --- | --- |
+| `000` | 600 | 2000 | 1000 |
+| `001` | 700 | 2100 | 1100 |
+| `002` | 800 | 2200 | 1200 |
+| `003` | 900 | 2300 | 1300 |
+| `004` | 1000 | 2400 | 1400 |
+| `005` | 1100 | 2500 | 1500 |
+| `006` | 1200 | 2600 | 1600 |
+| `007` | 1300 | 2700 | 1700 |
+| `008` | 1400 | 2800 | 1800 |
+| `009` | 1500 | 2900 | 1900 |
+| `010` | 1600 | 3000 | 2000 |
+| `011` | 1700 | 3500 | 2100 |
+| `012` | 1800 | 4000 | 2200 |
+| `013` | 1900 | 5000 | 2300 |
+| `014` | 2000 |  | 2400 |
+| `015` | 2100 |  | 2500 |
+| `016` | 2200 |  | 2600 |
+| `017` | 2300 |  | 2700 |
+| `018` | 2400 |  | 2800 |
+| `019` | 2500 |  | 2900 |
+| `020` | 2600 |  | 3000 |
+| `021` | 2700 |  | 3400 |
+| `022` | 2800 |  | 4000 |
+| `023` | 2900 |  | 5000 |
+| `024` | 3000 |  |  |
+| `025` | 3400 |  |  |
+| `026` | 4000 |  |  |
+| `027` | 5000 |  |  |
+
+TS-890 and TS-990 low cut:
+
+| ID | USB/LSB/DATA-USB/DATA-LSB | AM/DATA-AM | FM/DATA-FM |
+| --- | --- | --- | --- |
+| `00` | 0 | 0 | 0 |
+| `01` | 50 | 100 | 50 |
+| `02` | 100 | 200 | 100 |
+| `03` | 200 | 300 | 200 |
+| `04` | 300 |  | 300 |
+| `05` | 400 |  | 400 |
+| `06` | 500 |  | 500 |
+| `07` | 600 |  | 600 |
+| `08` | 700 |  | 700 |
+| `09` | 800 |  | 800 |
+| `10` | 900 |  | 900 |
+| `11` | 1000 |  | 1000 |
+| `12` | 1100 |  |  |
+| `13` | 1200 |  |  |
+| `14` | 1300 |  |  |
+| `15` | 1400 |  |  |
+| `16` | 1500 |  |  |
+| `17` | 1600 |  |  |
+| `18` | 1700 |  |  |
+| `19` | 1800 |  |  |
+| `20` | 1900 |  |  |
+| `21` | 2000 |  |  |
+
+### Yaesu Bandwidth Tables
+
+FTDX-101, FTDX-10, and FT-710 `SH` bandwidth IDs:
+
+| ID | SSB | CW | FSK | PSK |
+| --- | --- | --- | --- | --- |
+| `00` | default | default | default | default |
+| `01` | 300 | 50 | 50 | 50 |
+| `02` | 400 | 100 | 100 | 100 |
+| `03` | 600 | 150 | 150 | 150 |
+| `04` | 850 | 200 | 200 | 200 |
+| `05` | 850 | 250 | 250 | 250 |
+| `06` | 1200 | 300 | 300 | 300 |
+| `07` | 1500 | 350 | 350 | 350 |
+| `08` | 1650 | 400 | 400 | 400 |
+| `09` | 1800 | 450 | 450 | 450 |
+| `10` | 1950 | 500 | 500 | 500 |
+| `11` | 2100 | 600 | 600 | 600 |
+| `12` | 2200 | 800 | 800 | 800 |
+| `13` | 2300 | 1200 | 1200 | 1200 |
+| `14` | 2400 | 1400 | 1400 | 1400 |
+| `15` | 2500 | 1700 | 1700 | 1700 |
+| `16` | 2600 | 2000 | 2000 | 2000 |
+| `17` | 2700 | 2400 | 2400 | 2400 |
+| `18` | 2800 | 3000 | 3000 | 3000 |
+| `19` | 2900 |  |  |  |
+| `20` | 3000 |  |  |  |
+| `21` | 3200 |  |  |  |
+
+FT-891 and FT-991 have a narrow/wide setting:
+
+```text
+NA0;       query narrow/wide
+NA0X;      set narrow/wide, X=0 or 1
+```
+
+For those profiles, `NA0` affects the `SH` bandwidth lookup. Treat `NA0` as
+profile-private decoder state that is necessary to interpret and set `SH0`.
+Do not expose it as a normal filter setting or indexed RF control in the public
+API.
+
+| ID | SSB Narrow | SSB Wide | CW Narrow | CW Wide | FSK/PSK Narrow | FSK/PSK Wide |
+| --- | --- | --- | --- | --- | --- | --- |
+| `00` | 1500 | 2400 | 500 | 2400 | 300 | 500 |
+| `01` | 200 |  | 50 |  | 50 |  |
+| `02` | 400 |  | 100 |  | 100 |  |
+| `03` | 600 |  | 150 |  | 150 |  |
+| `04` | 850 |  | 200 |  | 200 |  |
+| `05` | 1100 |  | 250 |  | 250 |  |
+| `06` | 1350 |  | 300 |  | 300 |  |
+| `07` | 1500 |  | 350 |  | 350 |  |
+| `08` | 1650 |  | 400 |  | 400 |  |
+| `09` | 1800 |  | 450 |  | 450 |  |
+| `10` |  | 1950 | 500 | 500 | 500 | 500 |
+| `11` |  | 2100 |  | 800 |  | 800 |
+| `12` |  | 2200 |  | 1200 |  | 1200 |
+| `13` |  | 2300 |  | 1400 |  | 1400 |
+| `14` |  | 2400 |  | 1700 |  | 1700 |
+| `15` |  | 2500 |  | 2000 |  | 2000 |
+| `16` |  | 2600 |  | 2400 |  | 2400 |
+| `17` |  | 2700 |  | 3000 |  | 3000 |
+| `18` |  | 2800 |  |  |  |  |
+| `19` |  | 2900 |  |  |  |  |
+| `20` |  | 3000 |  |  |  |  |
+| `21` |  | 3200 |  |  |  |  |
+
 ## RF and DSP Controls
 
-The existing `LeveledSetting` type works for most preamp, attenuator, noise
-blanker, and noise reduction rows:
+Preamp, attenuator, noise blanker, and noise reduction should use indexed
+settings instead of ambiguous physical `level` values:
 
 ```rust
-LeveledSetting {
+IndexedSetting {
     enabled: Option<bool>,
-    level: Option<u8>,
+    index: Option<u8>,
 }
 ```
 
+The index is interpreted through receiver capabilities. Capabilities should
+publish the supported values as plain string labels, and index `0` should be
+the off value for controls that have an off state.
+
 Mapping examples:
 
-- on/off preamp: `enabled=true`, `level=1`
-- off: `enabled=false`, `level=0`
-- TS-890 preamp 2: `enabled=true`, `level=2`
-- TS-890 attenuator 18 dB: `enabled=true`, `level=18` or profile code `3`
-
-Decision needed: choose whether attenuator `level` is a physical dB value or a
-profile-specific ordinal. Physical dB is better for the public API, but some
-profiles only expose ordinal on/off state.
-
-Decision needed: choose how to expose multiple independent noise blankers such
-as TS-890 `NB1`/`NB2` and TS-990 `NB1`/`NB2`. Options:
-
-- map the first or active blanker into the existing single `noise_blanker`
-  field
-- add indexed/multiple RF controls to the frontend API
-- expose profile-specific extension commands later
-
-Until decided, profile docs should record both blankers but the normalized API
-should only claim support for the one it can represent honestly.
+- on/off preamp: capability labels `["off", "on"]`, off is index `0`, on is
+  index `1`
+- TS-890 preamp: labels `["off", "preamp1", "preamp2"]`
+- TS-890 attenuator: labels `["off", "6db", "12db", "18db"]`
+- K4 attenuator: labels `["off", "3db", "6db", "9db", "12db", "15db",
+  "18db", "21db"]`
+- TS-890/TS-990 paired noise blankers: labels `["off", "nb1", "nb2",
+  "nb1+nb2"]`
 
 ### RF/DSP Command Families
 
@@ -965,8 +1172,8 @@ profile must still define the exact shape, target, and value map.
 | Auto notch | Elecraft K4 | `NA$;`; set `NA$0;`/`NA$1;`; `$` selects sub. |
 | Auto notch | Yaesu profiles | `BC...;`; target is main/sub or `0` depending on model. |
 | Noise blanker | TS-590 | `NB;`; set `NB1;` or `NB2;` for blanker selection. |
-| Noise blanker | TS-890 | `NB1;`, `NB2;`; set `NB10;`, `NB11;`, `NB20;`, `NB21;`. |
-| Noise blanker | TS-990 | `NB1X;`, `NB2X;`; set `NB1X0;`/`NB1X1;`, `NB2X0;`/`NB2X1;`. |
+| Noise blanker | TS-890 | `NB1;`, `NB2;`; set `NB10;`, `NB11;`, `NB20;`, `NB21;`; map to combined indexes off/nb1/nb2/nb1+nb2. |
+| Noise blanker | TS-990 | `NB1X;`, `NB2X;`; set `NB1X0;`/`NB1X1;`, `NB2X0;`/`NB2X1;`; map to combined indexes off/nb1/nb2/nb1+nb2 per target. |
 | Noise blanker | TS-2000/480/570/870 | `NB;`; set `NB0;`/`NB1;`. |
 | Noise blanker | Elecraft K4/K3 family | `NB$;`; set `NB$0;`/`NB$1;`; `$` selects sub. |
 | Noise blanker | Elecraft K2 | `NB;`; `NB1;` toggles/cycles, so setting a target value requires query and repeat. |
@@ -989,17 +1196,27 @@ profile must still define the exact shape, target, and value map.
 | Attenuator | Elecraft K2 | `RA;`; set `RA00;`/`RA01;`. |
 | Attenuator | Yaesu profiles | `RAX;` or `RA0;`; values are off/6/12/18 dB on larger models, off/on on FT-891/FT-991. |
 
-Profiles with `n/a` in the CSV for these rows should set the corresponding
-capability to `Unsupported` even if the shared command family exists for other
-profiles.
+Unsupported rows should set the corresponding capability to `Unsupported` even
+if the shared command family exists for other profiles.
 
 ## RF Power
 
-The current API uses:
+The public API should change from deci-milliwatts to an explicit value plus
+unit:
 
 ```rust
-SetTxPowerDeciMw(u32)
-TransmitterState::power_deci_mw
+enum PowerUnit {
+    Watts,
+    Milliwatts,
+    Microwatts,
+}
+
+SetTxPower {
+    value: u16,
+    unit: PowerUnit,
+}
+
+TransmitterState::power: Option<Power>
 ```
 
 Most profiles use `PCXXX;` where `XXX` is watts:
@@ -1009,14 +1226,10 @@ PC005;
 PC100;
 ```
 
-Convert between watts and deci-milliwatts:
+The power type should provide conversions into watts, milliwatts, and
+microwatts so each profile codec can validate and format the required unit.
 
-```text
-watts = power_deci_mw / 10_000
-power_deci_mw = watts * 10_000
-```
-
-Profile limits from the CSV:
+Profile limits:
 
 | Profiles | Range |
 | --- | --- |
@@ -1029,12 +1242,34 @@ Profile limits from the CSV:
 | Yaesu FTDX-101 | 5 to 200 W |
 | Yaesu FTDX-10/FT-710/FT-891/FT-991 | 5 to 100 W |
 
-Elecraft K4 uses `PCNNNR` with range suffix `L`, `H`, or `X`. The normalized
-API can still use `power_deci_mw`; the K4 profile chooses the suffix.
+Elecraft K4 uses `PCNNNR` with range suffix `L`, `H`, or `X`:
+
+| Suffix | Range |
+| --- | --- |
+| `H` | 1 to 110 W |
+| `L` | 0.1 to 10 W |
+| `X` | 0.1 to 10 mW |
+
+The K4 profile chooses the suffix that preserves the requested precision.
 
 ## PTT
 
-The current API exposes `set_ptt(bool)`.
+The current boolean PTT API should be split into transmit and receive commands:
+
+```rust
+enum TransmitMethod {
+    Default,
+    Data,
+    Tune,
+}
+
+transmit(method: Option<TransmitMethod>)
+receive()
+```
+
+`None` maps to `TransmitMethod::Default`. If a caller requests `Data` or
+`Tune` on a profile that cannot express that method, the driver should use the
+default transmit command instead of failing.
 
 Profile mappings:
 
@@ -1044,10 +1279,6 @@ Profile mappings:
 | TS-2000 | `TX0;` | `RX;` |
 | TS-570/870/IF-232/K4/K3/K2 | `TX;` | `RX;` |
 | Yaesu profiles | `TX1;` data send, `TX2;` send | `TX0;` |
-
-Decision needed: keep boolean PTT only, or add a transmit mode API for data
-send and tune. Boolean PTT can map to the normal send form, but it cannot
-express tune or data-send variants.
 
 Because some profiles have no PTT getter, the driver should track local PTT
 state after successful command sends and correct it from `IF;` or async `TX`/`RX`
@@ -1063,7 +1294,7 @@ send_cw(text)
 stop_cw()
 ```
 
-This maps well to the CSV.
+This maps well to the protocol.
 
 CW send:
 
@@ -1072,7 +1303,7 @@ CW send:
 | Kenwood TS-590/890/990/2000/480/570/870 | `KY text;` | 24 chars or fewer, padded where required. |
 | Elecraft K4 | `KY text;` | 60 chars. |
 | Elecraft K3 family/K2 | `KY text;` | 24 chars or fewer. |
-| Kenwood IF-232 and Yaesu profiles | unsupported in CSV. |
+| Kenwood IF-232 and Yaesu profiles | unsupported. |
 
 CW stop:
 
@@ -1093,7 +1324,8 @@ Keyer speed:
 | Elecraft K2 | 9 to 50 WPM |
 
 The `KY;` query response should update `KeyerState::sending` if the profile can
-report buffer availability.
+report buffer availability. K4 specifically supports `KY;` as a CW buffer-status
+getter.
 
 ## Capabilities
 
@@ -1106,6 +1338,7 @@ Each profile should define:
 struct KenwoodProfile {
     descriptor: DriverDescriptor,
     capabilities: RadioCapabilities,
+    receiver_kind: ReceiverKind,
     update_strategy: StateUpdateCapability,
     startup: StartupPlan,
     poll_plan: PollPlan,
@@ -1115,24 +1348,29 @@ struct KenwoodProfile {
 
 Rules:
 
-- `sub_rx: Some(...)` only for true sub receivers.
-- VFO B alone does not create `sub_rx`.
-- Unsupported CSV cells map to `Capability::Unsupported`.
+- `receiver_kind` is `SingleVFO`, `DualVFO`, or `DualRx`.
+- `sub_rx: Some(...)` when `receiver_kind` is `DualVFO` or `DualRx`.
+- `sub_rx: None` when `receiver_kind` is `SingleVFO`.
+- Every listed profile is either `DualVFO` or `DualRx`.
+- Unsupported rows map to `Capability::Unsupported`.
 - Set-only commands map to `WriteOnly`.
 - Query-only commands map to `ReadOnly`.
 - Query and set map to `ReadWrite`.
 - `state_updates` is `Native` for full async profiles, `Hybrid` for limited
   async plus polling, and `Polling` only if auto-info cannot be enabled.
+- RF/DSP indexed controls publish supported value labels as plain strings in
+  capabilities.
 
 ### Capability Summary Matrix
 
-This matrix summarizes the CSV in terms of the existing `RadioCapabilities`
-shape. It is not a replacement for profile-specific command metadata; it is the
+This matrix summarizes the protocol in terms of the `RadioCapabilities` shape.
+It is not a replacement for profile-specific command metadata; it is the
 starting point for each profile's capabilities value.
 
 Legend:
 
-- `Sub`: whether `RadioCapabilities::sub_rx` should be `Some`.
+- `Rx Kind`: `DualVFO` exposes a secondary VFO as `sub_rx`; `DualRx` exposes an
+  independently listenable sub receiver as `sub_rx`.
 - `Filter`: receiver filter bandwidth/shift support.
 - `RIT/XIT`: enable state plus offset support.
 - `RF/DSP`: `AN` auto notch, `NB` noise blanker, `NR` noise reduction, `PA`
@@ -1140,35 +1378,34 @@ Legend:
 - `TX`: `PC` RF power and `PTT` transmit control.
 - `Keyer/CW`: `KS` keyer speed, `KY` send CW, `Stop` stop CW.
 
-| Profile | Sub | Filter | RIT/XIT | RF/DSP | TX | Keyer/CW |
+| Profile | Rx Kind | Filter | RIT/XIT | RF/DSP | TX | Keyer/CW |
 | --- | --- | --- | --- | --- | --- | --- |
-| `kenwood-ts590` | no | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
-| `kenwood-ts890` | no | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
-| `kenwood-ts990` | yes | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
-| `kenwood-ts2000` | no | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
-| `kenwood-ts480` | no | BW, shift | RT, XT, offset | NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
-| `kenwood-ts570` | no | unsupported | RT, XT, offset | NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
-| `kenwood-ts870` | no | unsupported | RT, XT, offset | NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
-| `kenwood-if232` | no | unsupported | RT, XT, offset | unsupported | PTT | unsupported |
-| `elecraft-k4` | yes | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
-| `elecraft-k3-family` | yes | BW, shift | RT, XT, offset | NB, PA, RA | PC, PTT | KS, KY, Stop |
-| `elecraft-k2` | no | BW only | RT, XT, offset | NB, PA, RA | PC, PTT | KS, KY, Stop |
-| `yaesu-ftdx101` | yes | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS |
-| `yaesu-ftdx10` | no | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS |
-| `yaesu-ft710` | no | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS |
-| `yaesu-ft891` | no | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS |
-| `yaesu-ft991` | no | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS |
+| `kenwood-ts590` | DualVFO | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
+| `kenwood-ts890` | DualVFO | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
+| `kenwood-ts990` | DualRx | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
+| `kenwood-ts2000` | DualVFO | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
+| `kenwood-ts480` | DualVFO | BW, shift | RT, XT, offset | NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
+| `kenwood-ts570` | DualVFO | unsupported | RT, XT, offset | NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
+| `kenwood-ts870` | DualVFO | unsupported | RT, XT, offset | NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
+| `kenwood-if232` | DualVFO | unsupported | RT, XT, offset | unsupported | PTT | unsupported |
+| `elecraft-k4` | DualRx | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS, KY, Stop |
+| `elecraft-k3-family` | DualRx | BW, shift | RT, XT, offset | NB, PA, RA | PC, PTT | KS, KY, Stop |
+| `elecraft-k2` | DualVFO | BW only | RT, XT, offset | NB, PA, RA | PC, PTT | KS, KY, Stop |
+| `yaesu-ftdx101` | DualRx | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS |
+| `yaesu-ftdx10` | DualVFO | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS |
+| `yaesu-ft710` | DualVFO | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS |
+| `yaesu-ft891` | DualVFO | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS |
+| `yaesu-ft991` | DualVFO | BW, shift | RT, XT, offset | AN, NB, NR, PA, RA | PC, PTT | KS |
 
 Capability caveats:
 
 - `elecraft-k2` RIT/XIT offset is fixed-step for set operations, so expose
   absolute offset write only after the iterative behavior is implemented and
   tested.
-- Yaesu `shift` is signed. The current unsigned API cannot fully represent it
-  until the filter-shift decision is resolved.
-- Multi-control features such as TS-890/TS-990 `NB1`/`NB2` cannot be fully
-  represented by the current single `noise_blanker` field.
-- Yaesu profiles expose keyer speed but not CAT CW send/stop in the CSV, so
+- Filter shift must be signed `i16`.
+- Multi-control features such as TS-890/TS-990 `NB1`/`NB2` map to indexed
+  capability values such as off/nb1/nb2/nb1+nb2.
+- Yaesu profiles expose keyer speed but not CAT CW send/stop, so
   `keyer.send_cw` and `keyer.stop_cw` should be `Unsupported`.
 - `kenwood-if232` has `PTT` but no RF power row, so `tx.power` should be
   `Unsupported`.
@@ -1182,13 +1419,18 @@ Recommended semantics:
 
 - Setter returns `Ok(())` after the command is accepted or no protocol error is
   observed before timeout.
+- In full async auto-info modes, most setters echo the sent command or emit an
+  equivalent state frame. `KY` is not an ordinary setter and should not use this
+  expectation.
 - If the command has a confirming query/response path, the driver should prefer
   confirmation before returning.
 - If confirmation is unavailable, emit an optimistic state patch after the send
   succeeds and mark the update source as `Optimistic`.
 - Poll or async frames later correct the state if the radio disagrees.
+- Command timeouts should be short and configurable per profile or driver
+  instance.
 
-`SetPtt(false)` and CW stop commands should use high command priority.
+`receive()` and CW stop commands should use high command priority.
 
 ## Transaction Matching
 
@@ -1212,7 +1454,7 @@ Examples:
 | Command | Expected response |
 | --- | --- |
 | `FA;` | matching `FA...;` |
-| `FA00014074000;` | no response, echo, or matching `FA...;` depending on profile |
+| `FA00014074000;` | no response, echo, or matching `FA...;` depending on profile and auto-info mode |
 | `IF;` | matching `IF...;` |
 | `AI2;` | usually no response; unsolicited frames may follow |
 | `KY text;` | no immediate response; `KY;` query can confirm buffer |
@@ -1235,8 +1477,9 @@ Unit tests:
 - mode encode/decode per profile family
 - split encode/decode per profile family
 - RIT/XIT offset encode/decode including relative set
-- filter lookup/conversion once external tables are available
-- RF/DSP leveled setting mapping
+- filter lookup/conversion from the in-document tables
+- FT-891/FT-991 private `NA0` state when encoding and decoding `SH0`
+- RF/DSP indexed setting mapping
 - PTT command mapping
 - CW chunking and stop command mapping
 
@@ -1273,14 +1516,14 @@ tests/fixtures/kenwood_ascii/
 
 1. Add `protocol::kenwood_ascii` frame, error, transaction, and profile
    scaffolding.
-2. Add profile metadata for all CSV columns with capabilities and startup plans.
+2. Add profile metadata for all profiles with capabilities and startup plans.
 3. Implement shared frequency, error, PTT, and keyer codecs.
 4. Implement Kenwood 35-character `IF` and Yaesu 25-character `IF` parsers.
 5. Implement mode codecs for Kenwood, TS-890, TS-990, Elecraft, K2, and Yaesu.
 6. Implement split and VFO routing.
 7. Implement RIT/XIT.
 8. Implement RF power and RF/DSP controls.
-9. Implement filters after the missing external tables are available.
+9. Implement filters from the in-document hi/lo and bandwidth tables.
 10. Register public driver IDs and add mock transport tests.
 
 The first end-to-end profile should be TS-590 because it exercises common
@@ -1289,27 +1532,3 @@ PTT, CW, and hi/lo filter conversion. The second should be a Yaesu profile
 such as FTDX-10 to validate 9-digit frequency, Yaesu `IF`, signed IF shift, and
 mode target syntax. The third should be Elecraft K4 or K3 family to validate
 `$` sub-VFO commands and `DT` data-mode composition.
-
-## Decisions Needed
-
-These are the decisions I need from you before implementation details are
-finalized:
-
-1. Should this new document stay as
-   `docs/KENWOOD_PROTOCOL_IMPLEMENTATION.md`, or should it be merged into
-   `docs/radio_cat_rs_kenwood_ascii_driver_design.md`?
-2. Where are the missing filter reference files listed in the Source Inputs
-   section?
-3. Should `Mode` be expanded to cover every mode in the CSV, or should
-   uncommon digital modes collapse to `Mode::Digital`?
-4. Should receiver filter shift become signed (`i16` or a newtype) to support
-   Yaesu IF shift?
-5. Should public PTT remain boolean, or should the API expose normal send,
-   data send, and tune?
-6. Should attenuator/preamp/noise-control `level` values use physical values
-   where possible, such as dB, or profile-specific ordinals?
-7. How should multiple independent noise blankers/noise reducers be exposed?
-8. Should startup send `AI` before the explicit query plan, as recommended
-   here, or after the explicit query plan?
-9. Should driver selection be manual by explicit profile ID only, or should the
-   driver also attempt model auto-detection later?
