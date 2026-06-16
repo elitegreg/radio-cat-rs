@@ -77,15 +77,22 @@ where
     T: AsyncRead + AsyncWrite + Unpin + Send,
 {
     async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
+        tracing::debug!(byte_count = bytes.len(), "transport write");
         self.io.write_all(bytes).await?;
         Ok(())
     }
 
     async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
-        Ok(self.io.read(buf).await?)
+        let count = self.io.read(buf).await?;
+        if count > 0 {
+            let received = String::from_utf8_lossy(&buf[..count]);
+            tracing::trace!(byte_count = count, payload = %received, "transport read bytes");
+        }
+        Ok(count)
     }
 
     async fn flush(&mut self) -> Result<()> {
+        tracing::trace!("transport flush");
         self.io.flush().await?;
         Ok(())
     }
@@ -110,15 +117,22 @@ impl TcpTransport {
 #[async_trait]
 impl CatTransport for TcpTransport {
     async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
+        tracing::debug!(byte_count = bytes.len(), "tcp transport write");
         self.stream.write_all(bytes).await?;
         Ok(())
     }
 
     async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
-        Ok(self.stream.read(buf).await?)
+        let count = self.stream.read(buf).await?;
+        if count > 0 {
+            let received = String::from_utf8_lossy(&buf[..count]);
+            tracing::trace!(byte_count = count, payload = %received, "tcp transport read bytes");
+        }
+        Ok(count)
     }
 
     async fn flush(&mut self) -> Result<()> {
+        tracing::trace!("tcp transport flush");
         self.stream.flush().await?;
         Ok(())
     }
@@ -143,15 +157,22 @@ impl SerialTransport {
 #[async_trait]
 impl CatTransport for SerialTransport {
     async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
+        tracing::debug!(byte_count = bytes.len(), "serial transport write");
         self.stream.write_all(bytes).await?;
         Ok(())
     }
 
     async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
-        Ok(self.stream.read(buf).await?)
+        let count = self.stream.read(buf).await?;
+        if count > 0 {
+            let received = String::from_utf8_lossy(&buf[..count]);
+            tracing::trace!(byte_count = count, payload = %received, "serial transport read bytes");
+        }
+        Ok(count)
     }
 
     async fn flush(&mut self) -> Result<()> {
+        tracing::trace!("serial transport flush");
         self.stream.flush().await?;
         Ok(())
     }
@@ -159,12 +180,21 @@ impl CatTransport for SerialTransport {
 
 pub async fn open_transport(config: &TransportConfig) -> Result<Option<BoxedCatTransport>> {
     match config {
-        TransportConfig::None => Ok(None),
+        TransportConfig::None => {
+            tracing::info!("radio configured without transport");
+            Ok(None)
+        }
         TransportConfig::Serial { path, baud_rate } => {
-            Ok(Some(Box::new(SerialTransport::open(path, *baud_rate)?)))
+            tracing::info!(path = %path, baud_rate = *baud_rate, "opening serial transport");
+            let transport = SerialTransport::open(path, *baud_rate)?;
+            tracing::info!(path = %path, baud_rate = *baud_rate, "serial transport opened");
+            Ok(Some(Box::new(transport)))
         }
         TransportConfig::Tcp { address } => {
-            Ok(Some(Box::new(TcpTransport::connect(address).await?)))
+            tracing::info!(address = %address, "opening TCP transport");
+            let transport = TcpTransport::connect(address).await?;
+            tracing::info!(address = %address, "TCP transport connected");
+            Ok(Some(Box::new(transport)))
         }
     }
 }

@@ -207,7 +207,18 @@ fn encode_shift(
         } else {
             ""
         };
-        let (sign, abs) = signed_parts(shift_hz);
+        let encoded_shift = if profile.id() == "elecraft-k4" {
+            shift_hz / 10
+        } else {
+            shift_hz
+        };
+        let optimistic_shift = if profile.id() == "elecraft-k4" {
+            encoded_shift * 10
+        } else {
+            shift_hz
+        };
+
+        let (sign, abs) = signed_parts_space_positive(encoded_shift);
         let frame = AsciiFrame::new(format!("IS{suffix}{sign}{abs:04};"))?;
         let matcher = if suffix.is_empty() {
             ResponseMatcher::Prefix("IS")
@@ -218,7 +229,7 @@ fn encode_shift(
         return Ok(EncodedCommand::new(
             vec![frame],
             matcher,
-            vec![shift_patch(receiver, shift_hz)],
+            vec![shift_patch(receiver, optimistic_shift)],
             CommandPriority::Normal,
         ));
     }
@@ -236,7 +247,7 @@ fn encode_shift(
     }
 
     if uses_direct_is_for_mode(profile, state, receiver) {
-        let (sign, abs) = signed_parts(shift_hz);
+        let (sign, abs) = signed_parts_space_positive(shift_hz);
         let frame = AsciiFrame::new(format!("IS{sign}{abs:04};"))?;
         return Ok(EncodedCommand::new(
             vec![frame],
@@ -281,7 +292,10 @@ fn decode_bw(frame: &AsciiFrame) -> Result<Vec<StatePatch>> {
 
 fn decode_is(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result<Vec<StatePatch>> {
     if frame.command() == "IS$" {
-        let shift = parse_signed(frame.command_static_hint(), frame.payload())?;
+        let mut shift = parse_signed(frame.command_static_hint(), frame.payload())?;
+        if profile.id() == "elecraft-k4" {
+            shift *= 10;
+        }
         return Ok(vec![shift_patch(ReceiverPath::Sub, shift)]);
     }
 
@@ -308,7 +322,10 @@ fn decode_is(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result<Vec<St
         return Ok(vec![shift_patch(receiver, shift)]);
     }
 
-    let shift = parse_signed(frame.command_static_hint(), frame.payload())?;
+    let mut shift = parse_signed(frame.command_static_hint(), frame.payload())?;
+    if profile.id() == "elecraft-k4" {
+        shift *= 10;
+    }
     Ok(vec![shift_patch(ReceiverPath::Main, shift)])
 }
 
@@ -636,10 +653,13 @@ fn parse_u8(command: &'static str, payload: &str) -> Result<u8> {
 }
 
 fn parse_signed(command: &'static str, payload: &str) -> Result<i16> {
-    payload.parse::<i16>().map_err(|error| RadioError::Decode {
-        command,
-        message: error.to_string(),
-    })
+    payload
+        .trim()
+        .parse::<i16>()
+        .map_err(|error| RadioError::Decode {
+            command,
+            message: error.to_string(),
+        })
 }
 
 fn require_filter_capability(
@@ -712,6 +732,11 @@ fn receiver_shift(state: &RadioState, receiver: ReceiverPath) -> Option<i16> {
 
 fn signed_parts(value: i16) -> (char, u16) {
     let sign = if value < 0 { '-' } else { '+' };
+    (sign, value.unsigned_abs())
+}
+
+fn signed_parts_space_positive(value: i16) -> (char, u16) {
+    let sign = if value < 0 { '-' } else { ' ' };
     (sign, value.unsigned_abs())
 }
 
@@ -1799,7 +1824,19 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(is.frames[0].as_str(), "IS$-0125;");
+        assert_eq!(is.frames[0].as_str(), "IS$-0012;");
+
+        let is_main = encode(
+            k4,
+            &RadioCommand::SetReceiverFilterShift {
+                receiver: ReceiverPath::Main,
+                shift_hz: 250,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(is_main.frames[0].as_str(), "IS 0025;");
 
         let decoded_bw = decode(k4, &AsciiFrame::new("BW$240;").unwrap(), &state)
             .unwrap()
@@ -1809,10 +1846,33 @@ mod tests {
             vec![StatePatch::SubRxFilterBandwidth(2_400)]
         );
 
-        let decoded_is = decode(k4, &AsciiFrame::new("IS$+0250;").unwrap(), &state)
+        let decoded_is = decode(k4, &AsciiFrame::new("IS$ 0025;").unwrap(), &state)
             .unwrap()
             .unwrap();
         assert_eq!(decoded_is.patches, vec![StatePatch::SubRxFilterShift(250)]);
+    }
+
+    #[test]
+    fn k3_shift_stays_in_hz_units() {
+        let k3 = profile_by_id("elecraft-k3").unwrap();
+        let state = RadioState::default();
+
+        let is = encode(
+            k3,
+            &RadioCommand::SetReceiverFilterShift {
+                receiver: ReceiverPath::Main,
+                shift_hz: 250,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(is.frames[0].as_str(), "IS 0250;");
+
+        let decoded = decode(k3, &AsciiFrame::new("IS$ 0250;").unwrap(), &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded.patches, vec![StatePatch::SubRxFilterShift(250)]);
     }
 
     #[test]

@@ -52,6 +52,7 @@ impl RadioDriver for DummyRadioDriver {
     }
 
     async fn start(&mut self) -> Result<Vec<StatePatch>> {
+        tracing::info!(options = %self.options, "dummy driver start");
         Ok(vec![StatePatch::Connection(ConnectionState::Ready)])
     }
 
@@ -60,6 +61,7 @@ impl RadioDriver for DummyRadioDriver {
         command: RadioCommand,
         _current_state: &RadioState,
     ) -> Result<DriverCommandOutcome> {
+        tracing::debug!(?command, "dummy driver handling command");
         let is_refresh = matches!(command, RadioCommand::Refresh);
         let patches = match command {
             RadioCommand::SetReceiverFrequency {
@@ -130,6 +132,12 @@ impl RadioDriver for DummyRadioDriver {
 
             RadioCommand::Refresh => Vec::new(),
         };
+
+        tracing::debug!(
+            patch_count = patches.len(),
+            is_refresh,
+            "dummy driver produced patches"
+        );
 
         if is_refresh {
             Ok(DriverCommandOutcome::manual_refresh(patches))

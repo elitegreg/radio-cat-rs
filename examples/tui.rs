@@ -1,4 +1,4 @@
-use std::{env, error::Error, fmt, time::Duration};
+use std::{env, error::Error, fmt, fs::OpenOptions, time::Duration};
 
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -19,6 +19,7 @@ use ratatui::{
 };
 
 const DEFAULT_BAUD_RATE: u32 = 38_400;
+const DEFAULT_LOG_LEVEL: &str = "info";
 
 #[derive(Debug)]
 struct CliError(String);
@@ -35,6 +36,9 @@ struct LaunchConfig {
     radio_config: RadioConfig,
     radio_label: String,
     transport_label: String,
+    log_level: tracing::Level,
+    log_level_label: String,
+    log_file: Option<String>,
 }
 
 #[tokio::main]
@@ -47,8 +51,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
         radio_config,
         radio_label,
         transport_label,
+        log_level,
+        log_level_label,
+        log_file,
     } = launch;
-    let session_summary = format!("radio={radio_label} transport={transport_label}");
+
+    init_tracing(log_level, log_file.as_deref())?;
+
+    let log_target = log_file.as_deref().unwrap_or("stderr");
+    let session_summary = format!(
+        "radio={radio_label} transport={transport_label} log={log_level_label}->{log_target}"
+    );
+
+    tracing::info!(
+        radio = %radio_label,
+        transport = %transport_label,
+        log_level = %log_level_label,
+        log_target = %log_target,
+        "starting TUI"
+    );
 
     let radio = Radio::connect(radio_config).await?;
     let mut updates = radio.subscribe_updates();
@@ -71,6 +92,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )
     .await;
 
+    tracing::info!("tui loop exited");
+
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -86,6 +109,9 @@ fn parse_launch_config() -> Result<Option<LaunchConfig>, CliError> {
     let mut tcp_address: Option<String> = None;
     let mut tcp_host: Option<String> = None;
     let mut tcp_port: Option<u16> = None;
+    let mut log_level = parse_log_level(DEFAULT_LOG_LEVEL)?;
+    let mut log_level_label = DEFAULT_LOG_LEVEL.to_string();
+    let mut log_file: Option<String> = None;
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -117,6 +143,12 @@ fn parse_launch_config() -> Result<Option<LaunchConfig>, CliError> {
                 );
             }
             "--options" => options = next_arg_value(&mut args, "--options")?,
+            "--log-level" => {
+                let value = next_arg_value(&mut args, "--log-level")?;
+                log_level = parse_log_level(&value)?;
+                log_level_label = value.to_ascii_lowercase();
+            }
+            "--log-file" => log_file = Some(next_arg_value(&mut args, "--log-file")?),
             other => {
                 return Err(CliError(format!(
                     "unknown argument: {other} (use --help for usage)"
@@ -136,7 +168,50 @@ fn parse_launch_config() -> Result<Option<LaunchConfig>, CliError> {
         radio_config,
         radio_label: driver,
         transport_label: describe_transport(&transport),
+        log_level,
+        log_level_label,
+        log_file,
     }))
+}
+
+fn parse_log_level(value: &str) -> Result<tracing::Level, CliError> {
+    match value.to_ascii_lowercase().as_str() {
+        "trace" => Ok(tracing::Level::TRACE),
+        "debug" => Ok(tracing::Level::DEBUG),
+        "info" => Ok(tracing::Level::INFO),
+        "warn" => Ok(tracing::Level::WARN),
+        "error" => Ok(tracing::Level::ERROR),
+        _ => Err(CliError(format!(
+            "invalid log level: {value} (expected trace|debug|info|warn|error)"
+        ))),
+    }
+}
+
+fn init_tracing(log_level: tracing::Level, log_file: Option<&str>) -> Result<(), CliError> {
+    if let Some(path) = log_file {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|error| CliError(format!("failed to open log file {path}: {error}")))?;
+
+        tracing_subscriber::fmt()
+            .with_max_level(log_level)
+            .with_ansi(false)
+            .with_writer(move || {
+                file.try_clone()
+                    .expect("log file handle should be clonable")
+            })
+            .try_init()
+            .map_err(|error| CliError(format!("failed to initialize logging: {error}")))?;
+    } else {
+        tracing_subscriber::fmt()
+            .with_max_level(log_level)
+            .try_init()
+            .map_err(|error| CliError(format!("failed to initialize logging: {error}")))?;
+    }
+
+    Ok(())
 }
 
 fn next_arg_value<I>(args: &mut I, flag: &str) -> Result<String, CliError>
@@ -158,8 +233,7 @@ fn resolve_transport(
 
     if serial_path.is_some() && has_tcp_parts {
         return Err(CliError(
-            "choose either serial (--serial) or TCP (--tcp / --host+--port), not both"
-                .to_string(),
+            "choose either serial (--serial) or TCP (--tcp / --host+--port), not both".to_string(),
         ));
     }
 
@@ -178,12 +252,10 @@ fn resolve_transport(
     }
 
     if tcp_host.is_some() || tcp_port.is_some() {
-        let host = tcp_host.ok_or_else(|| {
-            CliError("missing --host (required when using --port)".to_string())
-        })?;
-        let port = tcp_port.ok_or_else(|| {
-            CliError("missing --port (required when using --host)".to_string())
-        })?;
+        let host = tcp_host
+            .ok_or_else(|| CliError("missing --host (required when using --port)".to_string()))?;
+        let port = tcp_port
+            .ok_or_else(|| CliError("missing --port (required when using --host)".to_string()))?;
         return Ok(TransportConfig::tcp_socket(host, port));
     }
 
@@ -221,6 +293,8 @@ fn print_usage() {
     println!("      --host <host>       TCP host (use with --port)");
     println!("      --port <port>       TCP port (use with --host)");
     println!("      --options <text>    Driver options string");
+    println!("      --log-level <lvl>   Log level: trace|debug|info|warn|error (default: {DEFAULT_LOG_LEVEL})");
+    println!("      --log-file <path>   Append logs to file instead of stderr");
     println!("      --list-radios       Show supported radio ids and exit");
     println!("  -h, --help              Show this help and exit");
 }
@@ -237,6 +311,12 @@ async fn run_ui(
         loop {
             match updates.try_recv() {
                 Ok(update) => {
+                    tracing::debug!(
+                        source = ?update.source,
+                        changes = ?update.changes,
+                        fields = ?update.fields,
+                        "received state update"
+                    );
                     *state = update.state.clone();
                     *last_update = format!(
                         "source={:?} flags={:?} fields={:?}",
@@ -255,6 +335,7 @@ async fn run_ui(
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                tracing::debug!(key = ?key.code, "key pressed");
                 match key.code {
                     KeyCode::Char('q') => break,
                     KeyCode::Char('f') => cycle_main_frequency(&radio, state.as_ref()).await?,

@@ -90,16 +90,40 @@ pub struct Radio {
 
 impl Radio {
     pub async fn connect(config: RadioConfig) -> Result<Self> {
+        tracing::info!(
+            driver = %config.driver,
+            transport = ?config.transport,
+            "connecting radio"
+        );
+
         let (radio, task) = Self::build(config).await?;
+        let descriptor = radio.driver_descriptor();
+        let task_driver = descriptor;
+
         tokio::spawn(async move {
+            tracing::info!(driver = %task_driver.id, "radio task spawned");
             if let Err(error) = task.run().await {
-                tracing::debug!(?error, "radio task stopped with error");
+                tracing::error!(driver = %task_driver.id, ?error, "radio task stopped with error");
+            } else {
+                tracing::info!(driver = %task_driver.id, "radio task stopped");
             }
         });
+
+        tracing::info!(
+            driver = %descriptor.id,
+            display_name = %descriptor.display_name,
+            "radio connected"
+        );
+
         Ok(radio)
     }
 
     pub async fn build(config: RadioConfig) -> Result<(Self, RadioTask)> {
+        tracing::debug!(
+            driver = %config.driver,
+            transport = ?config.transport,
+            "opening transport for radio"
+        );
         let transport = open_transport(&config.transport).await?;
         Self::build_inner(config, transport).await
     }
@@ -108,12 +132,30 @@ impl Radio {
     where
         T: CatTransport + 'static,
     {
+        tracing::info!(
+            driver = %config.driver,
+            "connecting radio with caller-provided transport"
+        );
+
         let (radio, task) = Self::build_with_transport(config, transport).await?;
+        let descriptor = radio.driver_descriptor();
+        let task_driver = descriptor;
+
         tokio::spawn(async move {
+            tracing::info!(driver = %task_driver.id, "radio task spawned");
             if let Err(error) = task.run().await {
-                tracing::debug!(?error, "radio task stopped with error");
+                tracing::error!(driver = %task_driver.id, ?error, "radio task stopped with error");
+            } else {
+                tracing::info!(driver = %task_driver.id, "radio task stopped");
             }
         });
+
+        tracing::info!(
+            driver = %descriptor.id,
+            display_name = %descriptor.display_name,
+            "radio connected"
+        );
+
         Ok(radio)
     }
 
@@ -132,14 +174,24 @@ impl Radio {
         transport: Option<BoxedCatTransport>,
     ) -> Result<(Self, RadioTask)> {
         let driver_id = config.driver.trim();
+        tracing::debug!(
+            driver = %driver_id,
+            options = %config.options,
+            has_transport = transport.is_some(),
+            command_channel_capacity = config.command_channel_capacity,
+            update_channel_capacity = config.update_channel_capacity,
+            "building radio internals"
+        );
+
         let driver: Box<dyn crate::RadioDriver> = match driver_id.to_ascii_lowercase().as_str() {
             "dummy" => Box::new(DummyRadioDriver::with_options(config.options.clone())),
             _ => match KenwoodAsciiDriver::from_driver_id(driver_id, config.options.clone()) {
                 Some(driver) => Box::new(driver),
                 None => {
+                    tracing::error!(driver = %config.driver, "unsupported radio driver requested");
                     return Err(RadioError::UnsupportedDriver {
                         driver: config.driver,
-                    })
+                    });
                 }
             },
         };
@@ -152,6 +204,12 @@ impl Radio {
         let (command_tx, command_rx) = mpsc::channel(config.command_channel_capacity.max(1));
         let (state_tx, state_rx) = watch::channel(initial_snapshot);
         let (update_tx, _) = broadcast::channel(config.update_channel_capacity.max(1));
+
+        tracing::info!(
+            driver = %descriptor.id,
+            display_name = %descriptor.display_name,
+            "radio internals built"
+        );
 
         let radio = Self {
             command_tx,
@@ -202,7 +260,15 @@ impl Radio {
     }
 
     pub async fn command(&self, command: RadioCommand) -> Result<()> {
-        send_command(&self.command_tx, command).await
+        tracing::debug!(driver = %self.driver.id, ?command, "queueing radio command");
+        let result = send_command(&self.command_tx, command).await;
+        match &result {
+            Ok(()) => tracing::trace!(driver = %self.driver.id, "radio command completed"),
+            Err(error) => {
+                tracing::debug!(driver = %self.driver.id, ?error, "radio command failed")
+            }
+        }
+        result
     }
 
     pub async fn refresh(&self) -> Result<()> {

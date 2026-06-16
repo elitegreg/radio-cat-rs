@@ -106,6 +106,14 @@ impl RadioDriver for KenwoodAsciiDriver {
     }
 
     async fn start(&mut self) -> Result<Vec<crate::StatePatch>> {
+        tracing::info!(
+            driver = %self.profile.descriptor.id,
+            startup_steps = self.profile.startup.len(),
+            has_poll_plan = self.profile.poll.is_some(),
+            options = %self.options,
+            "kenwood-ascii driver start"
+        );
+
         Ok(vec![
             crate::StatePatch::Connection(ConnectionState::Identifying),
             crate::StatePatch::Connection(ConnectionState::Ready),
@@ -118,6 +126,7 @@ impl RadioDriver for KenwoodAsciiDriver {
         current_state: &RadioState,
     ) -> Result<DriverCommandOutcome> {
         if matches!(command, RadioCommand::Refresh) {
+            tracing::debug!(driver = %self.profile.descriptor.id, "kenwood-ascii refresh command");
             return Ok(DriverCommandOutcome::manual_refresh(Vec::new()));
         }
 
@@ -126,6 +135,16 @@ impl RadioDriver for KenwoodAsciiDriver {
                 capability: "command",
             },
         )?;
+
+        let command_frames: Vec<&str> = encoded.frames.iter().map(|frame| frame.as_str()).collect();
+        tracing::debug!(
+            driver = %self.profile.descriptor.id,
+            ?command,
+            frames = ?command_frames,
+            expected = ?encoded.matcher,
+            optimistic_patch_count = encoded.optimistic.len(),
+            "encoded CAT command"
+        );
 
         Ok(DriverCommandOutcome {
             patches: encoded.optimistic,

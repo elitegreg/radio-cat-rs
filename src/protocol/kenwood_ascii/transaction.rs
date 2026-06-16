@@ -139,6 +139,11 @@ impl TransactionEngine {
     }
 
     pub fn enqueue(&mut self, transaction: OutgoingTransaction) {
+        tracing::debug!(
+            command = transaction.command,
+            step_count = transaction.steps.len(),
+            "queued CAT transaction"
+        );
         self.queue.push_back(transaction);
     }
 
@@ -148,6 +153,7 @@ impl TransactionEngine {
         }
 
         if let Some(command) = self.pending_completion.take() {
+            tracing::debug!(command, "transaction completed without response");
             return Some(TransactionEvent::CompletedWithoutResponse { command });
         }
 
@@ -162,9 +168,20 @@ impl TransactionEngine {
                 None => {
                     let command = active.command;
                     self.active_transaction = None;
+                    tracing::debug!(command, "transaction completed without response");
                     return Some(TransactionEvent::CompletedWithoutResponse { command });
                 }
             };
+
+            tracing::debug!(
+                command = active.command,
+                tx_frame = step.frame.as_str(),
+                expected = ?step.expected,
+                priority = ?step.priority,
+                timeout_ms = step.timeout.as_millis(),
+                retries = step.retries,
+                "dispatching CAT frame"
+            );
 
             let dispatch = TransactionDispatch {
                 command: active.command,
@@ -194,16 +211,30 @@ impl TransactionEngine {
 
     pub fn receive_frame(&mut self, frame: AsciiFrame) -> Result<TransactionEvent> {
         if let Some(protocol_error) = ProtocolErrorFrame::parse(&frame) {
+            tracing::debug!(
+                frame = frame.as_str(),
+                ?protocol_error,
+                "received protocol error frame"
+            );
             return self.handle_protocol_error(protocol_error);
         }
 
         let waiting_on = match self.waiting_on.take() {
             Some(waiting_on) => waiting_on,
-            None => return Ok(TransactionEvent::Unsolicited(frame)),
+            None => {
+                tracing::trace!(rx_frame = frame.as_str(), "received unsolicited CAT frame");
+                return Ok(TransactionEvent::Unsolicited(frame));
+            }
         };
 
         if waiting_on.expected.matches(&frame) {
             let command = waiting_on.command;
+            tracing::debug!(
+                command,
+                rx_frame = frame.as_str(),
+                expected = ?waiting_on.expected,
+                "received expected CAT response"
+            );
             if self
                 .active_transaction
                 .as_ref()
@@ -217,6 +248,12 @@ impl TransactionEngine {
                 response: frame,
             })
         } else {
+            tracing::trace!(
+                command = waiting_on.command,
+                rx_frame = frame.as_str(),
+                expected = ?waiting_on.expected,
+                "received non-matching CAT frame while waiting for response"
+            );
             self.waiting_on = Some(waiting_on);
             Ok(TransactionEvent::Unsolicited(frame))
         }
@@ -228,6 +265,10 @@ impl TransactionEngine {
         })?;
 
         if waiting_on.retries_remaining == 0 {
+            tracing::debug!(
+                command = waiting_on.command,
+                "transaction timed out without retries remaining"
+            );
             return Err(RadioError::Timeout {
                 command: waiting_on.command,
             });
@@ -236,6 +277,12 @@ impl TransactionEngine {
         let mut retry = waiting_on;
         retry.retries_remaining -= 1;
         let dispatch = retry.dispatch();
+        tracing::debug!(
+            command = dispatch.command,
+            tx_frame = dispatch.frame.as_str(),
+            retries_remaining = retry.retries_remaining,
+            "retrying CAT frame after timeout"
+        );
         self.waiting_on = Some(retry);
 
         Ok(TransactionEvent::Retrying(dispatch))
@@ -249,21 +296,33 @@ impl TransactionEngine {
             ProtocolErrorFrame::Busy => {
                 let waiting_on = self.waiting_on.take().ok_or(RadioError::ProtocolBusy)?;
                 if waiting_on.retries_remaining == 0 {
+                    tracing::debug!(
+                        command = waiting_on.command,
+                        "radio reported busy and retries exhausted"
+                    );
                     return Err(RadioError::ProtocolBusy);
                 }
 
                 let mut retry = waiting_on;
                 retry.retries_remaining -= 1;
                 let dispatch = retry.dispatch();
+                tracing::debug!(
+                    command = dispatch.command,
+                    tx_frame = dispatch.frame.as_str(),
+                    retries_remaining = retry.retries_remaining,
+                    "radio busy; retrying CAT frame"
+                );
                 self.waiting_on = Some(retry);
                 Ok(TransactionEvent::Retrying(dispatch))
             }
             ProtocolErrorFrame::Communication => {
                 self.waiting_on = None;
+                tracing::debug!("radio reported CAT communication error");
                 Err(RadioError::ProtocolCommunication)
             }
             ProtocolErrorFrame::Syntax { command } => {
                 self.waiting_on = None;
+                tracing::debug!(?command, "radio reported CAT syntax error");
                 Err(RadioError::protocol_syntax(command))
             }
         }
