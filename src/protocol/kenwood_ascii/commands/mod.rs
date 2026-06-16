@@ -1,6 +1,7 @@
 pub mod frequency;
 pub mod info;
 pub mod keyer;
+pub mod mode;
 pub mod tx;
 
 use crate::{update::StatePatch, UpdateSource};

@@ -1,8 +1,9 @@
-use crate::{
-    error::RadioError, update::StatePatch, Frequency, Mode, RadioState, Result, RitXitOffsetHz,
-};
+use crate::{error::RadioError, update::StatePatch, Frequency, RadioState, Result, RitXitOffsetHz};
 
-use super::DecodedFrame;
+use super::{
+    mode::{decode_kenwood_if_mode, decode_yaesu_if_mode},
+    DecodedFrame,
+};
 use crate::protocol::kenwood_ascii::{
     AsciiFrame, CommandPriority, EncodedCommand, KenwoodAsciiProfile, ReceiverKind, ResponseMatcher,
 };
@@ -66,7 +67,7 @@ fn decode_kenwood_if(
     let rit_enabled = parse_bool_digit("IF", payload.as_bytes()[21])?;
     let xit_enabled = parse_bool_digit("IF", payload.as_bytes()[22])?;
     let transmitting = parse_bool_digit("IF", payload.as_bytes()[26])?;
-    let mode = decode_kenwood_mode(profile, payload.as_bytes()[27] as char)?;
+    let mode = decode_kenwood_if_mode(profile, payload.as_bytes()[27] as char)?;
     let active_vfo = decode_active_vfo(payload.as_bytes()[28] as char)?;
     let split = parse_bool_digit("IF", payload.as_bytes()[29])?;
 
@@ -132,7 +133,7 @@ fn decode_yaesu_if(
     let offset = parse_signed_offset("IF", &payload[12..17])?;
     let rit_enabled = parse_bool_digit("IF", payload.as_bytes()[17])?;
     let xit_enabled = parse_bool_digit("IF", payload.as_bytes()[18])?;
-    let mode = decode_yaesu_mode(profile, payload.as_bytes()[19] as char)?;
+    let mode = decode_yaesu_if_mode(profile, payload.as_bytes()[19] as char)?;
     let split = decode_yaesu_split(payload.as_bytes()[24] as char)?;
 
     let mut patches = vec![
@@ -227,62 +228,6 @@ fn decode_active_vfo(byte: char) -> Result<ActiveVfo> {
     }
 }
 
-fn decode_kenwood_mode(profile: &KenwoodAsciiProfile, code: char) -> Result<Mode> {
-    let mode = match code {
-        '1' => Mode::Lsb,
-        '2' => Mode::Usb,
-        '3' => Mode::Cw,
-        '4' => Mode::Fm,
-        '5' => Mode::Am,
-        '6' => Mode::Rtty,
-        '7' => Mode::CwReverse,
-        '9' => Mode::RttyReverse,
-        'C' if profile.id() == "kenwood-ts590" => Mode::DataLsb,
-        'D' if profile.id() == "kenwood-ts590" => Mode::DataUsb,
-        'E' if profile.id() == "kenwood-ts590" => Mode::DataFm,
-        other => {
-            return Err(RadioError::Decode {
-                command: "IF",
-                message: format!(
-                    "unsupported Kenwood mode code {other:?} for {}",
-                    profile.id()
-                ),
-            })
-        }
-    };
-
-    Ok(mode)
-}
-
-fn decode_yaesu_mode(profile: &KenwoodAsciiProfile, code: char) -> Result<Mode> {
-    let mode = match code {
-        '1' => Mode::Lsb,
-        '2' => Mode::Usb,
-        '3' => Mode::Cw,
-        '4' => Mode::Fm,
-        '5' => Mode::Am,
-        '6' => Mode::Rtty,
-        '7' => Mode::CwReverse,
-        '8' => Mode::DataLsb,
-        '9' => Mode::RttyReverse,
-        'A' => Mode::DataFm,
-        'B' => Mode::Fm,
-        'C' => Mode::DataUsb,
-        'D' => Mode::Am,
-        'E' if profile.id() == "yaesu-ft991" => Mode::Digital,
-        'E' => Mode::Digital,
-        'F' => Mode::DataFm,
-        other => {
-            return Err(RadioError::Decode {
-                command: "IF",
-                message: format!("unsupported Yaesu mode code {other:?} for {}", profile.id()),
-            })
-        }
-    };
-
-    Ok(mode)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveVfo {
     A,
@@ -292,7 +237,7 @@ enum ActiveVfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{protocol::kenwood_ascii::profile_by_id, TransmitterState};
+    use crate::{protocol::kenwood_ascii::profile_by_id, Mode, TransmitterState};
 
     #[test]
     fn encodes_if_query_only_for_profiles_with_generic_if() {
