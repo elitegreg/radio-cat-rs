@@ -6,7 +6,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use radio_cat_rs::{
-    Frequency, LeveledSetting, Mode, Radio, RadioConfig, RadioState, RitXitOffsetHz,
+    Frequency, LeveledSetting, Mode, Radio, RadioConfig, RadioState, RitXitOffsetHz, StateUpdate,
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -21,6 +21,7 @@ use ratatui::{
 async fn main() -> Result<(), Box<dyn Error>> {
     let radio = Radio::connect(RadioConfig::dummy()).await?;
     let mut updates = radio.subscribe_updates();
+    let mut state = radio.latest_state();
     let mut last_update = String::from("no updates yet");
 
     enable_raw_mode()?;
@@ -29,7 +30,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_ui(&mut terminal, radio, &mut updates, &mut last_update).await;
+    let result = run_ui(
+        &mut terminal,
+        radio,
+        &mut state,
+        &mut updates,
+        &mut last_update,
+    )
+    .await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -41,28 +49,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn run_ui(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     radio: Radio,
-    updates: &mut tokio::sync::broadcast::Receiver<radio_cat_rs::StateUpdate>,
+    state: &mut radio_cat_rs::SharedRadioState,
+    updates: &mut tokio::sync::broadcast::Receiver<StateUpdate>,
     last_update: &mut String,
 ) -> Result<(), Box<dyn Error>> {
     loop {
-        while let Ok(update) = updates.try_recv() {
-            *last_update = format!(
-                "source={:?} flags={:?} fields={:?}",
-                update.source, update.changes, update.fields
-            );
+        loop {
+            match updates.try_recv() {
+                Ok(update) => {
+                    *state = update.state.clone();
+                    *last_update = format!(
+                        "source={:?} flags={:?} fields={:?}",
+                        update.source, update.changes, update.fields
+                    );
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    *last_update = format!("lagged {skipped} updates");
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return Ok(()),
+            }
         }
 
-        terminal.draw(|frame| draw(frame, &radio.latest_state(), last_update))?;
+        terminal.draw(|frame| draw(frame, state.as_ref(), last_update))?;
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') => break,
-                    KeyCode::Char('f') => cycle_main_frequency(&radio).await?,
-                    KeyCode::Char('m') => cycle_main_mode(&radio).await?,
+                    KeyCode::Char('f') => cycle_main_frequency(&radio, state.as_ref()).await?,
+                    KeyCode::Char('m') => cycle_main_mode(&radio, state.as_ref()).await?,
                     KeyCode::Char('p') => {
-                        let next = !radio
-                            .latest_state()
+                        let next = !state
                             .tx
                             .as_ref()
                             .and_then(|tx| tx.transmitting)
@@ -70,23 +88,17 @@ async fn run_ui(
                         radio.set_ptt(next).await?;
                     }
                     KeyCode::Char('s') => {
-                        let next = !radio
-                            .latest_state()
-                            .tx
-                            .as_ref()
-                            .and_then(|tx| tx.split)
-                            .unwrap_or(false);
+                        let next = !state.tx.as_ref().and_then(|tx| tx.split).unwrap_or(false);
                         radio.set_split(next).await?;
                     }
                     KeyCode::Char('r') => {
-                        let next = !radio.latest_state().rit_xit.rit_enabled.unwrap_or(false);
+                        let next = !state.rit_xit.rit_enabled.unwrap_or(false);
                         radio.set_rit_enabled(next).await?;
                     }
-                    KeyCode::Char('+') => bump_rit(&radio, 100).await?,
-                    KeyCode::Char('-') => bump_rit(&radio, -100).await?,
+                    KeyCode::Char('+') => bump_rit(&radio, state.as_ref(), 100).await?,
+                    KeyCode::Char('-') => bump_rit(&radio, state.as_ref(), -100).await?,
                     KeyCode::Char('k') => {
-                        let speed = radio
-                            .latest_state()
+                        let speed = state
                             .keyer
                             .as_ref()
                             .and_then(|keyer| keyer.speed_wpm)
@@ -96,8 +108,7 @@ async fn run_ui(
                     KeyCode::Char('c') => radio.send_cw("CQ TEST").await?,
                     KeyCode::Char('x') => radio.stop_cw().await?,
                     KeyCode::Char('n') => {
-                        let enabled = !radio
-                            .latest_state()
+                        let enabled = !state
                             .main_rx
                             .rf
                             .noise_reduction
@@ -195,8 +206,8 @@ fn opt_mode(mode: Option<Mode>) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-async fn cycle_main_frequency(radio: &Radio) -> Result<(), Box<dyn Error>> {
-    let current = radio.latest_state().main_rx.frequency;
+async fn cycle_main_frequency(radio: &Radio, state: &RadioState) -> Result<(), Box<dyn Error>> {
+    let current = state.main_rx.frequency;
     let next = match current.map(|frequency| frequency.hz()) {
         Some(14_074_000) => Frequency::from_hz(7_074_000),
         Some(7_074_000) => Frequency::from_hz(21_074_000),
@@ -207,8 +218,8 @@ async fn cycle_main_frequency(radio: &Radio) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn cycle_main_mode(radio: &Radio) -> Result<(), Box<dyn Error>> {
-    let current = radio.latest_state().main_rx.mode;
+async fn cycle_main_mode(radio: &Radio, state: &RadioState) -> Result<(), Box<dyn Error>> {
+    let current = state.main_rx.mode;
     let next = match current {
         Some(Mode::Usb) => Mode::Cw,
         Some(Mode::Cw) => Mode::Am,
@@ -220,9 +231,8 @@ async fn cycle_main_mode(radio: &Radio) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn bump_rit(radio: &Radio, delta: i16) -> Result<(), Box<dyn Error>> {
-    let current = radio
-        .latest_state()
+async fn bump_rit(radio: &Radio, state: &RadioState, delta: i16) -> Result<(), Box<dyn Error>> {
+    let current = state
         .rit_xit
         .offset_hz
         .map(|offset| offset.as_hz())
