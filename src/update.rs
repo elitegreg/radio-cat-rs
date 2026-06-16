@@ -4,7 +4,7 @@ use bitflags::bitflags;
 use smallvec::SmallVec;
 
 use crate::{
-    ConnectionState, Frequency, KeyerState, LeveledSetting, Mode, RadioState, ReceiverState,
+    ConnectionState, Frequency, KeyerState, LeveledSetting, Mode, Power, RadioState, ReceiverState,
     RitXitOffsetHz, TransmitterState,
 };
 
@@ -175,7 +175,7 @@ pub enum StatePatch {
     MainRxFrequency(Frequency),
     MainRxMode(Mode),
     MainRxFilterBandwidth(u16),
-    MainRxFilterShift(u16),
+    MainRxFilterShift(i16),
     MainRxPreamp(LeveledSetting),
     MainRxAttenuator(LeveledSetting),
     MainRxNoiseBlanker(LeveledSetting),
@@ -186,7 +186,7 @@ pub enum StatePatch {
     SubRxFrequency(Frequency),
     SubRxMode(Mode),
     SubRxFilterBandwidth(u16),
-    SubRxFilterShift(u16),
+    SubRxFilterShift(i16),
     SubRxPreamp(LeveledSetting),
     SubRxAttenuator(LeveledSetting),
     SubRxNoiseBlanker(LeveledSetting),
@@ -196,7 +196,7 @@ pub enum StatePatch {
     TxPresent(bool),
     TxFrequency(Frequency),
     TxMode(Mode),
-    TxPowerDeciMw(u32),
+    TxPower(Power),
     Transmitting(bool),
     Split(bool),
 
@@ -391,9 +391,9 @@ impl StateReducer {
                     changes.add(ChangeFlags::TX_MODE, StateField::TxMode);
                 }
             }
-            StatePatch::TxPowerDeciMw(value) => {
+            StatePatch::TxPower(value) => {
                 let tx = ensure_tx(&mut self.state, &mut changes);
-                if set_option(&mut tx.power_deci_mw, value) {
+                if set_option(&mut tx.power, value) {
                     changes.add(ChangeFlags::TX_POWER, StateField::TxPower);
                 }
             }

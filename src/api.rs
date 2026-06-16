@@ -12,7 +12,7 @@ use crate::{
         boxed_transport, open_transport, BoxedCatTransport, CatTransport, TransportConfig,
     },
     update::{SharedRadioState, StateUpdate},
-    DriverDescriptor, Frequency, LeveledSetting, Mode, RadioCapabilities, RitXitOffsetHz,
+    DriverDescriptor, Frequency, LeveledSetting, Mode, Power, RadioCapabilities, RitXitOffsetHz,
 };
 
 #[derive(Debug, Clone)]
@@ -266,18 +266,18 @@ impl Radio {
     pub async fn set_receiver_filter_shift(
         &self,
         receiver: ReceiverPath,
-        shift_hz: u16,
+        shift_hz: i16,
     ) -> Result<()> {
         self.command(RadioCommand::SetReceiverFilterShift { receiver, shift_hz })
             .await
     }
 
-    pub async fn set_main_filter_shift(&self, shift_hz: u16) -> Result<()> {
+    pub async fn set_main_filter_shift(&self, shift_hz: i16) -> Result<()> {
         self.set_receiver_filter_shift(ReceiverPath::Main, shift_hz)
             .await
     }
 
-    pub async fn set_sub_filter_shift(&self, shift_hz: u16) -> Result<()> {
+    pub async fn set_sub_filter_shift(&self, shift_hz: i16) -> Result<()> {
         self.set_receiver_filter_shift(ReceiverPath::Sub, shift_hz)
             .await
     }
@@ -383,9 +383,8 @@ impl Radio {
         self.command(RadioCommand::SetTxMode(mode)).await
     }
 
-    pub async fn set_tx_power_deci_mw(&self, power_deci_mw: u32) -> Result<()> {
-        self.command(RadioCommand::SetTxPowerDeciMw(power_deci_mw))
-            .await
+    pub async fn set_tx_power(&self, power: Power) -> Result<()> {
+        self.command(RadioCommand::SetTxPower(power)).await
     }
 
     pub async fn set_ptt(&self, transmitting: bool) -> Result<()> {

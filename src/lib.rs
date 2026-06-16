@@ -23,8 +23,8 @@ pub use error::{RadioError, RangeError, Result};
 pub use frequency::Frequency;
 pub use mode::{Mode, ParseModeError};
 pub use state::{
-    ConnectionState, KeyerState, LeveledSetting, RadioState, ReceiverFilterState, ReceiverRfState,
-    ReceiverState, RitXitOffsetHz, RitXitState, TransmitterState,
+    ConnectionState, KeyerState, LeveledSetting, Power, PowerUnit, RadioState, ReceiverFilterState,
+    ReceiverRfState, ReceiverState, RitXitOffsetHz, RitXitState, TransmitterState,
 };
 pub use transport::{
     boxed_transport, open_transport, AsyncIoTransport, BoxedCatTransport, CatTransport,

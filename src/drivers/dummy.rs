@@ -6,7 +6,7 @@ use crate::{
     driver::{DriverCommandOutcome, DriverDescriptor, RadioDriver},
     error::Result,
     update::StatePatch,
-    ConnectionState, Frequency, LeveledSetting, Mode, RadioState, ReceiverFilterState,
+    ConnectionState, Frequency, LeveledSetting, Mode, Power, RadioState, ReceiverFilterState,
     ReceiverRfState, ReceiverState, RitXitOffsetHz, RitXitState, TransmitterState,
 };
 
@@ -116,7 +116,7 @@ impl RadioDriver for DummyRadioDriver {
 
             RadioCommand::SetTxFrequency(frequency) => vec![StatePatch::TxFrequency(frequency)],
             RadioCommand::SetTxMode(mode) => vec![StatePatch::TxMode(mode)],
-            RadioCommand::SetTxPowerDeciMw(power) => vec![StatePatch::TxPowerDeciMw(power)],
+            RadioCommand::SetTxPower(power) => vec![StatePatch::TxPower(power)],
             RadioCommand::SetPtt(transmitting) => vec![StatePatch::Transmitting(transmitting)],
             RadioCommand::SetSplit(split) => vec![StatePatch::Split(split)],
 
@@ -182,7 +182,7 @@ fn dummy_state(connection: ConnectionState) -> RadioState {
         tx: Some(TransmitterState {
             frequency: Some(Frequency::from_hz(14_074_000)),
             mode: Some(Mode::Usb),
-            power_deci_mw: Some(1_000_000),
+            power: Some(Power::from_watts(100)),
             transmitting: Some(false),
             split: Some(false),
         }),

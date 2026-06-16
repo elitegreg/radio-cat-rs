@@ -1,4 +1,4 @@
-use crate::{Frequency, LeveledSetting, Mode, RitXitOffsetHz};
+use crate::{Frequency, LeveledSetting, Mode, Power, RitXitOffsetHz};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReceiverPath {
@@ -22,7 +22,7 @@ pub enum RadioCommand {
     },
     SetReceiverFilterShift {
         receiver: ReceiverPath,
-        shift_hz: u16,
+        shift_hz: i16,
     },
     SetReceiverPreamp {
         receiver: ReceiverPath,
@@ -47,7 +47,7 @@ pub enum RadioCommand {
 
     SetTxFrequency(Frequency),
     SetTxMode(Mode),
-    SetTxPowerDeciMw(u32),
+    SetTxPower(Power),
     SetPtt(bool),
     SetSplit(bool),
 

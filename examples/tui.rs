@@ -160,7 +160,7 @@ fn format_state(state: &RadioState) -> String {
         "connection: {:?}\n\
 main rx: freq={} mode={} filter_bw={:?} filter_shift={:?} nr={:?}\n\
 sub rx:  freq={} mode={}\n\
-tx:      freq={} mode={} power_deci_mw={:?} ptt={:?} split={:?}\n\
+tx:      freq={} mode={} power={:?} ptt={:?} split={:?}\n\
 rit/xit: rit={:?} xit={:?} offset={:?}\n\
 keyer:   speed_wpm={:?} sending={:?}",
         state.connection,
@@ -173,7 +173,7 @@ keyer:   speed_wpm={:?} sending={:?}",
         opt_mode(sub.and_then(|rx| rx.mode)),
         opt_freq(tx.and_then(|tx| tx.frequency)),
         opt_mode(tx.and_then(|tx| tx.mode)),
-        tx.and_then(|tx| tx.power_deci_mw),
+        tx.and_then(|tx| tx.power),
         tx.and_then(|tx| tx.transmitting),
         tx.and_then(|tx| tx.split),
         state.rit_xit.rit_enabled,

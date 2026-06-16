@@ -42,7 +42,7 @@ The first driver is `dummy`. It does not open a real radio connection. It stores
 ## Basic usage
 
 ```rust
-use radio_cat_rs::{Frequency, Mode, Radio, RadioConfig, RitXitOffsetHz};
+use radio_cat_rs::{Frequency, Mode, Power, Radio, RadioConfig, RitXitOffsetHz};
 
 #[tokio::main]
 async fn main() -> radio_cat_rs::Result<()> {
@@ -52,6 +52,7 @@ async fn main() -> radio_cat_rs::Result<()> {
 
     radio.set_main_frequency(Frequency::from_hz(14_074_000)).await?;
     radio.set_main_mode(Mode::Usb).await?;
+    radio.set_tx_power(Power::from_watts(25)).await?;
     radio.set_ptt(true).await?;
     radio.send_cw("CQ TEST").await?;
     radio.stop_cw().await?;
