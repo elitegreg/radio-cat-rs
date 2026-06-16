@@ -1,8 +1,8 @@
 # radio-cat-rs
 
-`radio-cat-rs` is being rewritten as a stateful async CAT control library for amateur radios, transceivers, receivers, and similar devices.
+`radio-cat-rs` is a stateful async CAT control library for amateur radios, transceivers, receivers, and similar devices.
 
-The current implementation contains the new async framework plus a complete in-memory `dummy` driver. Real radio protocol drivers will be added on top of this API.
+The current implementation includes an in-memory `dummy` driver plus a profile-driven Kenwood-ASCII engine (Kenwood, Elecraft, and Yaesu profile IDs).
 
 ## Model
 
@@ -74,7 +74,11 @@ for driver in radio_cat_rs::supported_drivers() {
 }
 ```
 
-Currently this lists only `dummy`.
+This includes `dummy` and Kenwood-ASCII profile IDs such as:
+
+- `kenwood-ts590`, `kenwood-ts890`, `kenwood-ts990`, `kenwood-ts2000`, `kenwood-ts480`, `kenwood-ts570`, `kenwood-ts870`, `kenwood-if232`
+- `elecraft-k4`, `elecraft-k3`, `elecraft-k2`
+- `yaesu-ftdx101`, `yaesu-ftdx10`, `yaesu-ft710`, `yaesu-ft891`, `yaesu-ft991`
 
 ## Serial/TCP connections and driver options
 
@@ -84,15 +88,15 @@ Currently this lists only `dummy`.
 use radio_cat_rs::{Radio, RadioConfig, TransportConfig};
 
 # async fn example() -> radio_cat_rs::Result<()> {
-let serial_config = RadioConfig::new("dummy")
+let serial_config = RadioConfig::new("kenwood-ts590")
     .with_transport(TransportConfig::serial("/dev/ttyUSB0", 38_400))
     .with_options("driver.specific=true");
 
-let tcp_config = RadioConfig::new("dummy")
+let tcp_config = RadioConfig::new("kenwood-ts590")
     .with_transport(TransportConfig::tcp("127.0.0.1:4532"))
     .with_options("driver.specific=true");
 
-let tcp_config_with_host_port = RadioConfig::new("dummy")
+let tcp_config_with_host_port = RadioConfig::new("kenwood-ts590")
     .with_tcp_socket("127.0.0.1", 4532)
     .with_options("driver.specific=true");
 
@@ -130,6 +134,10 @@ Run the dummy radio TUI:
 ```bash
 cargo run --example tui
 ```
+
+The TUI displays the latest state snapshot and applies live updates from the broadcast `StateUpdate` stream (`update.state`).
+
+Interactive keys mutate state through API commands (`f` frequency, `m` mode, `p` PTT, `s` split, `r` RIT, `+/-` offset, `k` keyer speed, `n` noise reduction, `c/x` CW send/stop).
 
 ## Development
 
