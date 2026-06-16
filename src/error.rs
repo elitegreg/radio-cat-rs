@@ -16,6 +16,24 @@ pub enum RadioError {
         message: String,
     },
 
+    #[error("protocol syntax error{command_suffix}")]
+    ProtocolSyntax { command_suffix: String },
+
+    #[error("protocol communication error")]
+    ProtocolCommunication,
+
+    #[error("protocol busy")]
+    ProtocolBusy,
+
+    #[error("protocol decode error for {command}: {message}")]
+    Decode {
+        command: &'static str,
+        message: String,
+    },
+
+    #[error("protocol timeout while waiting for {command}")]
+    Timeout { command: &'static str },
+
     #[error("radio task has stopped")]
     TaskStopped,
 
@@ -35,6 +53,17 @@ impl From<std::io::Error> for RadioError {
 impl From<tokio_serial::Error> for RadioError {
     fn from(value: tokio_serial::Error) -> Self {
         Self::Transport(value.to_string())
+    }
+}
+
+impl RadioError {
+    pub fn protocol_syntax(command: Option<&str>) -> Self {
+        let command_suffix = match command {
+            Some(command) => format!(" for {command}"),
+            None => String::new(),
+        };
+
+        Self::ProtocolSyntax { command_suffix }
     }
 }
 

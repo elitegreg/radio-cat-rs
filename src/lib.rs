@@ -7,6 +7,7 @@ pub mod drivers;
 pub mod error;
 mod frequency;
 pub mod mode;
+pub mod protocol;
 pub mod state;
 pub mod transport;
 pub mod update;
