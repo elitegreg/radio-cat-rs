@@ -1,4 +1,5 @@
 pub mod frequency;
+pub mod info;
 pub mod keyer;
 pub mod tx;
 
