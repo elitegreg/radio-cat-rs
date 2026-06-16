@@ -4,7 +4,7 @@ mod profile;
 mod transaction;
 
 pub use commands::{
-    frequency, info, keyer, mode, rf, rit_xit, split, tx, DecodedFrame, EncodedCommand,
+    filter, frequency, info, keyer, mode, rf, rit_xit, split, tx, DecodedFrame, EncodedCommand,
     FrequencyCommandTarget, PowerCommandEncoding,
 };
 pub use frame::{AsciiFrame, FrameSplitter, ProtocolErrorFrame};

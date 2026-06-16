@@ -1,3 +1,4 @@
+pub mod filter;
 pub mod frequency;
 pub mod info;
 pub mod keyer;
