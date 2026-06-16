@@ -2,6 +2,7 @@ pub mod frequency;
 pub mod info;
 pub mod keyer;
 pub mod mode;
+pub mod rit_xit;
 pub mod split;
 pub mod tx;
 
