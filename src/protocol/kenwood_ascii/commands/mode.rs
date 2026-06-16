@@ -5,7 +5,10 @@ use crate::{
     Mode, RadioState, Result,
 };
 
-use super::{DecodedFrame, EncodedCommand};
+use super::{
+    split::{current_tx_vfo, tx_vfo_from_state, RoutingVfo},
+    DecodedFrame, EncodedCommand,
+};
 use crate::protocol::kenwood_ascii::{
     AsciiFrame, CommandPriority, KenwoodAsciiProfile, ResponseMatcher,
 };
@@ -26,7 +29,8 @@ pub fn encode(
             encode_mode_for_target(profile, receiver_target(*receiver), *mode, state).map(Some)
         }
         RadioCommand::SetTxMode(mode) => {
-            encode_mode_for_target(profile, tx_target_from_state(state), *mode, state).map(Some)
+            encode_mode_for_target(profile, tx_target_from_state(profile, state)?, *mode, state)
+                .map(Some)
         }
         _ => Ok(None),
     }
@@ -63,7 +67,7 @@ pub fn decode(
     let patches = match frame.command() {
         "MD" => decode_md(profile, frame.payload(), state)?,
         "MD$" => decode_elecraft_md(profile, ModeTarget::Sub, frame.payload(), state)?,
-        "DA" => decode_ts590_da(frame.payload(), state)?,
+        "DA" => decode_ts590_da(profile, frame.payload(), state)?,
         "DT" => decode_elecraft_dt(profile, ModeTarget::Main, frame.payload(), state)?,
         "DT$" => decode_elecraft_dt(profile, ModeTarget::Sub, frame.payload(), state)?,
         "SF" => decode_ts890_sf(profile, frame.payload(), state)?,
@@ -128,7 +132,7 @@ fn encode_mode_for_target(
     Ok(EncodedCommand::new(
         frames,
         matcher,
-        mode_patches(target, mode, state),
+        mode_patches(profile, target, mode, state),
         CommandPriority::Normal,
     ))
 }
@@ -142,18 +146,18 @@ fn decode_md(
         return decode_yaesu_md(profile, payload, state);
     }
     if profile.id() == "kenwood-ts590" {
-        return decode_ts590_md(payload, state);
+        return decode_ts590_md(profile, payload, state);
     }
     if is_elecraft_family(profile) {
         return decode_elecraft_md(profile, ModeTarget::Main, payload, state);
     }
     if profile.id() == "elecraft-k2" {
-        return decode_k2_md(payload, state);
+        return decode_k2_md(profile, payload, state);
     }
 
     let code = single_code("MD", payload)?;
     let mode = decode_standard_kenwood_code(code, "MD")?;
-    Ok(mode_patches(ModeTarget::Main, mode, state))
+    Ok(mode_patches(profile, ModeTarget::Main, mode, state))
 }
 
 fn encode_standard_md(mode: Mode) -> Result<(Vec<AsciiFrame>, ResponseMatcher)> {
@@ -242,14 +246,22 @@ fn encode_yaesu_mode(
     ))
 }
 
-fn decode_ts590_md(payload: &str, state: &RadioState) -> Result<Vec<StatePatch>> {
+fn decode_ts590_md(
+    profile: &KenwoodAsciiProfile,
+    payload: &str,
+    state: &RadioState,
+) -> Result<Vec<StatePatch>> {
     let code = single_code("MD", payload)?;
     let data_flag = current_ts590_data_flag(state.main_rx.mode);
     let mode = compose_ts590_mode(code, data_flag, "MD")?;
-    Ok(mode_patches(ModeTarget::Main, mode, state))
+    Ok(mode_patches(profile, ModeTarget::Main, mode, state))
 }
 
-fn decode_ts590_da(payload: &str, state: &RadioState) -> Result<Vec<StatePatch>> {
+fn decode_ts590_da(
+    profile: &KenwoodAsciiProfile,
+    payload: &str,
+    state: &RadioState,
+) -> Result<Vec<StatePatch>> {
     let flag = match single_code("DA", payload)? {
         '0' => false,
         '1' => true,
@@ -266,11 +278,11 @@ fn decode_ts590_da(payload: &str, state: &RadioState) -> Result<Vec<StatePatch>>
         message: "cannot compose TS-590 mode without current MD state".to_string(),
     })?;
     let mode = compose_ts590_mode(base, flag, "DA")?;
-    Ok(mode_patches(ModeTarget::Main, mode, state))
+    Ok(mode_patches(profile, ModeTarget::Main, mode, state))
 }
 
 fn decode_ts890_sf(
-    _profile: &KenwoodAsciiProfile,
+    profile: &KenwoodAsciiProfile,
     payload: &str,
     state: &RadioState,
 ) -> Result<Vec<StatePatch>> {
@@ -307,7 +319,7 @@ fn decode_ts890_sf(
             StatePatch::SubRxFrequency(crate::Frequency::from_hz(frequency)),
         ],
     };
-    patches.extend(mode_patches(target, mode, state));
+    patches.extend(mode_patches(profile, target, mode, state));
     Ok(patches)
 }
 
@@ -339,7 +351,7 @@ fn decode_ts990_om(
         }
     };
     let mode = decode_ts990_code(payload.as_bytes()[1] as char)?;
-    Ok(mode_patches(target, mode, state))
+    Ok(mode_patches(profile, target, mode, state))
 }
 
 fn decode_elecraft_md(
@@ -357,7 +369,7 @@ fn decode_elecraft_md(
     let code = single_code("MD", payload)?;
     let dt_code = current_elecraft_dt_code(target, state);
     let mode = compose_elecraft_mode(code, dt_code, "MD")?;
-    Ok(mode_patches(target, mode, state))
+    Ok(mode_patches(profile, target, mode, state))
 }
 
 fn decode_elecraft_dt(
@@ -378,10 +390,14 @@ fn decode_elecraft_dt(
         message: "cannot compose Elecraft mode without current MD state".to_string(),
     })?;
     let mode = compose_elecraft_mode(md_code, Some(dt_code), "DT")?;
-    Ok(mode_patches(target, mode, state))
+    Ok(mode_patches(profile, target, mode, state))
 }
 
-fn decode_k2_md(payload: &str, state: &RadioState) -> Result<Vec<StatePatch>> {
+fn decode_k2_md(
+    profile: &KenwoodAsciiProfile,
+    payload: &str,
+    state: &RadioState,
+) -> Result<Vec<StatePatch>> {
     let code = single_code("MD", payload)?;
     let mode = match code {
         '1' => Mode::Lsb,
@@ -397,7 +413,7 @@ fn decode_k2_md(payload: &str, state: &RadioState) -> Result<Vec<StatePatch>> {
             })
         }
     };
-    Ok(mode_patches(ModeTarget::Main, mode, state))
+    Ok(mode_patches(profile, ModeTarget::Main, mode, state))
 }
 
 fn decode_yaesu_md(
@@ -429,10 +445,15 @@ fn decode_yaesu_md(
     };
 
     let mode = decode_yaesu_code(profile, code, "MD")?;
-    Ok(mode_patches(target, mode, state))
+    Ok(mode_patches(profile, target, mode, state))
 }
 
-fn mode_patches(target: ModeTarget, mode: Mode, state: &RadioState) -> Vec<StatePatch> {
+fn mode_patches(
+    profile: &KenwoodAsciiProfile,
+    target: ModeTarget,
+    mode: Mode,
+    state: &RadioState,
+) -> Vec<StatePatch> {
     let mut patches = vec![match target {
         ModeTarget::Main => StatePatch::MainRxMode(mode),
         ModeTarget::Sub => StatePatch::SubRxMode(mode),
@@ -442,15 +463,7 @@ fn mode_patches(target: ModeTarget, mode: Mode, state: &RadioState) -> Vec<State
         patches.insert(0, StatePatch::SubRxPresent(true));
     }
 
-    if matches!(target, ModeTarget::Main)
-        && !state.tx.as_ref().and_then(|tx| tx.split).unwrap_or(false)
-    {
-        patches.push(StatePatch::TxMode(mode));
-    }
-
-    if matches!(target, ModeTarget::Sub)
-        && state.tx.as_ref().and_then(|tx| tx.split).unwrap_or(false)
-    {
+    if current_tx_vfo(profile, state) == Some(routing_vfo(target)) {
         patches.push(StatePatch::TxMode(mode));
     }
 
@@ -464,11 +477,17 @@ fn receiver_target(receiver: ReceiverPath) -> ModeTarget {
     }
 }
 
-fn tx_target_from_state(state: &RadioState) -> ModeTarget {
-    if state.tx.as_ref().and_then(|tx| tx.split).unwrap_or(false) {
-        ModeTarget::Sub
-    } else {
-        ModeTarget::Main
+fn tx_target_from_state(profile: &KenwoodAsciiProfile, state: &RadioState) -> Result<ModeTarget> {
+    Ok(match tx_vfo_from_state(profile, state, "tx.mode")? {
+        RoutingVfo::Main => ModeTarget::Main,
+        RoutingVfo::Sub => ModeTarget::Sub,
+    })
+}
+
+fn routing_vfo(target: ModeTarget) -> RoutingVfo {
+    match target {
+        ModeTarget::Main => RoutingVfo::Main,
+        ModeTarget::Sub => RoutingVfo::Sub,
     }
 }
 
@@ -830,7 +849,12 @@ mod tests {
     #[test]
     fn ts890_sf_decodes_frequency_and_mode() {
         let profile = profile_by_id("kenwood-ts890").unwrap();
-        let state = RadioState::default();
+        let mut state = RadioState::default();
+        state.main_rx.frequency = Some(Frequency::from_hz(14_074_000));
+        state.tx = Some(TransmitterState {
+            split: Some(false),
+            ..TransmitterState::default()
+        });
         let decoded = decode(
             profile,
             &AsciiFrame::new(concat!("SF", "0", "00014074000", "2", ";")).unwrap(),
