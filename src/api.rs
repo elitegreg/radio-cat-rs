@@ -6,7 +6,7 @@ use crate::{
     actor::{send_command, CommandEnvelope, RadioTask},
     command::{RadioCommand, ReceiverPath},
     drivers,
-    drivers::{DummyRadioDriver, KenwoodAsciiDriver},
+    drivers::{DummyRadioDriver, IcomCivDriver, KenwoodAsciiDriver},
     error::{RadioError, Result},
     transport::{
         boxed_transport, open_transport, BoxedCatTransport, CatTransport, TransportConfig,
@@ -187,12 +187,15 @@ impl Radio {
             "dummy" => Box::new(DummyRadioDriver::with_options(config.options.clone())),
             _ => match KenwoodAsciiDriver::from_driver_id(driver_id, config.options.clone()) {
                 Some(driver) => Box::new(driver),
-                None => {
-                    tracing::error!(driver = %config.driver, "unsupported radio driver requested");
-                    return Err(RadioError::UnsupportedDriver {
-                        driver: config.driver,
-                    });
-                }
+                None => match IcomCivDriver::from_driver_id(driver_id, config.options.clone())? {
+                    Some(driver) => Box::new(driver),
+                    None => {
+                        tracing::error!(driver = %config.driver, "unsupported radio driver requested");
+                        return Err(RadioError::UnsupportedDriver {
+                            driver: config.driver,
+                        });
+                    }
+                },
             },
         };
 
@@ -226,6 +229,7 @@ impl Radio {
             state_tx,
             update_tx,
             transport,
+            config.options,
         );
 
         Ok((radio, task))
@@ -578,13 +582,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn supported_driver_list_contains_dummy_and_kenwood_profiles() {
+    async fn supported_driver_list_contains_dummy_kenwood_and_icom_profiles() {
         assert!(supported_drivers()
             .iter()
             .any(|driver| driver.id == "dummy"));
         assert!(supported_drivers()
             .iter()
             .any(|driver| driver.id == "kenwood-ts590"));
+        assert!(supported_drivers()
+            .iter()
+            .any(|driver| driver.id == "icom-ic705"));
 
         let radio = Radio::connect(RadioConfig::dummy()).await.unwrap();
         assert_eq!(
@@ -596,6 +603,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(kenwood.driver_descriptor().id, "kenwood-ts590");
+
+        let icom = Radio::connect(RadioConfig::new("icom-ic705"))
+            .await
+            .unwrap();
+        assert_eq!(icom.driver_descriptor().id, "icom-ic705");
     }
 
     #[tokio::test]

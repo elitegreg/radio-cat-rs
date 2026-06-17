@@ -8,9 +8,16 @@ use tokio::{
 use crate::{
     driver::RadioDriver,
     error::{RadioError, Result},
-    protocol::kenwood_ascii::{
-        self as kenwood_ascii, AsciiFrame, CommandPriority, EncodedCommand, FrameSplitter,
-        KenwoodAsciiProfile, ResponseMatcher, StartupStep,
+    protocol::{
+        icom_civ::{
+            self, CivFrame, FrameSplitter as IcomFrameSplitter, IcomCivOptions, IcomCivProfile,
+            ResponseMatcher as IcomResponseMatcher,
+        },
+        kenwood_ascii::{
+            self as kenwood_ascii, AsciiFrame, CommandPriority, EncodedCommand,
+            FrameSplitter as KenwoodFrameSplitter, KenwoodAsciiProfile, ResponseMatcher,
+            StartupStep,
+        },
     },
     transport::BoxedCatTransport,
     update::{SharedRadioState, StateReducer, StateUpdate},
@@ -26,6 +33,14 @@ pub(crate) struct CommandEnvelope {
     pub result_tx: oneshot::Sender<Result<()>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IcomWaitOutcome {
+    Matched,
+    Timeout,
+    Rejected,
+    Collision,
+}
+
 pub struct RadioTask {
     driver: Box<dyn RadioDriver>,
     reducer: StateReducer,
@@ -33,8 +48,12 @@ pub struct RadioTask {
     state_tx: watch::Sender<SharedRadioState>,
     update_tx: broadcast::Sender<StateUpdate>,
     transport: Option<BoxedCatTransport>,
-    frame_splitter: FrameSplitter,
+    kenwood_frame_splitter: KenwoodFrameSplitter,
+    icom_frame_splitter: IcomFrameSplitter,
     kenwood_profile: Option<&'static KenwoodAsciiProfile>,
+    icom_profile: Option<&'static IcomCivProfile>,
+    icom_options: Option<IcomCivOptions>,
+    driver_options: String,
     next_poll_at: Option<Instant>,
 }
 
@@ -46,6 +65,7 @@ impl RadioTask {
         state_tx: watch::Sender<SharedRadioState>,
         update_tx: broadcast::Sender<StateUpdate>,
         transport: Option<BoxedCatTransport>,
+        driver_options: String,
     ) -> Self {
         Self {
             driver,
@@ -54,8 +74,12 @@ impl RadioTask {
             state_tx,
             update_tx,
             transport,
-            frame_splitter: FrameSplitter::new(),
+            kenwood_frame_splitter: KenwoodFrameSplitter::new(),
+            icom_frame_splitter: IcomFrameSplitter::new(),
             kenwood_profile: None,
+            icom_profile: None,
+            icom_options: None,
+            driver_options,
             next_poll_at: None,
         }
     }
@@ -63,6 +87,10 @@ impl RadioTask {
     pub async fn run(mut self) -> Result<()> {
         let driver = self.driver.descriptor();
         self.kenwood_profile = kenwood_ascii::profile_by_id(driver.id);
+        self.icom_profile = icom_civ::profile_by_id(driver.id);
+        if let Some(profile) = self.icom_profile {
+            self.icom_options = Some(IcomCivOptions::parse(profile, &self.driver_options)?);
+        }
 
         tracing::info!(driver = %driver.id, "radio task run loop starting");
 
@@ -90,6 +118,12 @@ impl RadioTask {
             self.schedule_next_poll();
             tracing::info!(driver = %driver.id, "kenwood-ascii transport bootstrap complete");
         }
+        if self.icom_profile.is_some() && self.transport.is_some() {
+            tracing::info!(driver = %driver.id, "starting icom-civ transport bootstrap");
+            self.run_icom_startup().await?;
+            self.schedule_next_poll();
+            tracing::info!(driver = %driver.id, "icom-civ transport bootstrap complete");
+        }
 
         tracing::info!(driver = %driver.id, "radio task command loop started");
         loop {
@@ -111,6 +145,14 @@ impl RadioTask {
                             None,
                         )
                         .await?;
+                    let _ = self
+                        .process_icom_incoming(
+                            Duration::from_millis(1),
+                            UpdateSource::Native,
+                            None,
+                            None,
+                        )
+                        .await?;
                     self.run_poll_if_due().await?;
                 }
             }
@@ -126,6 +168,60 @@ impl RadioTask {
         Ok(())
     }
 
+    async fn run_icom_startup(&mut self) -> Result<()> {
+        let Some(profile) = self.icom_profile else {
+            return Ok(());
+        };
+        let Some(options) = self.icom_options else {
+            return Ok(());
+        };
+        if self.transport.is_none() {
+            return Ok(());
+        }
+
+        tracing::info!(
+            driver = %profile.id(),
+            startup_steps = profile.startup.len(),
+            "running icom-civ startup sequence"
+        );
+
+        for step in profile.startup {
+            match *step {
+                icom_civ::StartupStep::Query(semantic) => {
+                    let Some(encoded) = icom_civ::encode_query(options, semantic)? else {
+                        tracing::trace!(driver = %profile.id(), semantic, "ICOM startup semantic skipped");
+                        continue;
+                    };
+                    tracing::debug!(
+                        driver = %profile.id(),
+                        semantic,
+                        frame_count = encoded.frames.len(),
+                        expected = ?encoded.matcher,
+                        "ICOM startup query step"
+                    );
+                    if let Err(error) = self
+                        .send_icom_encoded(
+                            profile,
+                            encoded,
+                            UpdateSource::Native,
+                            STARTUP_RESPONSE_TIMEOUT,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            driver = %profile.id(),
+                            semantic,
+                            ?error,
+                            "ICOM startup query failed; continuing"
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     async fn handle_command(&mut self, command: RadioCommand) -> Result<()> {
         let command_for_native = command.clone();
         let state_before = self.reducer.state().clone();
@@ -138,7 +234,9 @@ impl RadioTask {
         );
         self.publish_patches(outcome.patches, outcome.source);
 
-        self.dispatch_native_command(command_for_native, &state_before)
+        self.dispatch_native_command(command_for_native.clone(), &state_before)
+            .await?;
+        self.dispatch_icom_command(command_for_native, &state_before)
             .await?;
 
         Ok(())
@@ -255,6 +353,44 @@ impl RadioTask {
         .await
     }
 
+    async fn dispatch_icom_command(
+        &mut self,
+        command: RadioCommand,
+        state_before: &RadioState,
+    ) -> Result<()> {
+        let Some(profile) = self.icom_profile else {
+            return Ok(());
+        };
+        let Some(options) = self.icom_options else {
+            return Ok(());
+        };
+        if self.transport.is_none() {
+            tracing::trace!(driver = %profile.id(), "no transport configured; skipping ICOM native command dispatch");
+            return Ok(());
+        }
+
+        let Some(encoded) = icom_civ::encode(profile, options, &command, state_before)? else {
+            tracing::trace!(driver = %profile.id(), ?command, "command has no ICOM native transport encoding");
+            return Ok(());
+        };
+
+        tracing::debug!(
+            driver = %profile.id(),
+            ?command,
+            frame_count = encoded.frames.len(),
+            expected = ?encoded.matcher,
+            "dispatching ICOM command over transport"
+        );
+
+        self.send_icom_encoded(
+            profile,
+            encoded,
+            UpdateSource::CommandResponse,
+            COMMAND_RESPONSE_TIMEOUT,
+        )
+        .await
+    }
+
     async fn send_kenwood_encoded(
         &mut self,
         profile: &'static KenwoodAsciiProfile,
@@ -339,7 +475,7 @@ impl RadioTask {
             }
 
             let mut matched_expected = false;
-            let frames = match self.frame_splitter.push(&buf[..count]) {
+            let frames = match self.kenwood_frame_splitter.push(&buf[..count]) {
                 Ok(frames) => frames,
                 Err(error) => {
                     tracing::warn!(
@@ -419,13 +555,229 @@ impl RadioTask {
         }
     }
 
+    async fn send_icom_encoded(
+        &mut self,
+        profile: &'static IcomCivProfile,
+        encoded: icom_civ::EncodedCommand,
+        default_source: UpdateSource,
+        wait_timeout: Duration,
+    ) -> Result<()> {
+        for frame in encoded.frames {
+            tracing::debug!(
+                driver = %profile.id(),
+                tx_bytes = ?frame.as_bytes(),
+                "sending ICOM CI-V frame"
+            );
+
+            {
+                let transport = self.transport.as_mut().ok_or_else(|| {
+                    RadioError::Transport(
+                        "missing transport for ICOM native command dispatch".to_string(),
+                    )
+                })?;
+                transport.write_all(frame.as_bytes()).await?;
+                transport.flush().await?;
+            }
+
+            if encoded.matcher.expects_response() {
+                match self
+                    .process_icom_incoming(
+                        wait_timeout,
+                        default_source,
+                        Some(&encoded.matcher),
+                        Some(frame.as_bytes()),
+                    )
+                    .await?
+                {
+                    IcomWaitOutcome::Matched => {}
+                    IcomWaitOutcome::Timeout => {
+                        return Err(RadioError::Timeout {
+                            command: "icom-command-response",
+                        });
+                    }
+                    IcomWaitOutcome::Rejected => {
+                        return Err(RadioError::protocol_syntax(Some("icom-civ")));
+                    }
+                    IcomWaitOutcome::Collision => {
+                        return Err(RadioError::ProtocolCommunication);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn process_icom_incoming(
+        &mut self,
+        wait_timeout: Duration,
+        default_source: UpdateSource,
+        expected: Option<&IcomResponseMatcher>,
+        echo: Option<&[u8]>,
+    ) -> Result<IcomWaitOutcome> {
+        let Some(profile) = self.icom_profile else {
+            return Ok(IcomWaitOutcome::Timeout);
+        };
+        if self.transport.is_none() {
+            return Ok(IcomWaitOutcome::Timeout);
+        }
+
+        let deadline = Instant::now() + wait_timeout;
+        let mut saw_frames = false;
+
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(if expected.is_none() && saw_frames {
+                    IcomWaitOutcome::Matched
+                } else {
+                    IcomWaitOutcome::Timeout
+                });
+            }
+
+            let remaining = deadline.saturating_duration_since(now);
+            let mut buf = [0u8; 1024];
+            let count = {
+                let transport = self
+                    .transport
+                    .as_mut()
+                    .ok_or_else(|| RadioError::Transport("transport disappeared".to_string()))?;
+                match timeout(remaining, transport.read_some(&mut buf)).await {
+                    Ok(read_result) => read_result?,
+                    Err(_) => {
+                        return Ok(if expected.is_none() && saw_frames {
+                            IcomWaitOutcome::Matched
+                        } else {
+                            IcomWaitOutcome::Timeout
+                        })
+                    }
+                }
+            };
+
+            if count == 0 {
+                tracing::trace!(driver = %profile.id(), "ICOM transport read yielded EOF/empty");
+                return Ok(if expected.is_none() && saw_frames {
+                    IcomWaitOutcome::Matched
+                } else {
+                    IcomWaitOutcome::Timeout
+                });
+            }
+
+            let frames = match self.icom_frame_splitter.push(&buf[..count]) {
+                Ok(frames) => frames,
+                Err(error) => {
+                    tracing::warn!(
+                        driver = %profile.id(),
+                        ?error,
+                        "failed to split incoming ICOM CI-V bytes into frames; dropping chunk"
+                    );
+                    continue;
+                }
+            };
+
+            for frame in frames {
+                saw_frames = true;
+                if echo.is_some_and(|sent| frame.is_echo_of(sent)) {
+                    tracing::trace!(driver = %profile.id(), rx_bytes = ?frame.as_bytes(), "discarding ICOM self-echo frame");
+                    continue;
+                }
+
+                if let Some(status) = icom_civ::ProtocolStatus::parse(&frame) {
+                    tracing::debug!(
+                        driver = %profile.id(),
+                        rx_bytes = ?frame.as_bytes(),
+                        ?status,
+                        "received ICOM protocol status"
+                    );
+                    match status {
+                        icom_civ::ProtocolStatus::Ok => {
+                            if expected
+                                .is_some_and(|matcher| matches!(matcher, IcomResponseMatcher::Ack))
+                            {
+                                return Ok(IcomWaitOutcome::Matched);
+                            }
+                        }
+                        icom_civ::ProtocolStatus::Ng => {
+                            if expected.is_some() {
+                                return Ok(IcomWaitOutcome::Rejected);
+                            }
+                        }
+                        icom_civ::ProtocolStatus::Collision => {
+                            if expected.is_some() {
+                                return Ok(IcomWaitOutcome::Collision);
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                let mut matched_expected = false;
+                if let Some(expected) = expected {
+                    if expected.matches(&frame) {
+                        tracing::debug!(
+                            driver = %profile.id(),
+                            rx_bytes = ?frame.as_bytes(),
+                            expected = ?expected,
+                            "received expected ICOM CI-V response"
+                        );
+                        matched_expected = true;
+                    }
+                }
+
+                self.decode_and_publish_icom_frame(profile, &frame, default_source);
+
+                if matched_expected {
+                    return Ok(IcomWaitOutcome::Matched);
+                }
+            }
+
+            if expected.is_none() {
+                return Ok(if saw_frames {
+                    IcomWaitOutcome::Matched
+                } else {
+                    IcomWaitOutcome::Timeout
+                });
+            }
+        }
+    }
+
+    fn decode_and_publish_icom_frame(
+        &mut self,
+        profile: &'static IcomCivProfile,
+        frame: &CivFrame,
+        default_source: UpdateSource,
+    ) {
+        match icom_civ::decode(profile, frame, self.reducer.state()) {
+            Ok(Some(decoded)) => {
+                let source = decoded.source_hint.unwrap_or(default_source);
+                tracing::debug!(
+                    driver = %profile.id(),
+                    rx_bytes = ?frame.as_bytes(),
+                    source = ?source,
+                    patch_count = decoded.patches.len(),
+                    "decoded ICOM CI-V frame into state patches"
+                );
+                self.publish_patches(decoded.patches, source);
+            }
+            Ok(None) => {
+                tracing::trace!(
+                    driver = %profile.id(),
+                    rx_bytes = ?frame.as_bytes(),
+                    "unhandled ICOM CI-V frame"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    driver = %profile.id(),
+                    rx_bytes = ?frame.as_bytes(),
+                    ?error,
+                    "failed to decode ICOM CI-V frame; continuing"
+                );
+            }
+        }
+    }
+
     async fn run_poll_if_due(&mut self) -> Result<()> {
-        let Some(profile) = self.kenwood_profile else {
-            return Ok(());
-        };
-        let Some(plan) = profile.poll else {
-            return Ok(());
-        };
         if self.transport.is_none() {
             return Ok(());
         }
@@ -440,22 +792,49 @@ impl RadioTask {
             return Ok(());
         }
 
-        tracing::debug!(driver = %profile.id(), query_count = plan.queries.len(), "running poll plan");
-        for semantic in plan.queries {
-            let Some(encoded) = encode_kenwood_query(profile, semantic)? else {
-                continue;
-            };
+        if let Some(profile) = self.kenwood_profile {
+            if let Some(plan) = profile.poll {
+                tracing::debug!(driver = %profile.id(), query_count = plan.queries.len(), "running poll plan");
+                for semantic in plan.queries {
+                    let Some(encoded) = encode_kenwood_query(profile, semantic)? else {
+                        continue;
+                    };
 
-            if let Err(error) = self
-                .send_kenwood_encoded(
-                    profile,
-                    encoded,
-                    UpdateSource::Poll,
-                    COMMAND_RESPONSE_TIMEOUT,
-                )
-                .await
-            {
-                tracing::debug!(driver = %profile.id(), semantic, ?error, "poll query failed");
+                    if let Err(error) = self
+                        .send_kenwood_encoded(
+                            profile,
+                            encoded,
+                            UpdateSource::Poll,
+                            COMMAND_RESPONSE_TIMEOUT,
+                        )
+                        .await
+                    {
+                        tracing::debug!(driver = %profile.id(), semantic, ?error, "poll query failed");
+                    }
+                }
+            }
+        }
+
+        if let Some(profile) = self.icom_profile {
+            if let (Some(plan), Some(options)) = (profile.poll, self.icom_options) {
+                tracing::debug!(driver = %profile.id(), query_count = plan.queries.len(), "running ICOM poll plan");
+                for semantic in plan.queries {
+                    let Some(encoded) = icom_civ::encode_query(options, semantic)? else {
+                        continue;
+                    };
+
+                    if let Err(error) = self
+                        .send_icom_encoded(
+                            profile,
+                            encoded,
+                            UpdateSource::Poll,
+                            COMMAND_RESPONSE_TIMEOUT,
+                        )
+                        .await
+                    {
+                        tracing::debug!(driver = %profile.id(), semantic, ?error, "ICOM poll query failed");
+                    }
+                }
             }
         }
 
@@ -467,6 +846,16 @@ impl RadioTask {
         if let Some(profile) = self.kenwood_profile {
             if let Some(plan) = profile.poll {
                 self.next_poll_at = Some(Instant::now() + plan.interval);
+                return;
+            }
+        }
+        if let Some(profile) = self.icom_profile {
+            if profile.poll.is_some() {
+                let interval = self
+                    .icom_options
+                    .map(|options| options.poll_interval)
+                    .unwrap_or(IcomCivOptions::DEFAULT_POLL_INTERVAL);
+                self.next_poll_at = Some(Instant::now() + interval);
                 return;
             }
         }

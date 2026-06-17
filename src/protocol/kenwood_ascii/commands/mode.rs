@@ -549,6 +549,10 @@ fn encode_ts590_mode(mode: Mode) -> Result<(char, Option<bool>)> {
         Mode::Rtty => Ok(('6', None)),
         Mode::CwReverse => Ok(('7', None)),
         Mode::RttyReverse => Ok(('9', None)),
+        Mode::Wfm | Mode::DigitalVoice => Err(RadioError::InvalidValue {
+            field: "mode",
+            message: format!("mode {mode} is not supported by kenwood-ts590"),
+        }),
     }
 }
 
@@ -590,6 +594,7 @@ fn current_ts590_base_code(mode: Option<Mode>) -> Option<char> {
         Mode::Rtty => Some('6'),
         Mode::CwReverse => Some('7'),
         Mode::RttyReverse => Some('9'),
+        Mode::Wfm | Mode::DigitalVoice => None,
     }
 }
 
@@ -651,6 +656,10 @@ fn encode_ts990_code(mode: Mode) -> Result<char> {
         Mode::DataLsb => Ok('C'),
         Mode::DataUsb => Ok('D'),
         Mode::DataFm => Ok('E'),
+        Mode::Wfm | Mode::DigitalVoice => Err(RadioError::InvalidValue {
+            field: "mode",
+            message: format!("mode {mode} is not supported by kenwood-ts990"),
+        }),
     }
 }
 
@@ -729,7 +738,7 @@ fn current_elecraft_md_code(target: ModeTarget, state: &RadioState) -> Option<ch
         Mode::CwReverse => Some('7'),
         Mode::Rtty | Mode::DataUsb | Mode::Digital => Some('6'),
         Mode::RttyReverse | Mode::DataLsb => Some('9'),
-        Mode::DataFm => None,
+        Mode::DataFm | Mode::Wfm | Mode::DigitalVoice => None,
     }
 }
 
@@ -763,6 +772,10 @@ fn encode_yaesu_code(profile: &KenwoodAsciiProfile, mode: Mode) -> Result<char> 
         }
         Mode::DataUsb => Ok('C'),
         Mode::Digital => Ok('E'),
+        Mode::Wfm | Mode::DigitalVoice => Err(RadioError::InvalidValue {
+            field: "mode",
+            message: format!("mode {mode} is not supported by {}", profile.id()),
+        }),
     }
 }
 

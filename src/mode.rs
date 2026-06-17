@@ -8,12 +8,14 @@ pub enum Mode {
     CwReverse,
     Am,
     Fm,
+    Wfm,
     Rtty,
     RttyReverse,
     DataLsb,
     DataUsb,
     DataFm,
     Digital,
+    DigitalVoice,
 }
 
 impl Mode {
@@ -25,12 +27,14 @@ impl Mode {
             Self::CwReverse => "CW-R",
             Self::Am => "AM",
             Self::Fm => "FM",
+            Self::Wfm => "WFM",
             Self::Rtty => "RTTY",
             Self::RttyReverse => "RTTY-R",
             Self::DataLsb => "DATA-LSB",
             Self::DataUsb => "DATA-USB",
             Self::DataFm => "DATA-FM",
             Self::Digital => "DIGITAL",
+            Self::DigitalVoice => "DIGITAL-VOICE",
         }
     }
 }
@@ -69,12 +73,14 @@ impl FromStr for Mode {
             "cwr" | "cw-r" | "cw-reverse" => Ok(Self::CwReverse),
             "am" => Ok(Self::Am),
             "fm" => Ok(Self::Fm),
+            "wfm" | "wide-fm" => Ok(Self::Wfm),
             "rtty" => Ok(Self::Rtty),
             "rttyr" | "rtty-r" | "rtty-reverse" => Ok(Self::RttyReverse),
             "data-lsb" | "datal" | "data-l" => Ok(Self::DataLsb),
             "data-usb" | "datau" | "data-u" => Ok(Self::DataUsb),
             "data-fm" | "datafm" => Ok(Self::DataFm),
             "digital" | "dig" => Ok(Self::Digital),
+            "digital-voice" | "digitalvoice" | "dv" | "d-star" | "dstar" => Ok(Self::DigitalVoice),
             _ => Err(ParseModeError),
         }
     }
