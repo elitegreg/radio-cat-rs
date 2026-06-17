@@ -21,7 +21,7 @@ use crate::{
     },
     transport::BoxedCatTransport,
     update::{SharedRadioState, StateReducer, StateUpdate},
-    RadioCommand, RadioState, StatePatch, UpdateSource,
+    RadioCommand, RadioState, ReceiverPath, StatePatch, UpdateSource,
 };
 
 const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_millis(900);
@@ -344,13 +344,72 @@ impl RadioTask {
             "dispatching command over transport"
         );
 
-        self.send_kenwood_encoded(
-            profile,
-            encoded,
-            UpdateSource::CommandResponse,
-            COMMAND_RESPONSE_TIMEOUT,
-        )
-        .await
+        match self
+            .send_kenwood_encoded(
+                profile,
+                encoded,
+                UpdateSource::CommandResponse,
+                COMMAND_RESPONSE_TIMEOUT,
+            )
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error @ RadioError::Timeout { .. }) => {
+                tracing::warn!(
+                    driver = %profile.id(),
+                    ?command,
+                    ?error,
+                    "Kenwood-ASCII set command timed out; querying current state instead"
+                );
+                self.recover_kenwood_timeout(profile, &command, state_before)
+                    .await;
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn recover_kenwood_timeout(
+        &mut self,
+        profile: &'static KenwoodAsciiProfile,
+        command: &RadioCommand,
+        state_before: &RadioState,
+    ) {
+        for semantic in kenwood_timeout_recovery_queries(profile, command, state_before) {
+            let Some(encoded) = (match encode_kenwood_query(profile, semantic) {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    tracing::warn!(
+                        driver = %profile.id(),
+                        ?command,
+                        semantic,
+                        ?error,
+                        "failed to encode Kenwood timeout recovery query"
+                    );
+                    continue;
+                }
+            }) else {
+                continue;
+            };
+
+            if let Err(error) = self
+                .send_kenwood_encoded(
+                    profile,
+                    encoded,
+                    UpdateSource::CommandResponse,
+                    COMMAND_RESPONSE_TIMEOUT,
+                )
+                .await
+            {
+                tracing::warn!(
+                    driver = %profile.id(),
+                    ?command,
+                    semantic,
+                    ?error,
+                    "Kenwood timeout recovery query failed; continuing"
+                );
+            }
+        }
     }
 
     async fn dispatch_icom_command(
@@ -995,6 +1054,212 @@ fn decode_kenwood_frame(
 
 fn matcher_expects_response(matcher: &ResponseMatcher) -> bool {
     !matches!(matcher, ResponseMatcher::None)
+}
+
+fn kenwood_timeout_recovery_queries(
+    profile: &'static KenwoodAsciiProfile,
+    command: &RadioCommand,
+    _state_before: &RadioState,
+) -> Vec<&'static str> {
+    match command {
+        RadioCommand::SetReceiverFrequency { receiver, .. } => {
+            vec![frequency_query_for_receiver(*receiver)]
+        }
+        RadioCommand::SetTxFrequency(_) => vec!["FA", "FB"],
+        RadioCommand::SetReceiverMode { receiver, .. } => mode_queries_for_receiver(profile, *receiver),
+        RadioCommand::SetTxMode(_) => all_mode_queries(profile),
+        RadioCommand::SetReceiverFilterBandwidth { receiver, .. }
+        | RadioCommand::SetReceiverFilterShift { receiver, .. } => {
+            filter_queries_for_receiver(profile, *receiver)
+        }
+        RadioCommand::SetReceiverPreamp { receiver, .. } => {
+            rf_query_for_receiver(profile, *receiver, RfRecoveryFeature::Preamp)
+        }
+        RadioCommand::SetReceiverAttenuator { receiver, .. } => {
+            rf_query_for_receiver(profile, *receiver, RfRecoveryFeature::Attenuator)
+        }
+        RadioCommand::SetReceiverNoiseBlanker { receiver, .. } => {
+            rf_query_for_receiver(profile, *receiver, RfRecoveryFeature::NoiseBlanker)
+        }
+        RadioCommand::SetReceiverNoiseReduction { receiver, .. } => {
+            rf_query_for_receiver(profile, *receiver, RfRecoveryFeature::NoiseReduction)
+        }
+        RadioCommand::SetReceiverAutoNotch { receiver, .. } => {
+            rf_query_for_receiver(profile, *receiver, RfRecoveryFeature::AutoNotch)
+        }
+        RadioCommand::SetTxPower(_) => vec!["PC"],
+        RadioCommand::SetPtt(_) => vec!["IF"],
+        RadioCommand::SetSplit(_) => split_queries(profile),
+        RadioCommand::SetRitEnabled { receiver, .. } => vec![rit_enabled_query(profile, *receiver)],
+        RadioCommand::SetXitEnabled(_) => vec!["XT"],
+        RadioCommand::SetRitOffset { receiver, .. } => rit_offset_queries(profile, *receiver),
+        RadioCommand::SetRitXitOffset(_) => rit_offset_queries(profile, ReceiverPath::Main),
+        RadioCommand::SetKeyerSpeed(_) => vec!["KS"],
+        RadioCommand::SendCw(_) | RadioCommand::StopCw => vec!["KY"],
+        RadioCommand::Refresh => Vec::new(),
+    }
+}
+
+fn frequency_query_for_receiver(receiver: ReceiverPath) -> &'static str {
+    match receiver {
+        ReceiverPath::Main => "FA",
+        ReceiverPath::Sub => "FB",
+    }
+}
+
+fn mode_queries_for_receiver(
+    profile: &'static KenwoodAsciiProfile,
+    receiver: ReceiverPath,
+) -> Vec<&'static str> {
+    match profile.id() {
+        "kenwood-ts590" => vec!["MD", "DA"],
+        "kenwood-ts890" => match receiver {
+            ReceiverPath::Main => vec!["SF0"],
+            ReceiverPath::Sub => vec!["SF1"],
+        },
+        "kenwood-ts990" => match receiver {
+            ReceiverPath::Main => vec!["OM0"],
+            ReceiverPath::Sub => vec!["OM1"],
+        },
+        "elecraft-k4" | "elecraft-k3" => match receiver {
+            ReceiverPath::Main => vec!["MD", "DT"],
+            ReceiverPath::Sub => vec!["MD$", "DT$"],
+        },
+        "kenwood-if232" | "elecraft-k2" => vec!["MD"],
+        _ => vec!["MD"],
+    }
+}
+
+fn all_mode_queries(profile: &'static KenwoodAsciiProfile) -> Vec<&'static str> {
+    match profile.id() {
+        "kenwood-ts590" => vec!["MD", "DA"],
+        "kenwood-ts890" => vec!["SF0", "SF1"],
+        "kenwood-ts990" => vec!["OM0", "OM1"],
+        "elecraft-k4" | "elecraft-k3" => vec!["MD", "DT", "MD$", "DT$"],
+        _ => vec!["MD"],
+    }
+}
+
+fn filter_queries_for_receiver(
+    profile: &'static KenwoodAsciiProfile,
+    receiver: ReceiverPath,
+) -> Vec<&'static str> {
+    match profile.id() {
+        "kenwood-ts890" | "kenwood-ts990" => match receiver {
+            ReceiverPath::Main => vec!["filter-hi-lo-main"],
+            ReceiverPath::Sub => vec!["filter-hi-lo-sub"],
+        },
+        "elecraft-k4" | "elecraft-k3" => match receiver {
+            ReceiverPath::Main => vec!["BW", "IS"],
+            ReceiverPath::Sub => vec!["BW$", "IS$"],
+        },
+        "kenwood-ts590" | "kenwood-ts2000" | "kenwood-ts480" => vec!["filter-state"],
+        _ => vec!["IF"],
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RfRecoveryFeature {
+    Preamp,
+    Attenuator,
+    NoiseBlanker,
+    NoiseReduction,
+    AutoNotch,
+}
+
+fn rf_query_for_receiver(
+    profile: &'static KenwoodAsciiProfile,
+    receiver: ReceiverPath,
+    feature: RfRecoveryFeature,
+) -> Vec<&'static str> {
+    match feature {
+        RfRecoveryFeature::Preamp => match profile.id() {
+            "kenwood-ts990" => match receiver {
+                ReceiverPath::Main => vec!["PA0"],
+                ReceiverPath::Sub => vec!["PA1"],
+            },
+            "elecraft-k4" | "elecraft-k3" => match receiver {
+                ReceiverPath::Main => vec!["PA"],
+                ReceiverPath::Sub => vec!["PA$"],
+            },
+            _ => vec!["PA"],
+        },
+        RfRecoveryFeature::Attenuator => match profile.id() {
+            "kenwood-ts990" => match receiver {
+                ReceiverPath::Main => vec!["RA0"],
+                ReceiverPath::Sub => vec!["RA1"],
+            },
+            "elecraft-k4" | "elecraft-k3" => match receiver {
+                ReceiverPath::Main => vec!["RA"],
+                ReceiverPath::Sub => vec!["RA$"],
+            },
+            _ => vec!["RA"],
+        },
+        RfRecoveryFeature::NoiseBlanker => match profile.id() {
+            "kenwood-ts890" => vec!["NB1", "NB2"],
+            "kenwood-ts990" => match receiver {
+                ReceiverPath::Main => vec!["NB10", "NB20"],
+                ReceiverPath::Sub => vec!["NB11", "NB21"],
+            },
+            "elecraft-k4" | "elecraft-k3" => match receiver {
+                ReceiverPath::Main => vec!["NB"],
+                ReceiverPath::Sub => vec!["NB$"],
+            },
+            _ => vec!["NB"],
+        },
+        RfRecoveryFeature::NoiseReduction => match profile.id() {
+            "kenwood-ts990" => match receiver {
+                ReceiverPath::Main => vec!["NR0"],
+                ReceiverPath::Sub => vec!["NR1"],
+            },
+            "elecraft-k4" | "elecraft-k3" => match receiver {
+                ReceiverPath::Main => vec!["NR"],
+                ReceiverPath::Sub => vec!["NR$"],
+            },
+            _ => vec!["NR"],
+        },
+        RfRecoveryFeature::AutoNotch => match profile.id() {
+            "kenwood-ts990" => match receiver {
+                ReceiverPath::Main => vec!["NT0"],
+                ReceiverPath::Sub => vec!["NT1"],
+            },
+            "elecraft-k4" | "elecraft-k3" => match receiver {
+                ReceiverPath::Main => vec!["NA"],
+                ReceiverPath::Sub => vec!["NA$"],
+            },
+            _ => vec!["NT"],
+        },
+    }
+}
+
+fn split_queries(profile: &'static KenwoodAsciiProfile) -> Vec<&'static str> {
+    match profile.id() {
+        "kenwood-ts990" => vec!["SP"],
+        "kenwood-if232" => vec!["ST"],
+        "elecraft-k4" | "elecraft-k3" | "elecraft-k2" => vec!["FT"],
+        _ => vec!["FR", "FT"],
+    }
+}
+
+fn rit_enabled_query(profile: &'static KenwoodAsciiProfile, receiver: ReceiverPath) -> &'static str {
+    match (profile.id(), receiver) {
+        ("elecraft-k4", ReceiverPath::Sub) => "RT$",
+        _ => "RT",
+    }
+}
+
+fn rit_offset_queries(
+    profile: &'static KenwoodAsciiProfile,
+    _receiver: ReceiverPath,
+) -> Vec<&'static str> {
+    match profile.id() {
+        "kenwood-ts890" | "kenwood-ts990" => vec!["RF"],
+        "elecraft-k4" | "elecraft-k3" => match _receiver {
+            ReceiverPath::Main => vec!["RO"],
+            ReceiverPath::Sub => vec!["RO$"],
+        },
+        _ => vec!["IF"],
+    }
 }
 
 fn matcher_matches_frame(matcher: &ResponseMatcher, frame: &AsciiFrame) -> bool {
