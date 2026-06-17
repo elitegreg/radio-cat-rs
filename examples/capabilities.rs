@@ -1,6 +1,9 @@
 use std::{env, error::Error, fmt};
 
-use radio_cat_rs::protocol::kenwood_ascii::profile_by_id;
+use radio_cat_rs::protocol::{
+    icom_civ::profile_by_id as icom_profile_by_id,
+    kenwood_ascii::profile_by_id as kenwood_profile_by_id,
+};
 use radio_cat_rs::{
     capabilities::{
         Capability, RadioCapabilities, ReceiverCapabilities, ReceiverRfCapabilities,
@@ -32,15 +35,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let capabilities = if descriptor.id.eq_ignore_ascii_case("dummy") {
         RadioCapabilities::dummy_all()
+    } else if let Some(profile) = kenwood_profile_by_id(descriptor.id) {
+        profile.capabilities
+    } else if let Some(profile) = icom_profile_by_id(descriptor.id) {
+        profile.capabilities
     } else {
-        profile_by_id(descriptor.id)
-            .ok_or_else(|| {
-                CliError(format!(
-                    "no capability profile for radio id: {}",
-                    descriptor.id
-                ))
-            })?
-            .capabilities
+        return Err(CliError(format!(
+            "no capability profile for radio id: {}",
+            descriptor.id
+        ))
+        .into());
     };
 
     print_radio_capabilities(

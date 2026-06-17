@@ -61,7 +61,7 @@ impl IcomCivOptions {
         Self {
             radio_address: profile.default_radio_address,
             controller_address: profile.default_controller_address,
-            mode_filter: 3,
+            mode_filter: 1,
             poll_interval: Self::DEFAULT_POLL_INTERVAL,
         }
     }
@@ -279,7 +279,7 @@ mod tests {
 
         assert_eq!(options.radio_address, 0xa4);
         assert_eq!(options.controller_address, 0xe0);
-        assert_eq!(options.mode_filter, 3);
+        assert_eq!(options.mode_filter, 1);
         assert_eq!(options.poll_interval, Duration::from_millis(200));
     }
 
