@@ -481,8 +481,25 @@ impl Radio {
         self.command(RadioCommand::SetXitEnabled(enabled)).await
     }
 
+    pub async fn set_rit_offset(
+        &self,
+        receiver: ReceiverPath,
+        offset: RitXitOffsetHz,
+    ) -> Result<()> {
+        self.command(RadioCommand::SetRitOffset { receiver, offset })
+            .await
+    }
+
+    pub async fn set_main_rit_offset(&self, offset: RitXitOffsetHz) -> Result<()> {
+        self.set_rit_offset(ReceiverPath::Main, offset).await
+    }
+
+    pub async fn set_sub_rit_offset(&self, offset: RitXitOffsetHz) -> Result<()> {
+        self.set_rit_offset(ReceiverPath::Sub, offset).await
+    }
+
     pub async fn set_rit_xit_offset(&self, offset: RitXitOffsetHz) -> Result<()> {
-        self.command(RadioCommand::SetRitXitOffset(offset)).await
+        self.set_main_rit_offset(offset).await
     }
 
     pub async fn set_keyer_speed(&self, wpm: u8) -> Result<()> {

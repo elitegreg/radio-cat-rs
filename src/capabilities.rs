@@ -178,6 +178,7 @@ pub struct RitXitCapabilities {
     pub sub_rit_enabled: Capability,
     pub xit_enabled: Capability,
     pub offset: Capability,
+    pub sub_offset: Capability,
 }
 
 impl RitXitCapabilities {
@@ -187,6 +188,7 @@ impl RitXitCapabilities {
             sub_rit_enabled: Capability::ReadWrite,
             xit_enabled: Capability::ReadWrite,
             offset: Capability::ReadWrite,
+            sub_offset: Capability::ReadWrite,
         }
     }
 
@@ -195,12 +197,14 @@ impl RitXitCapabilities {
         sub_rit_enabled: Capability,
         xit_enabled: Capability,
         offset: Capability,
+        sub_offset: Capability,
     ) -> Self {
         Self {
             main_rit_enabled,
             sub_rit_enabled,
             xit_enabled,
             offset,
+            sub_offset,
         }
     }
 }

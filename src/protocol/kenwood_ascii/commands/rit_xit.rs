@@ -6,10 +6,7 @@ use crate::{
     RadioState, Result, RitXitOffsetHz,
 };
 
-use super::{
-    split::{current_tx_vfo, RoutingVfo},
-    DecodedFrame, EncodedCommand,
-};
+use super::{DecodedFrame, EncodedCommand};
 use crate::protocol::kenwood_ascii::{
     AsciiFrame, CommandPriority, KenwoodAsciiProfile, ResponseMatcher,
 };
@@ -56,6 +53,21 @@ pub fn encode(
                 CommandPriority::Normal,
             )))
         }
+        RadioCommand::SetRitOffset { receiver, offset } => {
+            require_writable(
+                offset_capability(profile, *receiver),
+                match receiver {
+                    ReceiverPath::Main => "rit_xit.offset_hz",
+                    ReceiverPath::Sub => "rit_xit.sub_offset_hz",
+                },
+            )?;
+            if is_k2(profile) {
+                return Err(RadioError::UnsupportedCapability {
+                    capability: "rit_xit.offset_hz",
+                });
+            }
+            Ok(Some(encode_offset(profile, *receiver, *offset, state)?))
+        }
         RadioCommand::SetRitXitOffset(target_offset) => {
             require_writable(profile.capabilities.rit_xit.offset, "rit_xit.offset_hz")?;
             if is_k2(profile) {
@@ -63,7 +75,7 @@ pub fn encode(
                     capability: "rit_xit.offset_hz",
                 });
             }
-            Ok(Some(encode_offset(profile, *target_offset, state)?))
+            Ok(Some(encode_offset(profile, ReceiverPath::Main, *target_offset, state)?))
         }
         _ => Ok(None),
     }
@@ -89,7 +101,7 @@ pub fn encode_query(
         "RT$" if is_k4(profile) && profile.capabilities.rit_xit.sub_rit_enabled.can_read() => {
             ("RT$;", ResponseMatcher::Prefix("RT$"))
         }
-        "RO$" if is_k4(profile) && profile.capabilities.rit_xit.offset.can_read() => {
+        "RO$" if is_k4(profile) && profile.capabilities.rit_xit.sub_offset.can_read() => {
             ("RO$;", ResponseMatcher::Prefix("RO$"))
         }
         _ => return Ok(None),
@@ -105,8 +117,14 @@ pub fn encode_query(
 
 pub fn decode(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result<Option<DecodedFrame>> {
     let patches = match frame.command() {
-        "RT" => vec![StatePatch::MainRitEnabled(parse_flag("RT", frame.payload())?)],
-        "RT$" => vec![StatePatch::SubRitEnabled(parse_flag("RT", frame.payload())?)],
+        "RT" => vec![StatePatch::MainRitEnabled(parse_flag(
+            "RT",
+            frame.payload(),
+        )?)],
+        "RT$" => vec![StatePatch::SubRitEnabled(parse_flag(
+            "RT",
+            frame.payload(),
+        )?)],
         "XT" | "XT$" => vec![StatePatch::XitEnabled(parse_flag("XT", frame.payload())?)],
         "RF" | "RFS" if uses_rf_offset(profile) => {
             vec![StatePatch::RitXitOffset(parse_offset(
@@ -114,8 +132,14 @@ pub fn decode(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result<Optio
                 frame.payload(),
             )?)]
         }
-        "RO" | "ROS" | "RO$" | "RO$S" if uses_ro_offset(profile) => {
+        "RO" | "ROS" if uses_ro_offset(profile) => {
             vec![StatePatch::RitXitOffset(parse_offset(
+                "RO",
+                frame.payload(),
+            )?)]
+        }
+        "RO$" | "RO$S" if uses_ro_offset(profile) => {
+            vec![StatePatch::SubRitXitOffset(parse_offset(
                 "RO",
                 frame.payload(),
             )?)]
@@ -129,11 +153,12 @@ pub fn decode(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result<Optio
 
 fn encode_offset(
     profile: &KenwoodAsciiProfile,
+    receiver: ReceiverPath,
     target_offset: RitXitOffsetHz,
     state: &RadioState,
 ) -> Result<EncodedCommand> {
     if uses_ro_offset(profile) {
-        let suffix = offset_target_suffix(profile, state);
+        let suffix = offset_target_suffix(profile, receiver, state);
         let (sign, magnitude) = signed_parts(target_offset);
         let matcher = if suffix.is_empty() {
             ResponseMatcher::Prefix("RO")
@@ -144,7 +169,7 @@ fn encode_offset(
         return Ok(EncodedCommand::new(
             vec![AsciiFrame::new(format!("RO{suffix}{sign}{magnitude:04};"))?],
             matcher,
-            vec![StatePatch::RitXitOffset(target_offset)],
+            vec![offset_patch(receiver, target_offset)],
             CommandPriority::Normal,
         ));
     }
@@ -171,7 +196,7 @@ fn encode_offset(
     Ok(EncodedCommand::new(
         frames,
         matcher,
-        vec![StatePatch::RitXitOffset(target_offset)],
+        vec![offset_patch(receiver, target_offset)],
         CommandPriority::Normal,
     ))
 }
@@ -252,14 +277,15 @@ fn rit_target_suffix(
     }
 }
 
-fn offset_target_suffix(profile: &KenwoodAsciiProfile, state: &RadioState) -> &'static str {
-    if !is_k4(profile) {
-        return "";
-    }
-
-    match current_tx_vfo(profile, state) {
-        Some(RoutingVfo::Sub) => "$",
-        _ => "",
+fn offset_target_suffix(
+    profile: &KenwoodAsciiProfile,
+    receiver: ReceiverPath,
+    _state: &RadioState,
+) -> &'static str {
+    if is_k4(profile) && matches!(receiver, ReceiverPath::Sub) {
+        "$"
+    } else {
+        ""
     }
 }
 
@@ -274,6 +300,20 @@ fn rit_patch(receiver: ReceiverPath, enabled: bool) -> StatePatch {
     match receiver {
         ReceiverPath::Main => StatePatch::MainRitEnabled(enabled),
         ReceiverPath::Sub => StatePatch::SubRitEnabled(enabled),
+    }
+}
+
+fn offset_capability(profile: &KenwoodAsciiProfile, receiver: ReceiverPath) -> Capability {
+    match receiver {
+        ReceiverPath::Main => profile.capabilities.rit_xit.offset,
+        ReceiverPath::Sub => profile.capabilities.rit_xit.sub_offset,
+    }
+}
+
+fn offset_patch(receiver: ReceiverPath, offset: RitXitOffsetHz) -> StatePatch {
+    match receiver {
+        ReceiverPath::Main => StatePatch::RitXitOffset(offset),
+        ReceiverPath::Sub => StatePatch::SubRitXitOffset(offset),
     }
 }
 
@@ -377,7 +417,10 @@ mod tests {
 
         let encoded = encode(
             ts590,
-            &RadioCommand::SetRitXitOffset(RitXitOffsetHz::new(250).unwrap()),
+            &RadioCommand::SetRitOffset {
+                receiver: ReceiverPath::Main,
+                offset: RitXitOffsetHz::new(250).unwrap(),
+            },
             &state,
         )
         .unwrap()
@@ -389,7 +432,10 @@ mod tests {
 
         let encoded = encode(
             ts590,
-            &RadioCommand::SetRitXitOffset(RitXitOffsetHz::new(-200).unwrap()),
+            &RadioCommand::SetRitOffset {
+                receiver: ReceiverPath::Main,
+                offset: RitXitOffsetHz::new(-200).unwrap(),
+            },
             &state,
         )
         .unwrap()
@@ -405,7 +451,10 @@ mod tests {
 
         let encoded = encode(
             ts590,
-            &RadioCommand::SetRitXitOffset(RitXitOffsetHz::new(9_999).unwrap()),
+            &RadioCommand::SetRitOffset {
+                receiver: ReceiverPath::Main,
+                offset: RitXitOffsetHz::new(9_999).unwrap(),
+            },
             &state,
         )
         .unwrap()
@@ -421,7 +470,10 @@ mod tests {
         let ts590 = profile_by_id("kenwood-ts590").unwrap();
         let error = encode(
             ts590,
-            &RadioCommand::SetRitXitOffset(RitXitOffsetHz::new(50).unwrap()),
+            &RadioCommand::SetRitOffset {
+                receiver: ReceiverPath::Main,
+                offset: RitXitOffsetHz::new(50).unwrap(),
+            },
             &RadioState::default(),
         )
         .unwrap_err();
@@ -440,7 +492,10 @@ mod tests {
         let k2 = profile_by_id("elecraft-k2").unwrap();
         let error = encode(
             k2,
-            &RadioCommand::SetRitXitOffset(RitXitOffsetHz::new(50).unwrap()),
+            &RadioCommand::SetRitOffset {
+                receiver: ReceiverPath::Main,
+                offset: RitXitOffsetHz::new(50).unwrap(),
+            },
             &RadioState::default(),
         )
         .unwrap_err();
@@ -458,7 +513,10 @@ mod tests {
         let k3 = profile_by_id("elecraft-k3").unwrap();
         let encoded = encode(
             k3,
-            &RadioCommand::SetRitXitOffset(RitXitOffsetHz::new(-321).unwrap()),
+            &RadioCommand::SetRitOffset {
+                receiver: ReceiverPath::Main,
+                offset: RitXitOffsetHz::new(-321).unwrap(),
+            },
             &RadioState::default(),
         )
         .unwrap()
@@ -475,7 +533,10 @@ mod tests {
 
         let encoded = encode(
             k4,
-            &RadioCommand::SetRitXitOffset(RitXitOffsetHz::new(25).unwrap()),
+            &RadioCommand::SetRitOffset {
+                receiver: ReceiverPath::Sub,
+                offset: RitXitOffsetHz::new(25).unwrap(),
+            },
             &split_state,
         )
         .unwrap()
@@ -526,7 +587,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             ro.patches,
-            vec![StatePatch::RitXitOffset(RitXitOffsetHz::new(42).unwrap())]
+            vec![StatePatch::SubRitXitOffset(RitXitOffsetHz::new(42).unwrap())]
         );
 
         let rc = decode(ts590, &AsciiFrame::new("RC;").unwrap())

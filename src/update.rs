@@ -114,6 +114,7 @@ pub enum StateField {
     SubRitEnabled,
     XitEnabled,
     RitXitOffset,
+    SubRitXitOffset,
 
     KeyerPresent,
     KeyerSpeed,
@@ -205,6 +206,7 @@ pub enum StatePatch {
     SubRitEnabled(bool),
     XitEnabled(bool),
     RitXitOffset(RitXitOffsetHz),
+    SubRitXitOffset(RitXitOffsetHz),
 
     KeyerPresent(bool),
     KeyerSpeed(u8),
@@ -430,6 +432,11 @@ impl StateReducer {
             StatePatch::RitXitOffset(value) => {
                 if set_option(&mut self.state.rit_xit.offset_hz, value) {
                     changes.add(ChangeFlags::RIT_XIT, StateField::RitXitOffset);
+                }
+            }
+            StatePatch::SubRitXitOffset(value) => {
+                if set_option(&mut self.state.rit_xit.sub_offset_hz, value) {
+                    changes.add(ChangeFlags::RIT_XIT, StateField::SubRitXitOffset);
                 }
             }
 

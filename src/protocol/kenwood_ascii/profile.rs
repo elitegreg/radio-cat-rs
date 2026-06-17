@@ -98,9 +98,11 @@ const NO_FILTER_NO_RF_RX: ReceiverCapabilities =
 const FULL_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, RW, RW, RW);
 const IF232_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, UNSUPPORTED, RW, RW);
 
-const MAIN_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(RW, UNSUPPORTED, RW, RW);
-const K4_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(RW, RW, RW, RW);
-const K2_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(RW, UNSUPPORTED, RW, RO);
+const MAIN_RIT_XIT: RitXitCapabilities =
+    RitXitCapabilities::new(RW, UNSUPPORTED, RW, RW, UNSUPPORTED);
+const K4_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(RW, RW, RW, RW, RW);
+const K2_RIT_XIT: RitXitCapabilities =
+    RitXitCapabilities::new(RW, UNSUPPORTED, RW, RO, UNSUPPORTED);
 
 const FULL_KEYER: KeyerCapabilities = KeyerCapabilities::new(RW, UNSUPPORTED, WO, WO);
 const YAESU_KEYER: KeyerCapabilities =
@@ -805,11 +807,20 @@ mod tests {
             Capability::Unsupported
         );
         assert_eq!(k2.capabilities.rit_xit.offset, Capability::ReadOnly);
-        assert_eq!(k2.capabilities.rit_xit.sub_rit_enabled, Capability::Unsupported);
+        assert_eq!(
+            k2.capabilities.rit_xit.sub_rit_enabled,
+            Capability::Unsupported
+        );
 
         let k4 = profile_by_id("elecraft-k4").unwrap();
-        assert_eq!(k4.capabilities.rit_xit.main_rit_enabled, Capability::ReadWrite);
-        assert_eq!(k4.capabilities.rit_xit.sub_rit_enabled, Capability::ReadWrite);
+        assert_eq!(
+            k4.capabilities.rit_xit.main_rit_enabled,
+            Capability::ReadWrite
+        );
+        assert_eq!(
+            k4.capabilities.rit_xit.sub_rit_enabled,
+            Capability::ReadWrite
+        );
 
         let yaesu = profile_by_id("yaesu-ftdx10").unwrap();
         let keyer = yaesu.capabilities.keyer.unwrap();
