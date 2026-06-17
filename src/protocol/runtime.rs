@@ -18,8 +18,8 @@ use crate::{
     RadioCommand, RadioState, ReceiverPath, StatePatch, UpdateSource,
 };
 
-const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_millis(900);
-const STARTUP_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1200);
+const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
+const STARTUP_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub(crate) trait ProtocolContext: Send {
     fn state(&self) -> &RadioState;
