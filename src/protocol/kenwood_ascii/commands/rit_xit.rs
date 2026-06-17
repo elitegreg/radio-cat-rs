@@ -75,7 +75,12 @@ pub fn encode(
                     capability: "rit_xit.offset_hz",
                 });
             }
-            Ok(Some(encode_offset(profile, ReceiverPath::Main, *target_offset, state)?))
+            Ok(Some(encode_offset(
+                profile,
+                ReceiverPath::Main,
+                *target_offset,
+                state,
+            )?))
         }
         _ => Ok(None),
     }
@@ -587,7 +592,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             ro.patches,
-            vec![StatePatch::SubRitXitOffset(RitXitOffsetHz::new(42).unwrap())]
+            vec![StatePatch::SubRitXitOffset(
+                RitXitOffsetHz::new(42).unwrap()
+            )]
         );
 
         let rc = decode(ts590, &AsciiFrame::new("RC;").unwrap())

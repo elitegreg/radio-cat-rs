@@ -20,8 +20,16 @@ impl Capability {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReceiverKind {
+    SingleVfo,
+    DualVfo,
+    DualRx,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RadioCapabilities {
+    pub receiver_kind: ReceiverKind,
     pub main_rx: ReceiverCapabilities,
     pub sub_rx: Option<ReceiverCapabilities>,
     pub tx: Option<TransmitterCapabilities>,
@@ -33,6 +41,7 @@ pub struct RadioCapabilities {
 impl RadioCapabilities {
     pub const fn dummy_all() -> Self {
         Self {
+            receiver_kind: ReceiverKind::DualVfo,
             main_rx: ReceiverCapabilities::all(),
             sub_rx: Some(ReceiverCapabilities::all()),
             tx: Some(TransmitterCapabilities::all()),
@@ -43,6 +52,7 @@ impl RadioCapabilities {
     }
 
     pub const fn new(
+        receiver_kind: ReceiverKind,
         main_rx: ReceiverCapabilities,
         sub_rx: Option<ReceiverCapabilities>,
         tx: Option<TransmitterCapabilities>,
@@ -51,6 +61,7 @@ impl RadioCapabilities {
         state_updates: StateUpdateCapability,
     ) -> Self {
         Self {
+            receiver_kind,
             main_rx,
             sub_rx,
             tx,

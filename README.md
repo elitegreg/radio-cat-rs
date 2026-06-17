@@ -139,6 +139,16 @@ The TUI displays the latest state snapshot and applies live updates from the bro
 
 Interactive keys mutate state through API commands (`f` frequency, `m` mode, `p` PTT, `s` split, `r` RIT, `+/-` offset, `k` keyer speed, `n` noise reduction, `c/x` CW send/stop).
 
+## Capabilities example
+
+Print the normalized capability set for any supported radio id:
+
+```bash
+cargo run --example capabilities -- kenwood-ts590
+```
+
+Use `--list-radios` to see available ids.
+
 ## Development
 
 ```bash
