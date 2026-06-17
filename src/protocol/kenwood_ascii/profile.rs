@@ -103,7 +103,6 @@ const YAESU_KEYER: KeyerCapabilities =
 
 const HYBRID: StateUpdateCapability = StateUpdateCapability::Hybrid;
 
-const SLOW_POLL: Duration = Duration::from_secs(15);
 const IF232_POLL: Duration = Duration::from_secs(2);
 
 const TS590_STARTUP: &[StartupStep] = &[
@@ -306,6 +305,7 @@ const ELECRAFT_K3_STARTUP: &[StartupStep] = &[
 ];
 
 const ELECRAFT_K2_STARTUP: &[StartupStep] = &[
+    StartupStep::AutoInfo("AI2;"),
     StartupStep::Query("IF"),
     StartupStep::Query("FA"),
     StartupStep::Query("FB"),
@@ -412,41 +412,7 @@ const YAESU_FT991_STARTUP: &[StartupStep] = &[
     StartupStep::Query("KS"),
 ];
 
-const SLOW_FILTER_RF_KEYER_POWER: &[&str] = &["filter-state", "rf-dsp", "PC", "KS"];
-const SLOW_HILO_RF_KEYER_POWER: &[&str] = &["filter-hi-lo", "NB1", "NB2", "RF", "PC", "KS"];
-const TS990_SLOW_POLL_QUERIES: &[&str] = &[
-    "filter-hi-lo-main",
-    "filter-hi-lo-sub",
-    "NT0",
-    "NT1",
-    "NB10",
-    "NB11",
-    "NB20",
-    "NB21",
-    "NR0",
-    "NR1",
-    "PA0",
-    "PA1",
-    "RA0",
-    "RA1",
-    "PC",
-    "KS",
-];
 const IF232_POLL_QUERIES: &[&str] = &["IF", "FA", "FB", "SP", "MD", "RT", "XT"];
-const K4_SLOW_POLL_QUERIES: &[&str] = &[
-    "BW", "BW$", "IS", "IS$", "NA", "NA$", "NB", "NB$", "NR", "NR$", "PA", "PA$", "RA", "RA$",
-    "PC", "KS",
-];
-const K3_SLOW_POLL_QUERIES: &[&str] = &[
-    "BW", "BW$", "IS", "IS$", "NB", "NB$", "PA", "PA$", "RA", "RA$", "PC", "KS",
-];
-const K2_SLOW_POLL_QUERIES: &[&str] = &["FW", "NB", "PA", "RA", "PC", "KS"];
-const YAESU_DUAL_SLOW_POLL_QUERIES: &[&str] =
-    &["SH0", "IS0", "BC0", "NB0", "NR0", "PA0", "RA0", "PC", "KS"];
-const YAESU_FTDX101_SLOW_POLL_QUERIES: &[&str] = &[
-    "SH0", "SH1", "IS0", "IS1", "BC0", "BC1", "NB0", "NB1", "NR0", "NR1", "PA0", "PA1", "RA0",
-    "RA1", "PC", "KS",
-];
 
 const fn descriptor(
     id: &'static str,
@@ -497,10 +463,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: TS590_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: SLOW_FILTER_RF_KEYER_POWER,
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -520,10 +483,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: TS890_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: SLOW_HILO_RF_KEYER_POWER,
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -543,10 +503,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: TS990_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: TS990_SLOW_POLL_QUERIES,
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -566,10 +523,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: TS2000_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: SLOW_FILTER_RF_KEYER_POWER,
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -589,10 +543,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: TS480_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: SLOW_FILTER_RF_KEYER_POWER,
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -612,10 +563,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: TS570_TS870_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: &["NB", "NR", "PA", "RA", "PC", "KS"],
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -635,10 +583,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: TS570_TS870_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: &["NB", "NR", "PA", "RA", "PC", "KS"],
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -681,10 +626,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: ELECRAFT_K4_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: K4_SLOW_POLL_QUERIES,
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -704,10 +646,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: ELECRAFT_K3_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: K3_SLOW_POLL_QUERIES,
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -727,10 +666,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: ELECRAFT_K2_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: K2_SLOW_POLL_QUERIES,
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -750,10 +686,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: YAESU_FTDX101_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: YAESU_FTDX101_SLOW_POLL_QUERIES,
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -773,10 +706,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: YAESU_FTDX10_FT710_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: YAESU_DUAL_SLOW_POLL_QUERIES,
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -796,10 +726,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: YAESU_FTDX10_FT710_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: YAESU_DUAL_SLOW_POLL_QUERIES,
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -819,10 +746,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: YAESU_FT891_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: YAESU_DUAL_SLOW_POLL_QUERIES,
-        }),
+        poll: None,
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -842,10 +766,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: HYBRID,
         startup: YAESU_FT991_STARTUP,
-        poll: Some(PollPlan {
-            interval: SLOW_POLL,
-            queries: YAESU_DUAL_SLOW_POLL_QUERIES,
-        }),
+        poll: None,
     },
 ];
 
@@ -873,7 +794,7 @@ mod tests {
         assert_eq!(profile.startup[0].label(), "AI2;");
         assert_eq!(profile.startup[1].label(), "AID250;");
         assert!(profile.startup.iter().any(|step| step.label() == "BW$"));
-        assert_eq!(profile.poll.unwrap().queries, K4_SLOW_POLL_QUERIES);
+        assert!(profile.poll.is_none());
     }
 
     #[test]
