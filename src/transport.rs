@@ -1,330 +1,207 @@
-use std::{future::poll_fn, io, path::PathBuf, pin::Pin, task::Poll, time::Duration};
-
 use async_trait::async_trait;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tokio::net::TcpStream;
-use tokio::sync::Mutex;
-use tokio::time::{sleep, timeout};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::TcpStream,
+};
 use tokio_serial::SerialPortBuilderExt;
-use tracing::{debug, trace};
 
-use crate::{RadioError, Result};
+use crate::error::Result;
 
-pub(crate) trait AsyncPort: AsyncRead + AsyncWrite + Send + Unpin {}
+pub type BoxedCatTransport = Box<dyn CatTransport>;
 
-impl<T> AsyncPort for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
-
-pub(crate) type BoxedPort = Box<dyn AsyncPort>;
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ConnectionConfig {
-    Serial {
-        path: PathBuf,
-        baud_rate: u32,
-        timeout: Duration,
-    },
-    Tcp {
-        host: String,
-        port: u16,
-        timeout: Duration,
-    },
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransportConfig {
+    None,
+    Serial { path: String, baud_rate: u32 },
+    Tcp { address: String },
 }
 
-impl ConnectionConfig {
-    pub fn serial(path: impl Into<PathBuf>, baud_rate: u32) -> Self {
+impl Default for TransportConfig {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl TransportConfig {
+    pub fn none() -> Self {
+        Self::None
+    }
+
+    pub fn serial(path: impl Into<String>, baud_rate: u32) -> Self {
         Self::Serial {
             path: path.into(),
             baud_rate,
-            timeout: DEFAULT_TIMEOUT,
         }
     }
 
-    pub fn tcp(host: impl Into<String>, port: u16) -> Self {
+    pub fn tcp(address: impl Into<String>) -> Self {
         Self::Tcp {
-            host: host.into(),
-            port,
-            timeout: DEFAULT_TIMEOUT,
+            address: address.into(),
         }
     }
 
-    pub fn with_timeout(self, timeout: Duration) -> Self {
-        match self {
-            Self::Serial {
-                path, baud_rate, ..
-            } => Self::Serial {
-                path,
-                baud_rate,
-                timeout,
-            },
-            Self::Tcp { host, port, .. } => Self::Tcp {
-                host,
-                port,
-                timeout,
-            },
+    pub fn tcp_socket(host: impl AsRef<str>, port: u16) -> Self {
+        Self::Tcp {
+            address: format!("{}:{}", host.as_ref(), port),
         }
     }
+}
 
-    fn timeout(&self) -> Duration {
-        match self {
-            Self::Serial { timeout, .. } | Self::Tcp { timeout, .. } => *timeout,
-        }
+pub type ConnectionConfig = TransportConfig;
+
+#[async_trait]
+pub trait CatTransport: Send {
+    async fn write_all(&mut self, bytes: &[u8]) -> Result<()>;
+    async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize>;
+    async fn flush(&mut self) -> Result<()>;
+}
+
+#[derive(Debug)]
+pub struct AsyncIoTransport<T> {
+    io: T,
+}
+
+impl<T> AsyncIoTransport<T> {
+    pub fn new(io: T) -> Self {
+        Self { io }
     }
 
-    pub(crate) async fn open_io(&self) -> Result<(BoxedPort, Duration)> {
-        let timeout_duration = self.timeout();
-        let io: BoxedPort = match self {
-            ConnectionConfig::Serial {
-                path, baud_rate, ..
-            } => {
-                debug!(path = %path.display(), baud_rate = *baud_rate, timeout = ?timeout_duration, "opening serial connection");
-                let stream = tokio_serial::new(path.to_string_lossy().into_owned(), *baud_rate)
-                    .open_native_async()?;
-                Box::new(stream)
-            }
-            ConnectionConfig::Tcp {
-                host,
-                port,
-                timeout: connect_timeout,
-                ..
-            } => {
-                debug!(host, port = *port, timeout = ?connect_timeout, "opening TCP connection");
-                let stream = timeout(*connect_timeout, TcpStream::connect((host.as_str(), *port)))
-                    .await
-                    .map_err(|_| RadioError::Timeout {
-                        operation: "TCP connect",
-                    })??;
-                Box::new(stream)
-            }
-        };
-
-        Ok((io, timeout_duration))
+    pub fn into_inner(self) -> T {
+        self.io
     }
 }
 
 #[async_trait]
-pub(crate) trait CommandIo: Send + Sync {
-    async fn send(&self, command: &str) -> Result<()>;
-    async fn send_with_optional_response(
-        &self,
-        command: &str,
-        response_wait: Duration,
-    ) -> Result<Option<String>> {
-        let _ = response_wait;
-        self.send(command).await?;
-        Ok(None)
-    }
-
-    async fn query(&self, command: &str) -> Result<String>;
-}
-
-pub(crate) struct CatTransport {
-    io: Mutex<BoxedPort>,
-    timeout: Duration,
-}
-
-impl CatTransport {
-    pub(crate) fn from_io(io: BoxedPort, timeout: Duration) -> Self {
-        Self {
-            io: Mutex::new(io),
-            timeout,
-        }
-    }
-
-    async fn write_locked<T>(io: &mut T, command: &str, timeout_duration: Duration) -> Result<()>
-    where
-        T: AsyncWrite + Unpin + ?Sized,
-    {
-        trace!(command, timeout = ?timeout_duration, "sending CAT command");
-        timeout(timeout_duration, async {
-            io.write_all(command.as_bytes()).await?;
-            io.flush().await?;
-            Ok::<(), std::io::Error>(())
-        })
-        .await
-        .map_err(|_| RadioError::Timeout { operation: "write" })??;
-
+impl<T> CatTransport for AsyncIoTransport<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
+        tracing::debug!(byte_count = bytes.len(), "transport write");
+        self.io.write_all(bytes).await?;
         Ok(())
     }
 
-    async fn read_response_locked<T>(io: &mut T, timeout_duration: Duration) -> Result<String>
-    where
-        T: AsyncRead + Unpin + ?Sized,
-    {
-        let response = timeout(timeout_duration, async {
-            let mut response = Vec::new();
-
-            loop {
-                let mut byte = [0_u8; 1];
-                let read = io.read(&mut byte).await?;
-
-                if read == 0 {
-                    return Err(RadioError::ConnectionClosed);
-                }
-
-                response.push(byte[0]);
-
-                if byte[0] == b';' {
-                    break;
-                }
-            }
-
-            Ok(String::from_utf8(response)?)
-        })
-        .await
-        .map_err(|_| RadioError::Timeout {
-            operation: "read response",
-        })??;
-        trace!(response, timeout = ?timeout_duration, "received CAT response");
-        Ok(response)
+    async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let count = self.io.read(buf).await?;
+        if count > 0 {
+            let received = String::from_utf8_lossy(&buf[..count]);
+            tracing::trace!(byte_count = count, payload = %received, "transport read bytes");
+        }
+        Ok(count)
     }
 
-    async fn read_available_response_locked<T>(io: &mut T) -> Result<Option<String>>
-    where
-        T: AsyncRead + Unpin + ?Sized,
-    {
-        let mut response = Vec::new();
+    async fn flush(&mut self) -> Result<()> {
+        tracing::trace!("transport flush");
+        self.io.flush().await?;
+        Ok(())
+    }
+}
 
-        while let Some(byte) = Self::try_read_byte_locked(io).await? {
-            response.push(byte);
+#[derive(Debug)]
+pub struct TcpTransport {
+    stream: TcpStream,
+}
 
-            if byte == b';' {
-                break;
-            }
-        }
-
-        if response.is_empty() {
-            return Ok(None);
-        }
-
-        let response = String::from_utf8(response)?;
-        trace!(response, "received optional CAT response");
-        Ok(Some(response))
+impl TcpTransport {
+    pub async fn connect(address: impl AsRef<str>) -> Result<Self> {
+        let stream = TcpStream::connect(address.as_ref()).await?;
+        Ok(Self { stream })
     }
 
-    async fn try_read_byte_locked<T>(io: &mut T) -> Result<Option<u8>>
-    where
-        T: AsyncRead + Unpin + ?Sized,
-    {
-        poll_fn(|cx| {
-            let mut byte = [0_u8; 1];
-            let mut read_buf = ReadBuf::new(&mut byte);
-
-            match Pin::new(&mut *io).poll_read(cx, &mut read_buf) {
-                Poll::Ready(Ok(())) => {
-                    if read_buf.filled().is_empty() {
-                        Poll::Ready(Err(RadioError::ConnectionClosed))
-                    } else {
-                        Poll::Ready(Ok(Some(read_buf.filled()[0])))
-                    }
-                }
-                Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::WouldBlock => {
-                    Poll::Ready(Ok(None))
-                }
-                Poll::Ready(Err(error)) => Poll::Ready(Err(RadioError::Io(error))),
-                Poll::Pending => Poll::Ready(Ok(None)),
-            }
-        })
-        .await
+    pub fn into_inner(self) -> TcpStream {
+        self.stream
     }
 }
 
 #[async_trait]
-impl CommandIo for CatTransport {
-    async fn send(&self, command: &str) -> Result<()> {
-        let mut io = self.io.lock().await;
-        Self::write_locked(&mut *io, command, self.timeout).await
+impl CatTransport for TcpTransport {
+    async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
+        tracing::debug!(byte_count = bytes.len(), "tcp transport write");
+        self.stream.write_all(bytes).await?;
+        Ok(())
     }
 
-    async fn send_with_optional_response(
-        &self,
-        command: &str,
-        response_wait: Duration,
-    ) -> Result<Option<String>> {
-        let mut io = self.io.lock().await;
-        Self::write_locked(&mut *io, command, self.timeout).await?;
-        sleep(response_wait).await;
-        Self::read_available_response_locked(&mut *io).await
+    async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let count = self.stream.read(buf).await?;
+        if count > 0 {
+            let received = String::from_utf8_lossy(&buf[..count]);
+            tracing::trace!(byte_count = count, payload = %received, "tcp transport read bytes");
+        }
+        Ok(count)
     }
 
-    async fn query(&self, command: &str) -> Result<String> {
-        let mut io = self.io.lock().await;
-        Self::write_locked(&mut *io, command, self.timeout).await?;
-        Self::read_response_locked(&mut *io, self.timeout).await
+    async fn flush(&mut self) -> Result<()> {
+        tracing::trace!("tcp transport flush");
+        self.stream.flush().await?;
+        Ok(())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[derive(Debug)]
+pub struct SerialTransport {
+    stream: tokio_serial::SerialStream,
+}
 
-    #[test]
-    fn connection_config_uses_default_timeout() {
-        match ConnectionConfig::tcp("127.0.0.1", 5002) {
-            ConnectionConfig::Tcp { timeout, .. } => assert_eq!(timeout, DEFAULT_TIMEOUT),
-            ConnectionConfig::Serial { .. } => panic!("expected TCP config"),
+impl SerialTransport {
+    pub fn open(path: impl AsRef<str>, baud_rate: u32) -> Result<Self> {
+        let stream = tokio_serial::new(path.as_ref(), baud_rate).open_native_async()?;
+        Ok(Self { stream })
+    }
+
+    pub fn into_inner(self) -> tokio_serial::SerialStream {
+        self.stream
+    }
+}
+
+#[async_trait]
+impl CatTransport for SerialTransport {
+    async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
+        tracing::debug!(byte_count = bytes.len(), "serial transport write");
+        self.stream.write_all(bytes).await?;
+        Ok(())
+    }
+
+    async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let count = self.stream.read(buf).await?;
+        if count > 0 {
+            let received = String::from_utf8_lossy(&buf[..count]);
+            tracing::trace!(byte_count = count, payload = %received, "serial transport read bytes");
+        }
+        Ok(count)
+    }
+
+    async fn flush(&mut self) -> Result<()> {
+        tracing::trace!("serial transport flush");
+        self.stream.flush().await?;
+        Ok(())
+    }
+}
+
+pub async fn open_transport(config: &TransportConfig) -> Result<Option<BoxedCatTransport>> {
+    match config {
+        TransportConfig::None => {
+            tracing::info!("radio configured without transport");
+            Ok(None)
+        }
+        TransportConfig::Serial { path, baud_rate } => {
+            tracing::info!(path = %path, baud_rate = *baud_rate, "opening serial transport");
+            let transport = SerialTransport::open(path, *baud_rate)?;
+            tracing::info!(path = %path, baud_rate = *baud_rate, "serial transport opened");
+            Ok(Some(Box::new(transport)))
+        }
+        TransportConfig::Tcp { address } => {
+            tracing::info!(address = %address, "opening TCP transport");
+            let transport = TcpTransport::connect(address).await?;
+            tracing::info!(address = %address, "TCP transport connected");
+            Ok(Some(Box::new(transport)))
         }
     }
+}
 
-    #[test]
-    fn connection_config_can_override_timeout() {
-        let timeout = Duration::from_millis(250);
-
-        match ConnectionConfig::serial("/dev/ttyUSB0", 38_400).with_timeout(timeout) {
-            ConnectionConfig::Serial {
-                baud_rate,
-                timeout: configured_timeout,
-                ..
-            } => {
-                assert_eq!(baud_rate, 38_400);
-                assert_eq!(configured_timeout, timeout);
-            }
-            ConnectionConfig::Tcp { .. } => panic!("expected serial config"),
-        }
-    }
-
-    #[tokio::test]
-    async fn send_with_optional_response_reads_ready_response() {
-        let (client, mut peer) = tokio::io::duplex(64);
-        let transport = CatTransport {
-            io: Mutex::new(Box::new(client)),
-            timeout: Duration::from_secs(1),
-        };
-
-        peer.write_all(b"?;").await.unwrap();
-
-        let response = transport
-            .send_with_optional_response("MD2;", Duration::ZERO)
-            .await
-            .unwrap();
-
-        let mut command = [0_u8; 4];
-        peer.read_exact(&mut command).await.unwrap();
-
-        assert_eq!(response.as_deref(), Some("?;"));
-        assert_eq!(&command, b"MD2;");
-    }
-
-    #[tokio::test]
-    async fn send_with_optional_response_returns_none_without_ready_data() {
-        let (client, mut peer) = tokio::io::duplex(64);
-        let transport = CatTransport {
-            io: Mutex::new(Box::new(client)),
-            timeout: Duration::from_secs(1),
-        };
-
-        let response = tokio::time::timeout(
-            Duration::from_millis(100),
-            transport.send_with_optional_response("MD2;", Duration::ZERO),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-
-        let mut command = [0_u8; 4];
-        peer.read_exact(&mut command).await.unwrap();
-
-        assert_eq!(response, None);
-        assert_eq!(&command, b"MD2;");
-    }
+pub fn boxed_transport<T>(transport: T) -> BoxedCatTransport
+where
+    T: CatTransport + 'static,
+{
+    Box::new(transport)
 }

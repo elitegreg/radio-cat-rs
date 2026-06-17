@@ -1,113 +1,76 @@
-use std::{io, num::ParseIntError, string::FromUtf8Error};
-
 use thiserror::Error;
 
-pub type Result<T> = std::result::Result<T, RadioError>;
+pub type Result<T, E = RadioError> = std::result::Result<T, E>;
 
 #[derive(Debug, Error)]
 pub enum RadioError {
-    #[error("I/O error: {0}")]
-    Io(#[from] io::Error),
+    #[error("unsupported radio driver: {driver}")]
+    UnsupportedDriver { driver: String },
 
-    #[error("serial error: {0}")]
-    Serial(#[from] tokio_serial::Error),
+    #[error("unsupported capability: {capability}")]
+    UnsupportedCapability { capability: &'static str },
 
-    #[error("connection closed while waiting for a CAT response")]
-    ConnectionClosed,
-
-    #[error("timed out during {operation}")]
-    Timeout { operation: &'static str },
-
-    #[error("invalid UTF-8 in CAT response: {0}")]
-    Utf8(#[from] FromUtf8Error),
-
-    #[error("failed to parse integer field in `{response}`: {source}")]
-    ParseInt {
-        response: String,
-        #[source]
-        source: ParseIntError,
-    },
-
-    #[error("unexpected CAT response for {command}: `{response}`")]
-    InvalidResponse {
-        command: &'static str,
-        response: String,
-    },
-
-    #[error("CAT command `{command}` rejected by radio: `{response}`")]
-    CommandRejected { command: String, response: String },
-
-    #[error("unsupported radio kind `{0}`")]
-    UnknownRadio(String),
-
-    #[error("unsupported mode code `{0}`")]
-    UnsupportedModeCode(String),
-
-    #[error("mode `{mode}` is not supported by radio profile `{radio}`")]
-    UnsupportedModeForRadio { mode: String, radio: &'static str },
-
-    #[error("operation `{operation}` is not supported by radio profile `{radio}`")]
-    UnsupportedOperation {
-        operation: &'static str,
-        radio: &'static str,
-    },
-
-    #[error("unsupported mode `{0}`")]
-    InvalidMode(String),
-
-    #[error("invalid option `{key}` with value `{value}`")]
-    InvalidOption { key: String, value: String },
-
-    #[error("CI-V command rejected by radio (NAK)")]
-    CivNak,
-
-    #[error("CI-V bus collision after retry budget was exhausted")]
-    CivCollision,
-
-    #[error("CI-V protocol error: {0}")]
-    CivProtocol(String),
-
-    #[error("Flex SmartSDR protocol error: {0}")]
-    FlexProtocol(String),
-
-    #[error("Flex SmartSDR command failed (seq={sequence}, code={code}): {message}")]
-    FlexCommandFailed {
-        sequence: u64,
-        code: i64,
+    #[error("invalid value for {field}: {message}")]
+    InvalidValue {
+        field: &'static str,
         message: String,
     },
 
-    #[error("operation `{operation}` exhausted its retry budget")]
-    RetriesExhausted { operation: &'static str },
+    #[error("protocol syntax error{command_suffix}")]
+    ProtocolSyntax { command_suffix: String },
 
-    #[error("verification failed for `{operation}`: expected `{expected}`, got `{actual}`")]
-    VerificationFailed {
-        operation: &'static str,
-        expected: String,
-        actual: String,
+    #[error("protocol communication error")]
+    ProtocolCommunication,
+
+    #[error("protocol busy")]
+    ProtocolBusy,
+
+    #[error("protocol decode error for {command}: {message}")]
+    Decode {
+        command: &'static str,
+        message: String,
     },
 
-    #[error("frequency {0} Hz is outside the supported range for this radio profile")]
-    FrequencyOutOfRange(u64),
+    #[error("protocol timeout while waiting for {command}")]
+    Timeout { command: &'static str },
 
-    #[error("CW speed {0} WPM is outside the supported range for this radio profile")]
-    CwSpeedOutOfRange(u16),
+    #[error("radio task has stopped")]
+    TaskStopped,
 
-    #[error("RIT offset {0} Hz is outside the supported range (-9999..=9999 Hz)")]
-    RitOffsetOutOfRange(i32),
+    #[error("radio command response channel was canceled")]
+    CommandCanceled,
 
-    #[error("CW text may be at most 60 bytes, got {0}")]
-    CwTextTooLong(usize),
+    #[error("transport error: {0}")]
+    Transport(String),
+}
 
-    #[error("CW text must be ASCII and may not contain carriage returns or line feeds")]
-    InvalidCwText,
+impl From<std::io::Error> for RadioError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Transport(value.to_string())
+    }
+}
+
+impl From<tokio_serial::Error> for RadioError {
+    fn from(value: tokio_serial::Error) -> Self {
+        Self::Transport(value.to_string())
+    }
 }
 
 impl RadioError {
-    pub(crate) fn parse_int(response: &str, source: ParseIntError) -> Self {
-        Self::ParseInt {
-            response: response.to_string(),
-            source,
-        }
+    pub fn protocol_syntax(command: Option<&str>) -> Self {
+        let command_suffix = match command {
+            Some(command) => format!(" for {command}"),
+            None => String::new(),
+        };
+
+        Self::ProtocolSyntax { command_suffix }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("value {value} is outside supported range {min}..={max}")]
+pub struct RangeError {
+    pub value: i16,
+    pub min: i16,
+    pub max: i16,
 }

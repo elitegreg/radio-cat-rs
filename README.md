@@ -1,94 +1,158 @@
 # radio-cat-rs
 
-`radio-cat-rs` is an async CAT control library for profile-driven radio control.
+`radio-cat-rs` is a stateful async CAT control library for amateur radios, transceivers, receivers, and similar devices.
 
-The crate currently includes:
+The current implementation includes an in-memory `dummy` driver plus a profile-driven Kenwood-ASCII engine (Kenwood, Elecraft, and Yaesu profile IDs).
 
-- Kenwood/Kenwood-like CAT profiles (text/`;` protocol)
-- Icom CI-V profiles (binary framed protocol)
-- CI-V-compatible Xiegu profiles: `X108G`, `X6100`, `X6200`, `G90`, `X5105`
-- Yaesu New-CAT profiles: `FT-450`, `FT-950`, `FT-2000`, `FTDX-1200`, `FTDX-3000`, `FTDX-5000`, `FTDX-9000`, `FTDX-9000 Old`, `FT-991`, `FT-891`, `FT-710`, `FTDX-10`, `FTDX-101D`, `FTDX-101MP`
-- Flex SmartSDR native slice profiles: `SmartSDR Slice A` through `SmartSDR Slice H`
-- Dummy in-memory test profile: `dummy` (`Dummy (test)`)
+## Model
 
-## ControllableRadio scope
+A connected radio is represented as:
 
-This crate currently focuses on the `ControllableRadio` interface:
-
-- get/set frequency
-- get/set mode
-- send/stop CW text
-- get/set CW keyer speed
-
-Unsupported operations for a given model return `RadioError::UnsupportedOperation`.
-
-## Create a radio
-
-```rust
-use std::time::Duration;
-
-use radio_cat_rs::{create_radio, ConnectionConfig, KenwoodModel, RadioKind};
-
-let radio = create_radio(
-    RadioKind::Kenwood(KenwoodModel::Ts590s),
-    ConnectionConfig::serial("/dev/ttyUSB0", 38_400).with_timeout(Duration::from_secs(5)),
-    "",
-)
-.await?;
+```text
+Radio = command sink + latest state source + update event source
 ```
 
-For Icom CI-V radios, use per-model kinds:
+Applications do not poll the radio directly. They subscribe to:
+
+- `watch::Receiver<Arc<RadioState>>` for the latest state snapshot
+- `broadcast::Receiver<StateUpdate>` for categorized updates
+
+The public state model is signal-path oriented:
+
+- main receiver
+- optional sub receiver
+- optional transmitter
+- RIT/XIT state
+- optional keyer state
+- connection state
+
+Frequencies use the existing `Frequency` type from `src/frequency.rs`.
+
+## Dummy driver
+
+The first driver is `dummy`. It does not open a real radio connection. It stores state in memory and supports every normalized v1 capability, including:
+
+- main/sub frequency and mode
+- filters and RF/DSP settings
+- TX frequency, mode, power, PTT, split
+- RIT/XIT enable and offset
+- keyer speed
+- CAT CW send/stop
+
+## Basic usage
 
 ```rust
-use radio_cat_rs::{create_radio, ConnectionConfig, IcomModel, RadioKind};
+use radio_cat_rs::{Frequency, Mode, Power, Radio, RadioConfig, RitXitOffsetHz};
 
-let radio = create_radio(
-    RadioKind::Icom(IcomModel::Ic7300),
-    ConnectionConfig::serial("/dev/ttyUSB0", 115_200),
-    "",
-)
-.await?;
+#[tokio::main]
+async fn main() -> radio_cat_rs::Result<()> {
+    let radio = Radio::connect(RadioConfig::dummy()).await?;
+
+    let mut updates = radio.subscribe_updates();
+
+    radio.set_main_frequency(Frequency::from_hz(14_074_000)).await?;
+    radio.set_main_mode(Mode::Usb).await?;
+    radio.set_tx_power(Power::from_watts(25)).await?;
+    radio.set_ptt(true).await?;
+    radio.send_cw("CQ TEST").await?;
+    radio.stop_cw().await?;
+    radio.set_rit_xit_offset(RitXitOffsetHz::new(250).unwrap()).await?;
+
+    if let Ok(update) = updates.recv().await {
+        println!("changed: {:?}", update.changes);
+    }
+
+    Ok(())
+}
 ```
 
-## Generic options string
-
-Pass backend/runtime options as the final `create_radio(...)` argument:
+## Supported drivers
 
 ```rust
-use radio_cat_rs::{create_radio, ConnectionConfig, IcomModel, RadioKind};
-
-let radio = create_radio(
-    RadioKind::Icom(IcomModel::Ic7300),
-    ConnectionConfig::serial("/dev/ttyUSB0", 115_200),
-    "civ.rig_addr=0x94,civ.controller_addr=0xE0,civ.retry_max=5,civ.retry_backoff_ms=30",
-)
-.await?;
+for driver in radio_cat_rs::supported_drivers() {
+    println!("{} - {}", driver.id, driver.display_name);
+}
 ```
 
-Unknown option keys are ignored.
+This includes `dummy` and Kenwood-ASCII profile IDs such as:
 
-Yaesu-specific optional keys:
+- `kenwood-ts590`, `kenwood-ts890`, `kenwood-ts990`, `kenwood-ts2000`, `kenwood-ts480`, `kenwood-ts570`, `kenwood-ts870`, `kenwood-if232`
+- `elecraft-k4`, `elecraft-k3`, `elecraft-k2`
+- `yaesu-ftdx101`, `yaesu-ftdx10`, `yaesu-ft710`, `yaesu-ft891`, `yaesu-ft991`
 
-- `yaesu.retry_max`
-- `yaesu.retry_backoff_ms`
-- `yaesu.stop_cw_cmd` (if unset, `stop_cw()` is unsupported for Yaesu New-CAT profiles)
+## Serial/TCP connections and driver options
 
-Flex native options:
+`RadioConfig` supports radios connected through either serial ports or TCP sockets:
 
-- `flex.retry_max`
-- `flex.retry_backoff_ms`
-- `flex.verify_timeout_ms`
+```rust
+use radio_cat_rs::{Radio, RadioConfig, TransportConfig};
 
-## Radio names
+# async fn example() -> radio_cat_rs::Result<()> {
+let serial_config = RadioConfig::new("kenwood-ts590")
+    .with_transport(TransportConfig::serial("/dev/ttyUSB0", 38_400))
+    .with_options("driver.specific=true");
 
-- Call `supported_radio_kinds()` for canonical names; use `RadioKind::display_name()` for UI-friendly names.
-- `FromStr` parsing also accepts many model aliases (e.g. `ic-7300`, `ic7610`, `ic-706mkiig`, `x6100`, `g90`, `ft-991`, `ftdx101mp`, `smartsdr-slice-a`, `dummy`).
-- The Kenwood-compatible Flex profile is named `flex-6xxx (kenwood compat.)`.
-- Native SmartSDR slice profiles are named `smartsdr-slice-<a..h> (native)`.
-- The dummy test profile is named `dummy` with display name `Dummy (test)`.
+let tcp_config = RadioConfig::new("kenwood-ts590")
+    .with_transport(TransportConfig::tcp("127.0.0.1:4532"))
+    .with_options("driver.specific=true");
+
+let tcp_config_with_host_port = RadioConfig::new("kenwood-ts590")
+    .with_tcp_socket("127.0.0.1", 4532)
+    .with_options("driver.specific=true");
+
+let radio = Radio::connect(RadioConfig::dummy()).await?;
+# let _ = (serial_config, tcp_config, tcp_config_with_host_port, radio);
+# Ok(())
+# }
+```
+
+The `options` string is passed through to the selected driver unchanged. The core API does not parse it, so future drivers can use driver-specific formats while keeping one common construction path.
+
+## Provided transports
+
+The library exposes a `CatTransport` trait and `Radio::connect_with_transport` / `Radio::build_with_transport` APIs so callers can provide an already-open bidirectional data channel. This is intended for shared serial-port setups where another library owns modem/control lines, such as CW keying, while CAT data passes through a separate async channel.
+
+```rust
+use radio_cat_rs::{AsyncIoTransport, Radio, RadioConfig};
+
+# async fn example<T>(io: T) -> radio_cat_rs::Result<()>
+# where
+#     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+# {
+let transport = AsyncIoTransport::new(io);
+let radio = Radio::connect_with_transport(RadioConfig::dummy(), transport).await?;
+# Ok(())
+# }
+```
+
+The dummy driver ignores the transport, but the API shape is in place for real drivers.
+
+## TUI example
+
+Run the dummy radio TUI:
+
+```bash
+cargo run --example tui
+```
+
+The TUI displays the latest state snapshot and applies live updates from the broadcast `StateUpdate` stream (`update.state`).
+
+Interactive keys mutate state through API commands (`f` frequency, `m` mode, `p` PTT, `s` split, `r` RIT, `+/-` offset, `k` keyer speed, `n` noise reduction, `c/x` CW send/stop).
+
+## Capabilities example
+
+Print the normalized capability set for any supported radio id:
+
+```bash
+cargo run --example capabilities -- kenwood-ts590
+```
+
+Use `--list-radios` to see available ids.
 
 ## Development
 
 ```bash
+cargo fmt
 cargo test
+cargo check --examples
 ```
