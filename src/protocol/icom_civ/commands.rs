@@ -620,9 +620,10 @@ fn encode_mode(mode: Mode) -> Result<(u8, u8)> {
         Mode::DataLsb => Ok((0x00, 0x01)),
         Mode::DataUsb => Ok((0x01, 0x01)),
         Mode::DataFm => Ok((0x05, 0x01)),
-        Mode::Digital => Err(RadioError::InvalidValue {
+        Mode::DataAm => Ok((0x02, 0x01)),
+        _ => Err(RadioError::InvalidValue {
             field: "mode",
-            message: "use DATA-USB/DATA-LSB/DATA-FM or DIGITAL-VOICE for IC-705".to_string(),
+            message: format!("mode {mode} is not supported by icom"),
         }),
     }
 }
@@ -645,7 +646,7 @@ fn decode_mode(mode: u8, data_mode: u8) -> Result<Mode> {
         (0x01, false) => Ok(Mode::Usb),
         (0x01, true) => Ok(Mode::DataUsb),
         (0x02, false) => Ok(Mode::Am),
-        (0x02, true) => Ok(Mode::Digital),
+        (0x02, true) => Ok(Mode::DataAm),
         (0x03, _) => Ok(Mode::Cw),
         (0x04, _) => Ok(Mode::Rtty),
         (0x05, false) => Ok(Mode::Fm),
@@ -882,7 +883,7 @@ fn filter_family(mode: Mode) -> Result<FilterFamily> {
             Ok(FilterFamily::SsbCw)
         }
         Mode::Rtty | Mode::RttyReverse => Ok(FilterFamily::Rtty),
-        Mode::Am | Mode::Digital => Ok(FilterFamily::Am),
+        Mode::Am | Mode::DataAm => Ok(FilterFamily::Am),
         other => Err(RadioError::UnsupportedCapability {
             capability: match other {
                 Mode::Fm | Mode::DataFm | Mode::Wfm | Mode::DigitalVoice => {

@@ -544,12 +544,12 @@ fn encode_ts590_mode(mode: Mode) -> Result<(char, Option<bool>)> {
         Mode::DataLsb => Ok(('1', Some(true))),
         Mode::DataUsb => Ok(('2', Some(true))),
         Mode::DataFm => Ok(('4', Some(true))),
-        Mode::Digital => Ok(('5', Some(true))),
+        Mode::DataAm => Ok(('5', Some(true))),
         Mode::Cw => Ok(('3', None)),
         Mode::Rtty => Ok(('6', None)),
         Mode::CwReverse => Ok(('7', None)),
         Mode::RttyReverse => Ok(('9', None)),
-        Mode::Wfm | Mode::DigitalVoice => Err(RadioError::InvalidValue {
+        _ => Err(RadioError::InvalidValue {
             field: "mode",
             message: format!("mode {mode} is not supported by kenwood-ts590"),
         }),
@@ -565,7 +565,7 @@ fn compose_ts590_mode(code: char, data_flag: bool, command: &'static str) -> Res
         ('1', true) => Ok(Mode::DataLsb),
         ('2', true) => Ok(Mode::DataUsb),
         ('4', true) => Ok(Mode::DataFm),
-        ('5', true) => Ok(Mode::Digital),
+        ('5', true) => Ok(Mode::DataAm),
         ('3', _) => Ok(Mode::Cw),
         ('6', _) => Ok(Mode::Rtty),
         ('7', _) => Ok(Mode::CwReverse),
@@ -580,7 +580,7 @@ fn compose_ts590_mode(code: char, data_flag: bool, command: &'static str) -> Res
 fn current_ts590_data_flag(mode: Option<Mode>) -> bool {
     matches!(
         mode,
-        Some(Mode::DataLsb | Mode::DataUsb | Mode::DataFm | Mode::Digital)
+        Some(Mode::DataLsb | Mode::DataUsb | Mode::DataFm | Mode::DataAm)
     )
 }
 
@@ -589,12 +589,12 @@ fn current_ts590_base_code(mode: Option<Mode>) -> Option<char> {
         Mode::Lsb | Mode::DataLsb => Some('1'),
         Mode::Usb | Mode::DataUsb => Some('2'),
         Mode::Fm | Mode::DataFm => Some('4'),
-        Mode::Am | Mode::Digital => Some('5'),
+        Mode::Am | Mode::DataAm => Some('5'),
         Mode::Cw => Some('3'),
         Mode::Rtty => Some('6'),
         Mode::CwReverse => Some('7'),
         Mode::RttyReverse => Some('9'),
-        Mode::Wfm | Mode::DigitalVoice => None,
+        _ => None,
     }
 }
 
@@ -608,11 +608,12 @@ fn decode_ts890_code(code: char) -> Result<Mode> {
         '6' => Ok(Mode::Rtty),
         '7' => Ok(Mode::CwReverse),
         '9' => Ok(Mode::RttyReverse),
-        'A' | 'B' => Ok(Mode::Digital),
+        'A' => Ok(Mode::Psk),
+        'B' => Ok(Mode::PskReverse),
         'C' => Ok(Mode::DataLsb),
         'D' => Ok(Mode::DataUsb),
         'E' => Ok(Mode::DataFm),
-        'F' => Ok(Mode::Digital),
+        'F' => Ok(Mode::DataAm),
         other => Err(RadioError::Decode {
             command: "SF",
             message: format!("unsupported TS-890 mode code {other:?}"),
@@ -630,11 +631,12 @@ fn decode_ts990_code(code: char) -> Result<Mode> {
         '6' => Ok(Mode::Rtty),
         '7' => Ok(Mode::CwReverse),
         '9' => Ok(Mode::RttyReverse),
-        'A' | 'B' => Ok(Mode::Digital),
+        'A' => Ok(Mode::Psk),
+        'B' => Ok(Mode::PskReverse),
         'C' | 'G' | 'K' => Ok(Mode::DataLsb),
         'D' | 'H' | 'L' => Ok(Mode::DataUsb),
         'E' | 'I' | 'M' => Ok(Mode::DataFm),
-        'F' | 'J' | 'N' => Ok(Mode::Digital),
+        'F' | 'J' | 'N' => Ok(Mode::DataAm),
         other => Err(RadioError::Decode {
             command: "OM",
             message: format!("unsupported TS-990 mode code {other:?}"),
@@ -652,11 +654,13 @@ fn encode_ts990_code(mode: Mode) -> Result<char> {
         Mode::Rtty => Ok('6'),
         Mode::CwReverse => Ok('7'),
         Mode::RttyReverse => Ok('9'),
-        Mode::Digital => Ok('A'),
+        Mode::Psk => Ok('A'),
+        Mode::PskReverse => Ok('B'),
         Mode::DataLsb => Ok('C'),
         Mode::DataUsb => Ok('D'),
         Mode::DataFm => Ok('E'),
-        Mode::Wfm | Mode::DigitalVoice => Err(RadioError::InvalidValue {
+        Mode::DataAm => Ok('F'),
+        _ => Err(RadioError::InvalidValue {
             field: "mode",
             message: format!("mode {mode} is not supported by kenwood-ts990"),
         }),
@@ -671,10 +675,12 @@ fn encode_elecraft_codes(mode: Mode) -> Result<(char, Option<char>)> {
         Mode::Fm => Ok(('4', None)),
         Mode::Am => Ok(('5', None)),
         Mode::Rtty => Ok(('6', Some('2'))),
+        Mode::CwReverse => Ok(('7', None)),
         Mode::RttyReverse => Ok(('9', Some('2'))),
         Mode::DataUsb => Ok(('6', Some('0'))),
         Mode::DataLsb => Ok(('9', Some('0'))),
-        Mode::Digital => Ok(('6', Some('3'))),
+        Mode::Psk => Ok(('6', Some('3'))),
+        Mode::PskReverse => Ok(('9', Some('3'))),
         _ => Err(RadioError::InvalidValue {
             field: "mode",
             message: format!("mode {mode} is not supported by Elecraft MD/DT"),
@@ -695,18 +701,18 @@ fn compose_elecraft_mode(
         '5' => Ok(Mode::Am),
         '7' => Ok(Mode::CwReverse),
         '6' => match dt_code {
-            Some('2') => Ok(Mode::Rtty),
-            Some('0' | '1') => Ok(Mode::DataUsb),
-            Some('3') | None => Ok(Mode::Digital),
+            Some('1' | '2') => Ok(Mode::Rtty),
+            Some('0') => Ok(Mode::DataUsb),
+            Some('3') | None => Ok(Mode::Psk),
             Some(other) => Err(RadioError::Decode {
                 command,
                 message: format!("unsupported Elecraft DT code {other:?}"),
             }),
         },
         '9' => match dt_code {
-            Some('2') => Ok(Mode::RttyReverse),
-            Some('0' | '1') => Ok(Mode::DataLsb),
-            Some('3') | None => Ok(Mode::Digital),
+            Some('1' | '2') => Ok(Mode::RttyReverse),
+            Some('0') => Ok(Mode::DataLsb),
+            Some('3') | None => Ok(Mode::PskReverse),
             Some(other) => Err(RadioError::Decode {
                 command,
                 message: format!("unsupported Elecraft DT code {other:?}"),
@@ -722,7 +728,7 @@ fn compose_elecraft_mode(
 fn current_elecraft_dt_code(target: ModeTarget, state: &RadioState) -> Option<char> {
     match current_mode(target, state)? {
         Mode::Rtty | Mode::RttyReverse => Some('2'),
-        Mode::Digital => Some('3'),
+        Mode::Psk | Mode::PskReverse => Some('3'),
         Mode::DataUsb | Mode::DataLsb => Some('0'),
         _ => None,
     }
@@ -736,9 +742,9 @@ fn current_elecraft_md_code(target: ModeTarget, state: &RadioState) -> Option<ch
         Mode::Fm => Some('4'),
         Mode::Am => Some('5'),
         Mode::CwReverse => Some('7'),
-        Mode::Rtty | Mode::DataUsb | Mode::Digital => Some('6'),
-        Mode::RttyReverse | Mode::DataLsb => Some('9'),
-        Mode::DataFm | Mode::Wfm | Mode::DigitalVoice => None,
+        Mode::Rtty | Mode::Psk | Mode::DataUsb => Some('6'),
+        Mode::RttyReverse | Mode::PskReverse | Mode::DataLsb => Some('9'),
+        _ => None,
     }
 }
 
@@ -771,8 +777,8 @@ fn encode_yaesu_code(profile: &KenwoodAsciiProfile, mode: Mode) -> Result<char> 
             }
         }
         Mode::DataUsb => Ok('C'),
-        Mode::Digital => Ok('E'),
-        Mode::Wfm | Mode::DigitalVoice => Err(RadioError::InvalidValue {
+        Mode::Psk => Ok('E'),
+        _ => Err(RadioError::InvalidValue {
             field: "mode",
             message: format!("mode {mode} is not supported by {}", profile.id()),
         }),
@@ -802,12 +808,11 @@ fn decode_yaesu_code(
         'B' => Ok(Mode::Fm),
         'C' => Ok(Mode::DataUsb),
         'D' => Ok(Mode::Am),
-        'E' if profile.id() == "yaesu-ft991" => Ok(Mode::Digital),
         'E' if profile.id() == "yaesu-ft891" => Err(RadioError::Decode {
             command,
             message: "FT-891 does not support mode code 'E'".to_string(),
         }),
-        'E' => Ok(Mode::Digital),
+        'E' => Ok(Mode::Psk),
         'F' if profile.id() == "yaesu-ft891" => Err(RadioError::Decode {
             command,
             message: "FT-891 does not support mode code 'F'".to_string(),
@@ -969,9 +974,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxMode(Mode::Digital)));
+        assert!(decoded.patches.contains(&StatePatch::MainRxMode(Mode::Psk)));
     }
 
     #[test]

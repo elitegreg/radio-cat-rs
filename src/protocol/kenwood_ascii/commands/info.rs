@@ -380,8 +380,6 @@ mod tests {
         .unwrap();
 
         let decoded = decode(profile, &frame, &state).unwrap().unwrap();
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxMode(Mode::Digital)));
+        assert!(decoded.patches.contains(&StatePatch::MainRxMode(Mode::Psk)));
     }
 }

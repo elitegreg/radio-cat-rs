@@ -953,7 +953,7 @@ fn yaesu_family(mode: Mode) -> YaesuFamily {
     match mode {
         Mode::Cw | Mode::CwReverse => YaesuFamily::Cw,
         Mode::Rtty | Mode::RttyReverse => YaesuFamily::Fsk,
-        Mode::Digital => YaesuFamily::Psk,
+        Mode::Psk => YaesuFamily::Psk,
         _ => YaesuFamily::Ssb,
     }
 }
@@ -961,7 +961,7 @@ fn yaesu_family(mode: Mode) -> YaesuFamily {
 fn yaesu_891_991_family(mode: Mode) -> Yaesu891991Family {
     match mode {
         Mode::Cw | Mode::CwReverse => Yaesu891991Family::Cw,
-        Mode::Rtty | Mode::RttyReverse | Mode::Digital => Yaesu891991Family::FskPsk,
+        Mode::Rtty | Mode::RttyReverse | Mode::Psk => Yaesu891991Family::FskPsk,
         _ => Yaesu891991Family::Ssb,
     }
 }
@@ -1739,7 +1739,7 @@ enum HiLoFamily {
 fn hi_lo_family(mode: Mode) -> HiLoFamily {
     match mode {
         Mode::Fm | Mode::DataFm => HiLoFamily::Fm,
-        Mode::Am | Mode::Digital => HiLoFamily::Am,
+        Mode::Am | Mode::DataAm => HiLoFamily::Am,
         _ => HiLoFamily::Ssb,
     }
 }

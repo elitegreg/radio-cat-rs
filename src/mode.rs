@@ -11,10 +11,12 @@ pub enum Mode {
     Wfm,
     Rtty,
     RttyReverse,
+    Psk,
+    PskReverse,
     DataLsb,
     DataUsb,
     DataFm,
-    Digital,
+    DataAm,
     DigitalVoice,
 }
 
@@ -30,10 +32,12 @@ impl Mode {
             Self::Wfm => "WFM",
             Self::Rtty => "RTTY",
             Self::RttyReverse => "RTTY-R",
+            Self::Psk => "PSK",
+            Self::PskReverse => "PSK-R",
             Self::DataLsb => "DATA-LSB",
             Self::DataUsb => "DATA-USB",
             Self::DataFm => "DATA-FM",
-            Self::Digital => "DIGITAL",
+            Self::DataAm => "DATA-AM",
             Self::DigitalVoice => "DIGITAL-VOICE",
         }
     }
@@ -76,10 +80,12 @@ impl FromStr for Mode {
             "wfm" | "wide-fm" => Ok(Self::Wfm),
             "rtty" => Ok(Self::Rtty),
             "rttyr" | "rtty-r" | "rtty-reverse" => Ok(Self::RttyReverse),
+            "psk" => Ok(Self::Psk),
+            "pskr" | "psk-r" | "psk-reverse" => Ok(Self::PskReverse),
             "data-lsb" | "datal" | "data-l" => Ok(Self::DataLsb),
             "data-usb" | "datau" | "data-u" => Ok(Self::DataUsb),
             "data-fm" | "datafm" => Ok(Self::DataFm),
-            "digital" | "dig" => Ok(Self::Digital),
+            "data-am" | "dataam" => Ok(Self::DataAm),
             "digital-voice" | "digitalvoice" | "dv" | "d-star" | "dstar" => Ok(Self::DigitalVoice),
             _ => Err(ParseModeError),
         }
