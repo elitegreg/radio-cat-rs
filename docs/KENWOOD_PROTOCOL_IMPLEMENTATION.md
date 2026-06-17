@@ -299,7 +299,7 @@ Responsibilities:
 
 Inputs:
 
-- `SetRitEnabled(bool)`
+- `SetRitEnabled { receiver, enabled }`
 - `SetXitEnabled(bool)`
 - `SetRitXitOffset(offset)`
 - startup/poll queries for `RT;`, `XT;`, `RF;`, `RO;`, or status-derived offset
@@ -496,7 +496,7 @@ Each profile should list explicit query commands for all supported API fields:
 | split | `FT;`, `SP;`, `ST;`, or parsed from `IF;` |
 | RX/TX VFO routing | `FR;`, `FT;`, profile-specific |
 | RIT enable | `RT;` or `RT$;` |
-| XIT enable | `XT;` or `XT$;` |
+| XIT enable | `XT;` |
 | RIT/XIT offset | `IF;`, `RF;`, `RO;`, or profile-specific |
 | filter bandwidth | `FW;`, `BW;`, `BW$;`, `SH...;`, or hi/lo conversion |
 | filter shift | `IS;`, `IS$;`, signed `IS...;`, or hi/lo conversion |
@@ -531,7 +531,7 @@ same query list seeds the poll plan for fields not carried by async `IF;`.
 | `kenwood-ts570` | `IF`, `FA`, `FB`, `FR`, `FT`, `MD`, `RT`, `XT`, `NB`, `NR`, `PA`, `RA`, `PC`, `KS`. | Poll RF/keyer/power slowly. Filter bandwidth/shift is unsupported. |
 | `kenwood-ts870` | `IF`, `FA`, `FB`, `FR`, `FT`, `MD`, `RT`, `XT`, `NB`, `NR`, `PA`, `RA`, `PC`, `KS`. | Poll RF/keyer/power slowly. Filter bandwidth/shift is unsupported. |
 | `kenwood-if232` | `IF`, `FA`, `FB`, `SP`, `MD`, `RT`, `XT`. | Limited async: use `AI1;` for `IF` events, then poll `FA`/`FB` and any supported non-`IF` fields every 2 seconds by default. |
-| `elecraft-k4` | `FA`, `FB`, `FT`, `MD`, `DT`, `MD$`, `DT$`, `RT`, `XT`, `RO`, `RT$`, `XT$`, `RO$`, `BW`, `BW$`, `IS`, `IS$`, `NA`, `NA$`, `NB`, `NB$`, `NR`, `NR$`, `PA`, `PA$`, `RA`, `RA$`, `PC`, `KS`. | Poll RF/filter/keyer/power slowly if not emitted after `AI2;AID250;`. `$` variants are sub receiver/VFO queries. |
+| `elecraft-k4` | `FA`, `FB`, `FT`, `MD`, `DT`, `MD$`, `DT$`, `RT`, `XT`, `RO`, `RT$`, `RO$`, `BW`, `BW$`, `IS`, `IS$`, `NA`, `NA$`, `NB`, `NB$`, `NR`, `NR$`, `PA`, `PA$`, `RA`, `RA$`, `PC`, `KS`. | Poll RF/filter/keyer/power slowly if not emitted after `AI2;AID250;`. `$` variants are sub receiver/VFO queries except XIT, which is main-TX only on K4. |
 | `elecraft-k3-family` | `IF`, `FA`, `FB`, `FT`, `MD`, `DT`, `MD$`, `DT$`, `RT`, `XT`, `RO`, `BW`, `BW$`, `IS`, `IS$`, `NB`, `NB$`, `PA`, `PA$`, `RA`, `RA$`, `PC`, `KS`. | Poll filter/RF/keyer/power slowly. Re-assert split after `FR` operations if the operation cancels split. |
 | `elecraft-k2` | `IF`, `FA`, `FB`, `FR`, `FT`, `MD`, `RT`, `XT`, `FW`, `NB`, `PA`, `RA`, `PC`, `KS`. | Poll filter/RF/keyer/power slowly. Treat fixed-step RIT and cycling `NB1;` behavior as non-exact until confirmed. |
 | `yaesu-ftdx101` | `IF`, `FA`, `FB`, `FT`, `MD0`, `MD1`, `RT`, `XT`, `SH0`, `SH1`, `IS0`, `IS1`, `BC0`, `BC1`, `NB0`, `NB1`, `NR0`, `NR1`, `PA0`, `PA1`, `RA0`, `RA1`, `PC`, `KS`. | Poll table-backed filter state, RF/DSP state, RF power, and keyer speed slowly. |

@@ -1,5 +1,8 @@
 use crate::{
-    capabilities::Capability, command::RadioCommand, error::RadioError, update::StatePatch,
+    capabilities::Capability,
+    command::{RadioCommand, ReceiverPath},
+    error::RadioError,
+    update::StatePatch,
     RadioState, Result, RitXitOffsetHz,
 };
 
@@ -17,12 +20,15 @@ pub fn encode(
     state: &RadioState,
 ) -> Result<Option<EncodedCommand>> {
     match command {
-        RadioCommand::SetRitEnabled(enabled) => {
+        RadioCommand::SetRitEnabled { receiver, enabled } => {
             require_writable(
-                profile.capabilities.rit_xit.rit_enabled,
-                "rit_xit.rit_enabled",
+                rit_capability(profile, *receiver),
+                match receiver {
+                    ReceiverPath::Main => "rit_xit.main_rit_enabled",
+                    ReceiverPath::Sub => "rit_xit.sub_rit_enabled",
+                },
             )?;
-            let suffix = target_suffix(profile, state);
+            let suffix = rit_target_suffix(profile, *receiver, state);
             let matcher = if suffix.is_empty() {
                 ResponseMatcher::Prefix("RT")
             } else {
@@ -34,7 +40,7 @@ pub fn encode(
                     bool_digit(*enabled)
                 ))?],
                 matcher,
-                vec![StatePatch::RitEnabled(*enabled)],
+                vec![rit_patch(*receiver, *enabled)],
                 CommandPriority::Normal,
             )))
         }
@@ -43,18 +49,9 @@ pub fn encode(
                 profile.capabilities.rit_xit.xit_enabled,
                 "rit_xit.xit_enabled",
             )?;
-            let suffix = target_suffix(profile, state);
-            let matcher = if suffix.is_empty() {
-                ResponseMatcher::Prefix("XT")
-            } else {
-                ResponseMatcher::Prefix("XT$")
-            };
             Ok(Some(EncodedCommand::new(
-                vec![AsciiFrame::new(format!(
-                    "XT{suffix}{};",
-                    bool_digit(*enabled)
-                ))?],
-                matcher,
+                vec![AsciiFrame::new(format!("XT{};", bool_digit(*enabled)))?],
+                ResponseMatcher::Prefix("XT"),
                 vec![StatePatch::XitEnabled(*enabled)],
                 CommandPriority::Normal,
             )))
@@ -77,7 +74,7 @@ pub fn encode_query(
     semantic: &str,
 ) -> Result<Option<EncodedCommand>> {
     let (frame, matcher) = match semantic {
-        "RT" if profile.capabilities.rit_xit.rit_enabled.can_read() => {
+        "RT" if profile.capabilities.rit_xit.main_rit_enabled.can_read() => {
             ("RT;", ResponseMatcher::Prefix("RT"))
         }
         "XT" if profile.capabilities.rit_xit.xit_enabled.can_read() => {
@@ -89,11 +86,8 @@ pub fn encode_query(
         "RO" if uses_ro_offset(profile) && profile.capabilities.rit_xit.offset.can_read() => {
             ("RO;", ResponseMatcher::Prefix("RO"))
         }
-        "RT$" if is_k4(profile) && profile.capabilities.rit_xit.rit_enabled.can_read() => {
+        "RT$" if is_k4(profile) && profile.capabilities.rit_xit.sub_rit_enabled.can_read() => {
             ("RT$;", ResponseMatcher::Prefix("RT$"))
-        }
-        "XT$" if is_k4(profile) && profile.capabilities.rit_xit.xit_enabled.can_read() => {
-            ("XT$;", ResponseMatcher::Prefix("XT$"))
         }
         "RO$" if is_k4(profile) && profile.capabilities.rit_xit.offset.can_read() => {
             ("RO$;", ResponseMatcher::Prefix("RO$"))
@@ -111,7 +105,8 @@ pub fn encode_query(
 
 pub fn decode(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result<Option<DecodedFrame>> {
     let patches = match frame.command() {
-        "RT" | "RT$" => vec![StatePatch::RitEnabled(parse_flag("RT", frame.payload())?)],
+        "RT" => vec![StatePatch::MainRitEnabled(parse_flag("RT", frame.payload())?)],
+        "RT$" => vec![StatePatch::SubRitEnabled(parse_flag("RT", frame.payload())?)],
         "XT" | "XT$" => vec![StatePatch::XitEnabled(parse_flag("XT", frame.payload())?)],
         "RF" | "RFS" if uses_rf_offset(profile) => {
             vec![StatePatch::RitXitOffset(parse_offset(
@@ -138,7 +133,7 @@ fn encode_offset(
     state: &RadioState,
 ) -> Result<EncodedCommand> {
     if uses_ro_offset(profile) {
-        let suffix = target_suffix(profile, state);
+        let suffix = offset_target_suffix(profile, state);
         let (sign, magnitude) = signed_parts(target_offset);
         let matcher = if suffix.is_empty() {
             ResponseMatcher::Prefix("RO")
@@ -245,7 +240,19 @@ fn signed_parts(offset: RitXitOffsetHz) -> (char, u16) {
     (sign, value.unsigned_abs())
 }
 
-fn target_suffix(profile: &KenwoodAsciiProfile, state: &RadioState) -> &'static str {
+fn rit_target_suffix(
+    profile: &KenwoodAsciiProfile,
+    receiver: ReceiverPath,
+    _state: &RadioState,
+) -> &'static str {
+    if is_k4(profile) && matches!(receiver, ReceiverPath::Sub) {
+        "$"
+    } else {
+        ""
+    }
+}
+
+fn offset_target_suffix(profile: &KenwoodAsciiProfile, state: &RadioState) -> &'static str {
     if !is_k4(profile) {
         return "";
     }
@@ -253,6 +260,20 @@ fn target_suffix(profile: &KenwoodAsciiProfile, state: &RadioState) -> &'static 
     match current_tx_vfo(profile, state) {
         Some(RoutingVfo::Sub) => "$",
         _ => "",
+    }
+}
+
+fn rit_capability(profile: &KenwoodAsciiProfile, receiver: ReceiverPath) -> Capability {
+    match receiver {
+        ReceiverPath::Main => profile.capabilities.rit_xit.main_rit_enabled,
+        ReceiverPath::Sub => profile.capabilities.rit_xit.sub_rit_enabled,
+    }
+}
+
+fn rit_patch(receiver: ReceiverPath, enabled: bool) -> StatePatch {
+    match receiver {
+        ReceiverPath::Main => StatePatch::MainRitEnabled(enabled),
+        ReceiverPath::Sub => StatePatch::SubRitEnabled(enabled),
     }
 }
 
@@ -305,9 +326,16 @@ mod tests {
         let ts590 = profile_by_id("kenwood-ts590").unwrap();
         let state = RadioState::default();
 
-        let rit = encode(ts590, &RadioCommand::SetRitEnabled(true), &state)
-            .unwrap()
-            .unwrap();
+        let rit = encode(
+            ts590,
+            &RadioCommand::SetRitEnabled {
+                receiver: ReceiverPath::Main,
+                enabled: true,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(rit.frames[0].as_str(), "RT1;");
 
         let xit = encode(ts590, &RadioCommand::SetXitEnabled(false), &state)
@@ -316,15 +344,28 @@ mod tests {
         assert_eq!(xit.frames[0].as_str(), "XT0;");
 
         let k4 = profile_by_id("elecraft-k4").unwrap();
+        let xit = encode(k4, &RadioCommand::SetXitEnabled(true), &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(xit.frames[0].as_str(), "XT1;");
+
+        let k4 = profile_by_id("elecraft-k4").unwrap();
         let mut split_state = RadioState::default();
         split_state.tx = Some(crate::TransmitterState {
             split: Some(true),
             ..crate::TransmitterState::default()
         });
 
-        let targeted = encode(k4, &RadioCommand::SetRitEnabled(true), &split_state)
-            .unwrap()
-            .unwrap();
+        let targeted = encode(
+            k4,
+            &RadioCommand::SetRitEnabled {
+                receiver: ReceiverPath::Sub,
+                enabled: true,
+            },
+            &split_state,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(targeted.frames[0].as_str(), "RT$1;");
     }
 
@@ -456,6 +497,7 @@ mod tests {
             encode_query(k4, "RO$").unwrap().unwrap().frames[0].as_str(),
             "RO$;"
         );
+        assert!(encode_query(k4, "XT$").unwrap().is_none());
 
         let ts590 = profile_by_id("kenwood-ts590").unwrap();
         assert!(encode_query(ts590, "RO").unwrap().is_none());
@@ -467,7 +509,7 @@ mod tests {
         let rt = decode(ts590, &AsciiFrame::new("RT1;").unwrap())
             .unwrap()
             .unwrap();
-        assert_eq!(rt.patches, vec![StatePatch::RitEnabled(true)]);
+        assert_eq!(rt.patches, vec![StatePatch::MainRitEnabled(true)]);
 
         let ts890 = profile_by_id("kenwood-ts890").unwrap();
         let rf = decode(ts890, &AsciiFrame::new("RFS-0123;").unwrap())

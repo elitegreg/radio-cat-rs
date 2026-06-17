@@ -122,7 +122,8 @@ impl Power {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RitXitState {
-    pub rit_enabled: Option<bool>,
+    pub main_rit_enabled: Option<bool>,
+    pub sub_rit_enabled: Option<bool>,
     pub xit_enabled: Option<bool>,
     pub offset_hz: Option<RitXitOffsetHz>,
 }

@@ -174,7 +174,8 @@ impl TransmitterCapabilities {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RitXitCapabilities {
-    pub rit_enabled: Capability,
+    pub main_rit_enabled: Capability,
+    pub sub_rit_enabled: Capability,
     pub xit_enabled: Capability,
     pub offset: Capability,
 }
@@ -182,15 +183,22 @@ pub struct RitXitCapabilities {
 impl RitXitCapabilities {
     pub const fn all() -> Self {
         Self {
-            rit_enabled: Capability::ReadWrite,
+            main_rit_enabled: Capability::ReadWrite,
+            sub_rit_enabled: Capability::ReadWrite,
             xit_enabled: Capability::ReadWrite,
             offset: Capability::ReadWrite,
         }
     }
 
-    pub const fn new(rit_enabled: Capability, xit_enabled: Capability, offset: Capability) -> Self {
+    pub const fn new(
+        main_rit_enabled: Capability,
+        sub_rit_enabled: Capability,
+        xit_enabled: Capability,
+        offset: Capability,
+    ) -> Self {
         Self {
-            rit_enabled,
+            main_rit_enabled,
+            sub_rit_enabled,
             xit_enabled,
             offset,
         }

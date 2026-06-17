@@ -51,7 +51,10 @@ pub enum RadioCommand {
     SetPtt(bool),
     SetSplit(bool),
 
-    SetRitEnabled(bool),
+    SetRitEnabled {
+        receiver: ReceiverPath,
+        enabled: bool,
+    },
     SetXitEnabled(bool),
     SetRitXitOffset(RitXitOffsetHz),
 

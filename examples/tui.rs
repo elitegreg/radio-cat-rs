@@ -353,8 +353,8 @@ async fn run_ui(
                         radio.set_split(next).await?;
                     }
                     KeyCode::Char('r') => {
-                        let next = !state.rit_xit.rit_enabled.unwrap_or(false);
-                        radio.set_rit_enabled(next).await?;
+                        let next = !state.rit_xit.main_rit_enabled.unwrap_or(false);
+                        radio.set_main_rit_enabled(next).await?;
                     }
                     KeyCode::Char('+') => bump_rit(&radio, state.as_ref(), 100).await?,
                     KeyCode::Char('-') => bump_rit(&radio, state.as_ref(), -100).await?,
@@ -433,7 +433,7 @@ fn format_state(state: &RadioState) -> String {
 main rx: freq={} mode={} filter_bw={:?} filter_shift={:?} nr={:?}\n\
 sub rx:  freq={} mode={}\n\
 tx:      freq={} mode={} power={:?} ptt={:?} split={:?}\n\
-rit/xit: rit={:?} xit={:?} offset={:?}\n\
+rit/xit: main_rit={:?} sub_rit={:?} xit={:?} offset={:?}\n\
 keyer:   speed_wpm={:?} sending={:?}",
         state.connection,
         opt_freq(state.main_rx.frequency),
@@ -448,7 +448,8 @@ keyer:   speed_wpm={:?} sending={:?}",
         tx.and_then(|tx| tx.power),
         tx.and_then(|tx| tx.transmitting),
         tx.and_then(|tx| tx.split),
-        state.rit_xit.rit_enabled,
+        state.rit_xit.main_rit_enabled,
+        state.rit_xit.sub_rit_enabled,
         state.rit_xit.xit_enabled,
         state.rit_xit.offset_hz.map(|offset| offset.as_hz()),
         keyer.and_then(|keyer| keyer.speed_wpm),

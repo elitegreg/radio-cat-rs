@@ -73,7 +73,6 @@ fn decode_kenwood_if(
 
     let mut patches = vec![
         StatePatch::RitXitOffset(offset),
-        StatePatch::RitEnabled(rit_enabled),
         StatePatch::XitEnabled(xit_enabled),
         StatePatch::Transmitting(transmitting),
         StatePatch::Split(split),
@@ -81,6 +80,7 @@ fn decode_kenwood_if(
 
     match active_vfo {
         ActiveVfo::A => {
+            patches.push(StatePatch::MainRitEnabled(rit_enabled));
             patches.push(StatePatch::MainRxFrequency(frequency));
             patches.push(StatePatch::MainRxMode(mode));
             if !split {
@@ -97,6 +97,7 @@ fn decode_kenwood_if(
             }
         }
         ActiveVfo::B => {
+            patches.push(StatePatch::SubRitEnabled(rit_enabled));
             patches.push(StatePatch::SubRxPresent(true));
             patches.push(StatePatch::SubRxFrequency(frequency));
             patches.push(StatePatch::SubRxMode(mode));
@@ -138,7 +139,7 @@ fn decode_yaesu_if(
 
     let mut patches = vec![
         StatePatch::RitXitOffset(offset),
-        StatePatch::RitEnabled(rit_enabled),
+        StatePatch::MainRitEnabled(rit_enabled),
         StatePatch::XitEnabled(xit_enabled),
         StatePatch::Split(split),
     ];
@@ -277,10 +278,10 @@ mod tests {
             decoded.patches,
             vec![
                 StatePatch::RitXitOffset(RitXitOffsetHz::new(123).unwrap()),
-                StatePatch::RitEnabled(true),
                 StatePatch::XitEnabled(false),
                 StatePatch::Transmitting(true),
                 StatePatch::Split(false),
+                StatePatch::MainRitEnabled(true),
                 StatePatch::MainRxFrequency(Frequency::from_hz(14_074_000)),
                 StatePatch::MainRxMode(Mode::Usb),
                 StatePatch::TxFrequency(Frequency::from_hz(14_074_000)),
@@ -350,7 +351,7 @@ mod tests {
             decoded.patches,
             vec![
                 StatePatch::RitXitOffset(RitXitOffsetHz::new(500).unwrap()),
-                StatePatch::RitEnabled(true),
+                StatePatch::MainRitEnabled(true),
                 StatePatch::XitEnabled(false),
                 StatePatch::Split(true),
                 StatePatch::MainRxFrequency(Frequency::from_hz(14_074_000)),

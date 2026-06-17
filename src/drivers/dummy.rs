@@ -122,7 +122,11 @@ impl RadioDriver for DummyRadioDriver {
             RadioCommand::SetPtt(transmitting) => vec![StatePatch::Transmitting(transmitting)],
             RadioCommand::SetSplit(split) => vec![StatePatch::Split(split)],
 
-            RadioCommand::SetRitEnabled(enabled) => vec![StatePatch::RitEnabled(enabled)],
+            RadioCommand::SetRitEnabled { receiver, enabled } => receiver_patch(
+                receiver,
+                StatePatch::MainRitEnabled(enabled),
+                StatePatch::SubRitEnabled(enabled),
+            ),
             RadioCommand::SetXitEnabled(enabled) => vec![StatePatch::XitEnabled(enabled)],
             RadioCommand::SetRitXitOffset(offset) => vec![StatePatch::RitXitOffset(offset)],
 
@@ -195,7 +199,8 @@ fn dummy_state(connection: ConnectionState) -> RadioState {
             split: Some(false),
         }),
         rit_xit: RitXitState {
-            rit_enabled: Some(false),
+            main_rit_enabled: Some(false),
+            sub_rit_enabled: Some(false),
             xit_enabled: Some(false),
             offset_hz: Some(RitXitOffsetHz::new(0).expect("zero is a valid RIT/XIT offset")),
         },

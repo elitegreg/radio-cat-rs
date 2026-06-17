@@ -98,8 +98,9 @@ const NO_FILTER_NO_RF_RX: ReceiverCapabilities =
 const FULL_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, RW, RW, RW);
 const IF232_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, UNSUPPORTED, RW, RW);
 
-const FULL_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(RW, RW, RW);
-const K2_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(RW, RW, RO);
+const MAIN_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(RW, UNSUPPORTED, RW, RW);
+const K4_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(RW, RW, RW, RW);
+const K2_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(RW, UNSUPPORTED, RW, RO);
 
 const FULL_KEYER: KeyerCapabilities = KeyerCapabilities::new(RW, UNSUPPORTED, WO, WO);
 const YAESU_KEYER: KeyerCapabilities =
@@ -263,7 +264,6 @@ const ELECRAFT_K4_STARTUP: &[StartupStep] = &[
     StartupStep::Query("XT"),
     StartupStep::Query("RO"),
     StartupStep::Query("RT$"),
-    StartupStep::Query("XT$"),
     StartupStep::Query("RO$"),
     StartupStep::Query("BW"),
     StartupStep::Query("BW$"),
@@ -484,7 +484,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Kenwood,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, MAIN_RIT_XIT, Some(FULL_KEYER)),
         update_strategy: HYBRID,
         startup: TS590_STARTUP,
         poll: Some(PollPlan {
@@ -501,7 +501,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Kenwood,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, MAIN_RIT_XIT, Some(FULL_KEYER)),
         update_strategy: HYBRID,
         startup: TS890_STARTUP,
         poll: Some(PollPlan {
@@ -518,7 +518,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Kenwood,
         receiver_kind: ReceiverKind::DualRx,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, MAIN_RIT_XIT, Some(FULL_KEYER)),
         update_strategy: HYBRID,
         startup: TS990_STARTUP,
         poll: Some(PollPlan {
@@ -535,7 +535,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Kenwood,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, MAIN_RIT_XIT, Some(FULL_KEYER)),
         update_strategy: HYBRID,
         startup: TS2000_STARTUP,
         poll: Some(PollPlan {
@@ -552,7 +552,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Kenwood,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        capabilities: dual_capabilities(NO_AUTO_NOTCH_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        capabilities: dual_capabilities(NO_AUTO_NOTCH_RX, FULL_TX, MAIN_RIT_XIT, Some(FULL_KEYER)),
         update_strategy: HYBRID,
         startup: TS480_STARTUP,
         poll: Some(PollPlan {
@@ -572,7 +572,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             NO_FILTER_NO_AUTO_NOTCH_RX,
             FULL_TX,
-            FULL_RIT_XIT,
+            MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
         update_strategy: HYBRID,
@@ -594,7 +594,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             NO_FILTER_NO_AUTO_NOTCH_RX,
             FULL_TX,
-            FULL_RIT_XIT,
+            MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
         update_strategy: HYBRID,
@@ -613,7 +613,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Kenwood,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        capabilities: dual_capabilities(NO_FILTER_NO_RF_RX, IF232_TX, FULL_RIT_XIT, None),
+        capabilities: dual_capabilities(NO_FILTER_NO_RF_RX, IF232_TX, MAIN_RIT_XIT, None),
         update_strategy: HYBRID,
         startup: IF232_STARTUP,
         poll: Some(PollPlan {
@@ -630,7 +630,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Elecraft,
         receiver_kind: ReceiverKind::DualRx,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, K4_RIT_XIT, Some(FULL_KEYER)),
         update_strategy: HYBRID,
         startup: ELECRAFT_K4_STARTUP,
         poll: Some(PollPlan {
@@ -647,7 +647,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Elecraft,
         receiver_kind: ReceiverKind::DualRx,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        capabilities: dual_capabilities(K3_RX, FULL_TX, FULL_RIT_XIT, Some(FULL_KEYER)),
+        capabilities: dual_capabilities(K3_RX, FULL_TX, MAIN_RIT_XIT, Some(FULL_KEYER)),
         update_strategy: HYBRID,
         startup: ELECRAFT_K3_STARTUP,
         poll: Some(PollPlan {
@@ -681,7 +681,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Yaesu,
         receiver_kind: ReceiverKind::DualRx,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(YAESU_KEYER)),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, MAIN_RIT_XIT, Some(YAESU_KEYER)),
         update_strategy: HYBRID,
         startup: YAESU_FTDX101_STARTUP,
         poll: Some(PollPlan {
@@ -698,7 +698,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Yaesu,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(YAESU_KEYER)),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, MAIN_RIT_XIT, Some(YAESU_KEYER)),
         update_strategy: HYBRID,
         startup: YAESU_FTDX10_FT710_STARTUP,
         poll: Some(PollPlan {
@@ -715,7 +715,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Yaesu,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(YAESU_KEYER)),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, MAIN_RIT_XIT, Some(YAESU_KEYER)),
         update_strategy: HYBRID,
         startup: YAESU_FTDX10_FT710_STARTUP,
         poll: Some(PollPlan {
@@ -732,7 +732,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Yaesu,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(YAESU_KEYER)),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, MAIN_RIT_XIT, Some(YAESU_KEYER)),
         update_strategy: HYBRID,
         startup: YAESU_FT891_STARTUP,
         poll: Some(PollPlan {
@@ -749,7 +749,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Yaesu,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        capabilities: dual_capabilities(FULL_RX, FULL_TX, FULL_RIT_XIT, Some(YAESU_KEYER)),
+        capabilities: dual_capabilities(FULL_RX, FULL_TX, MAIN_RIT_XIT, Some(YAESU_KEYER)),
         update_strategy: HYBRID,
         startup: YAESU_FT991_STARTUP,
         poll: Some(PollPlan {
@@ -805,6 +805,11 @@ mod tests {
             Capability::Unsupported
         );
         assert_eq!(k2.capabilities.rit_xit.offset, Capability::ReadOnly);
+        assert_eq!(k2.capabilities.rit_xit.sub_rit_enabled, Capability::Unsupported);
+
+        let k4 = profile_by_id("elecraft-k4").unwrap();
+        assert_eq!(k4.capabilities.rit_xit.main_rit_enabled, Capability::ReadWrite);
+        assert_eq!(k4.capabilities.rit_xit.sub_rit_enabled, Capability::ReadWrite);
 
         let yaesu = profile_by_id("yaesu-ftdx10").unwrap();
         let keyer = yaesu.capabilities.keyer.unwrap();

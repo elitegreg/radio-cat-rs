@@ -110,7 +110,8 @@ pub enum StateField {
     Transmitting,
     Split,
 
-    RitEnabled,
+    MainRitEnabled,
+    SubRitEnabled,
     XitEnabled,
     RitXitOffset,
 
@@ -200,7 +201,8 @@ pub enum StatePatch {
     Transmitting(bool),
     Split(bool),
 
-    RitEnabled(bool),
+    MainRitEnabled(bool),
+    SubRitEnabled(bool),
     XitEnabled(bool),
     RitXitOffset(RitXitOffsetHz),
 
@@ -410,9 +412,14 @@ impl StateReducer {
                 }
             }
 
-            StatePatch::RitEnabled(value) => {
-                if set_option(&mut self.state.rit_xit.rit_enabled, value) {
-                    changes.add(ChangeFlags::RIT_XIT, StateField::RitEnabled);
+            StatePatch::MainRitEnabled(value) => {
+                if set_option(&mut self.state.rit_xit.main_rit_enabled, value) {
+                    changes.add(ChangeFlags::RIT_XIT, StateField::MainRitEnabled);
+                }
+            }
+            StatePatch::SubRitEnabled(value) => {
+                if set_option(&mut self.state.rit_xit.sub_rit_enabled, value) {
+                    changes.add(ChangeFlags::RIT_XIT, StateField::SubRitEnabled);
                 }
             }
             StatePatch::XitEnabled(value) => {

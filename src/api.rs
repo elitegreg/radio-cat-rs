@@ -464,8 +464,17 @@ impl Radio {
         self.command(RadioCommand::SetSplit(split)).await
     }
 
-    pub async fn set_rit_enabled(&self, enabled: bool) -> Result<()> {
-        self.command(RadioCommand::SetRitEnabled(enabled)).await
+    pub async fn set_rit_enabled(&self, receiver: ReceiverPath, enabled: bool) -> Result<()> {
+        self.command(RadioCommand::SetRitEnabled { receiver, enabled })
+            .await
+    }
+
+    pub async fn set_main_rit_enabled(&self, enabled: bool) -> Result<()> {
+        self.set_rit_enabled(ReceiverPath::Main, enabled).await
+    }
+
+    pub async fn set_sub_rit_enabled(&self, enabled: bool) -> Result<()> {
+        self.set_rit_enabled(ReceiverPath::Sub, enabled).await
     }
 
     pub async fn set_xit_enabled(&self, enabled: bool) -> Result<()> {
