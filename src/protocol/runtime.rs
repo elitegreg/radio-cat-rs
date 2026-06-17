@@ -380,6 +380,54 @@ impl NativeProtocol for KenwoodAsciiRuntime {
         state_before: &RadioState,
         ctx: &mut dyn ProtocolContext,
     ) -> Result<()> {
+        if command_matches_state(&command, state_before) {
+            for semantic in kenwood_validation_queries(self.profile, &command, state_before) {
+                let Some(encoded) = (match encode_kenwood_query(self.profile, semantic) {
+                    Ok(encoded) => encoded,
+                    Err(error) => {
+                        tracing::warn!(
+                            driver = %self.profile.id(),
+                            ?command,
+                            semantic,
+                            ?error,
+                            "failed to encode Kenwood validation query"
+                        );
+                        continue;
+                    }
+                }) else {
+                    continue;
+                };
+
+                if let Err(error) = self
+                    .send_encoded(
+                        transport,
+                        encoded,
+                        UpdateSource::CommandResponse,
+                        COMMAND_RESPONSE_TIMEOUT,
+                        ctx,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        driver = %self.profile.id(),
+                        ?command,
+                        semantic,
+                        ?error,
+                        "Kenwood validation query failed; continuing with setter"
+                    );
+                }
+            }
+
+            if command_matches_state(&command, ctx.state()) {
+                tracing::debug!(
+                    driver = %self.profile.id(),
+                    ?command,
+                    "validated current state; skipping Kenwood setter"
+                );
+                return Ok(());
+            }
+        }
+
         let Some(encoded) = encode_kenwood_command(self.profile, &command, state_before)? else {
             tracing::trace!(driver = %self.profile.id(), ?command, "command has no native transport encoding");
             return Ok(());
@@ -758,6 +806,54 @@ impl NativeProtocol for IcomCivRuntime {
         state_before: &RadioState,
         ctx: &mut dyn ProtocolContext,
     ) -> Result<()> {
+        if command_matches_state(&command, state_before) {
+            for semantic in icom_validation_queries(&command, state_before) {
+                let Some(encoded) = (match icom_civ::encode_query(self.options, semantic) {
+                    Ok(encoded) => encoded,
+                    Err(error) => {
+                        tracing::warn!(
+                            driver = %self.profile.id(),
+                            ?command,
+                            semantic,
+                            ?error,
+                            "failed to encode ICOM validation query"
+                        );
+                        continue;
+                    }
+                }) else {
+                    continue;
+                };
+
+                if let Err(error) = self
+                    .send_encoded(
+                        transport,
+                        encoded,
+                        UpdateSource::CommandResponse,
+                        COMMAND_RESPONSE_TIMEOUT,
+                        ctx,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        driver = %self.profile.id(),
+                        ?command,
+                        semantic,
+                        ?error,
+                        "ICOM validation query failed; continuing with setter"
+                    );
+                }
+            }
+
+            if command_matches_state(&command, ctx.state()) {
+                tracing::debug!(
+                    driver = %self.profile.id(),
+                    ?command,
+                    "validated current state; skipping ICOM setter"
+                );
+                return Ok(());
+            }
+        }
+
         let Some(encoded) = icom_civ::encode(self.profile, self.options, &command, state_before)?
         else {
             tracing::trace!(driver = %self.profile.id(), ?command, "command has no ICOM native transport encoding");
@@ -1161,5 +1257,150 @@ fn matcher_matches_frame(matcher: &ResponseMatcher, frame: &AsciiFrame) -> bool 
         ResponseMatcher::OneOf(prefixes) => prefixes
             .iter()
             .any(|prefix| frame.as_str().starts_with(prefix)),
+    }
+}
+
+fn command_matches_state(command: &RadioCommand, state: &RadioState) -> bool {
+    match command {
+        RadioCommand::SetReceiverFrequency {
+            receiver,
+            frequency,
+        } => receiver_state(state, *receiver)
+            .and_then(|rx| rx.frequency)
+            .is_some_and(|current| current == *frequency),
+        RadioCommand::SetReceiverMode { receiver, mode } => receiver_state(state, *receiver)
+            .and_then(|rx| rx.mode)
+            .is_some_and(|current| current == *mode),
+        RadioCommand::SetReceiverFilterBandwidth {
+            receiver,
+            bandwidth_hz,
+        } => receiver_state(state, *receiver)
+            .and_then(|rx| rx.filter.bandwidth_hz)
+            .is_some_and(|current| current == *bandwidth_hz),
+        RadioCommand::SetReceiverFilterShift { receiver, shift_hz } => receiver_state(state, *receiver)
+            .and_then(|rx| rx.filter.shift_hz)
+            .is_some_and(|current| current == *shift_hz),
+        RadioCommand::SetReceiverPreamp { receiver, setting } => receiver_state(state, *receiver)
+            .and_then(|rx| rx.rf.preamp)
+            .is_some_and(|current| current == *setting),
+        RadioCommand::SetReceiverAttenuator { receiver, setting } => receiver_state(state, *receiver)
+            .and_then(|rx| rx.rf.attenuator)
+            .is_some_and(|current| current == *setting),
+        RadioCommand::SetReceiverNoiseBlanker { receiver, setting } => receiver_state(state, *receiver)
+            .and_then(|rx| rx.rf.noise_blanker)
+            .is_some_and(|current| current == *setting),
+        RadioCommand::SetReceiverNoiseReduction { receiver, setting } => receiver_state(state, *receiver)
+            .and_then(|rx| rx.rf.noise_reduction)
+            .is_some_and(|current| current == *setting),
+        RadioCommand::SetReceiverAutoNotch { receiver, enabled } => receiver_state(state, *receiver)
+            .and_then(|rx| rx.rf.auto_notch)
+            .is_some_and(|current| current == *enabled),
+        RadioCommand::SetTxFrequency(frequency) => state
+            .tx
+            .as_ref()
+            .and_then(|tx| tx.frequency)
+            .is_some_and(|current| current == *frequency),
+        RadioCommand::SetTxMode(mode) => state
+            .tx
+            .as_ref()
+            .and_then(|tx| tx.mode)
+            .is_some_and(|current| current == *mode),
+        RadioCommand::SetTxPower(power) => state
+            .tx
+            .as_ref()
+            .and_then(|tx| tx.power)
+            .is_some_and(|current| current == *power),
+        RadioCommand::SetPtt(transmitting) => state
+            .tx
+            .as_ref()
+            .and_then(|tx| tx.transmitting)
+            .is_some_and(|current| current == *transmitting),
+        RadioCommand::SetSplit(split) => state
+            .tx
+            .as_ref()
+            .and_then(|tx| tx.split)
+            .is_some_and(|current| current == *split),
+        RadioCommand::SetRitEnabled { receiver, enabled } => match receiver {
+            ReceiverPath::Main => state.rit_xit.main_rit_enabled,
+            ReceiverPath::Sub => state.rit_xit.sub_rit_enabled,
+        }
+        .is_some_and(|current| current == *enabled),
+        RadioCommand::SetXitEnabled(enabled) => state
+            .rit_xit
+            .xit_enabled
+            .is_some_and(|current| current == *enabled),
+        RadioCommand::SetRitOffset { receiver, offset } => match receiver {
+            ReceiverPath::Main => state.rit_xit.offset_hz,
+            ReceiverPath::Sub => state.rit_xit.sub_offset_hz,
+        }
+        .is_some_and(|current| current == *offset),
+        RadioCommand::SetRitXitOffset(offset) => state
+            .rit_xit
+            .offset_hz
+            .is_some_and(|current| current == *offset),
+        RadioCommand::SetKeyerSpeed(wpm) => state
+            .keyer
+            .as_ref()
+            .and_then(|keyer| keyer.speed_wpm)
+            .is_some_and(|current| current == *wpm),
+        RadioCommand::SendCw(_) | RadioCommand::StopCw | RadioCommand::Refresh => false,
+    }
+}
+
+fn receiver_state(state: &RadioState, receiver: ReceiverPath) -> Option<&crate::ReceiverState> {
+    match receiver {
+        ReceiverPath::Main => Some(&state.main_rx),
+        ReceiverPath::Sub => state.sub_rx.as_ref(),
+    }
+}
+
+fn kenwood_validation_queries(
+    profile: &'static KenwoodAsciiProfile,
+    command: &RadioCommand,
+    state_before: &RadioState,
+) -> Vec<&'static str> {
+    kenwood_timeout_recovery_queries(profile, command, state_before)
+}
+
+fn icom_validation_queries(command: &RadioCommand, state_before: &RadioState) -> Vec<&'static str> {
+    match command {
+        RadioCommand::SetReceiverFrequency { receiver, .. } => match receiver {
+            ReceiverPath::Main => vec!["freq-main"],
+            ReceiverPath::Sub => vec!["freq-sub"],
+        },
+        RadioCommand::SetReceiverMode { receiver, .. } => match receiver {
+            ReceiverPath::Main => vec!["mode-main"],
+            ReceiverPath::Sub => vec!["mode-sub"],
+        },
+        RadioCommand::SetReceiverFilterBandwidth { .. } => vec!["filter-bandwidth"],
+        RadioCommand::SetReceiverFilterShift { .. } => Vec::new(),
+        RadioCommand::SetReceiverPreamp { .. } => vec!["preamp"],
+        RadioCommand::SetReceiverAttenuator { .. } => vec!["attenuator"],
+        RadioCommand::SetReceiverNoiseBlanker { .. } => vec!["noise-blanker"],
+        RadioCommand::SetReceiverNoiseReduction { .. } => vec!["noise-reduction"],
+        RadioCommand::SetReceiverAutoNotch { .. } => vec!["auto-notch"],
+        RadioCommand::SetTxFrequency(_) => vec!["tx-frequency"],
+        RadioCommand::SetTxMode(_) => match tx_receiver_for_validation(state_before) {
+            ReceiverPath::Main => vec!["mode-main"],
+            ReceiverPath::Sub => vec!["mode-sub"],
+        },
+        RadioCommand::SetTxPower(_) => vec!["tx-power"],
+        RadioCommand::SetPtt(_) => vec!["ptt"],
+        RadioCommand::SetSplit(_) => vec!["split"],
+        RadioCommand::SetRitEnabled { .. } => vec!["rit"],
+        RadioCommand::SetXitEnabled(_) => vec!["xit"],
+        RadioCommand::SetRitOffset { .. } | RadioCommand::SetRitXitOffset(_) => {
+            vec!["rit-offset"]
+        }
+        RadioCommand::SetKeyerSpeed(_) => vec!["keyer-speed"],
+        RadioCommand::SendCw(_) | RadioCommand::StopCw | RadioCommand::Refresh => Vec::new(),
+    }
+}
+
+fn tx_receiver_for_validation(state: &RadioState) -> ReceiverPath {
+    if state.tx.as_ref().and_then(|tx| tx.split) == Some(true) {
+        ReceiverPath::Sub
+    } else {
+        ReceiverPath::Main
     }
 }

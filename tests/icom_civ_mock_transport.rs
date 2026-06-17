@@ -61,6 +61,70 @@ impl CatTransport for SharedMockTransport {
 }
 
 #[tokio::test]
+async fn ic705_actor_skips_mode_set_when_validation_query_confirms_state() {
+    let transport = SharedMockTransport::default();
+
+    transport.push_read(response([0x26, 0x00, 0x03, 0x00, 0x03])).await;
+
+    let radio = Radio::connect_with_transport(
+        RadioConfig::new("icom-ic705").with_options("poll_interval=0.2"),
+        transport.clone(),
+    )
+    .await
+    .unwrap();
+
+    wait_for(Duration::from_secs(2), || {
+        let radio = radio.clone();
+        async move { radio.latest_state().main_rx.mode == Some(Mode::Cw) }
+    })
+    .await
+    .unwrap();
+
+    let baseline = transport.written_len().await;
+    transport.push_read(response([0x26, 0x00, 0x03, 0x00, 0x03])).await;
+
+    radio.set_main_mode(Mode::Cw).await.unwrap();
+
+    let written = transport.written_frames().await;
+    let additional = &written[baseline..];
+    assert_eq!(additional, &[command([0x26, 0x00])]);
+}
+
+#[tokio::test]
+async fn ic705_actor_sends_mode_set_when_validation_query_disagrees() {
+    let transport = SharedMockTransport::default();
+
+    transport.push_read(response([0x26, 0x00, 0x03, 0x00, 0x03])).await;
+
+    let radio = Radio::connect_with_transport(
+        RadioConfig::new("icom-ic705").with_options("poll_interval=0.2"),
+        transport.clone(),
+    )
+    .await
+    .unwrap();
+
+    wait_for(Duration::from_secs(2), || {
+        let radio = radio.clone();
+        async move { radio.latest_state().main_rx.mode == Some(Mode::Cw) }
+    })
+    .await
+    .unwrap();
+
+    let baseline = transport.written_len().await;
+    transport.push_read(response([0x26, 0x00, 0x01, 0x00, 0x03])).await;
+    transport.push_read(response([0xfb])).await;
+
+    radio.set_main_mode(Mode::Cw).await.unwrap();
+
+    let written = transport.written_frames().await;
+    let additional = &written[baseline..];
+    assert_eq!(
+        additional,
+        &[command([0x26, 0x00]), command([0x26, 0x00, 0x03, 0x00, 0x01])]
+    );
+}
+
+#[tokio::test]
 async fn ic705_actor_handles_startup_async_errors_and_command_ack() {
     let profile = profile_by_id("icom-ic705").unwrap();
     let transport = SharedMockTransport::default();
