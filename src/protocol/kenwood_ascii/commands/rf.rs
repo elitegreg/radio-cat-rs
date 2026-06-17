@@ -570,6 +570,13 @@ fn decode_noise_reduction(
         ))]);
     }
 
+    if profile.id() == "elecraft-k4" {
+        let index = parse_ra_or_nr_dollar(frame.payload())?;
+        return Ok(vec![StatePatch::MainRxNoiseReduction(setting_from_index(
+            index,
+        ))]);
+    }
+
     if profile.id().starts_with("yaesu-") && frame.payload().len() == 2 {
         let receiver = if profile.id() == "yaesu-ftdx101" {
             decode_target("NR", frame.payload().as_bytes()[0])?
@@ -1052,6 +1059,14 @@ mod tests {
         assert_eq!(
             ra.patches,
             vec![StatePatch::SubRxAttenuator(LeveledSetting::enabled(5))]
+        );
+
+        let nr = decode(k4, &AsciiFrame::new("NR051;").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            nr.patches,
+            vec![StatePatch::MainRxNoiseReduction(LeveledSetting::enabled(5))]
         );
 
         let yaesu = profile_by_id("yaesu-ftdx101").unwrap();

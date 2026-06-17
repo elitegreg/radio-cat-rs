@@ -1,7 +1,7 @@
-use std::{env, error::Error, fmt, fs::OpenOptions, time::Duration};
+use std::{env, error::Error, fmt, fs::OpenOptions, str::FromStr, time::Duration};
 
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -307,6 +307,9 @@ async fn run_ui(
     last_update: &mut String,
     session_summary: &str,
 ) -> Result<(), Box<dyn Error>> {
+    let mut command_input = String::new();
+    let mut status = String::from("type 'help' for commands");
+
     loop {
         loop {
             match updates.try_recv() {
@@ -331,58 +334,47 @@ async fn run_ui(
             }
         }
 
-        terminal.draw(|frame| draw(frame, state.as_ref(), last_update, session_summary))?;
+        terminal.draw(|frame| {
+            draw(
+                frame,
+                state.as_ref(),
+                last_update,
+                session_summary,
+                &status,
+                &command_input,
+            )
+        })?;
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
                 tracing::debug!(key = ?key.code, "key pressed");
                 match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Char('f') => cycle_main_frequency(&radio, state.as_ref()).await?,
-                    KeyCode::Char('m') => cycle_main_mode(&radio, state.as_ref()).await?,
-                    KeyCode::Char('p') => {
-                        let next = !state
-                            .tx
-                            .as_ref()
-                            .and_then(|tx| tx.transmitting)
-                            .unwrap_or(false);
-                        radio.set_ptt(next).await?;
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                    KeyCode::Esc => command_input.clear(),
+                    KeyCode::Backspace => {
+                        command_input.pop();
                     }
-                    KeyCode::Char('s') => {
-                        let next = !state.tx.as_ref().and_then(|tx| tx.split).unwrap_or(false);
-                        radio.set_split(next).await?;
+                    KeyCode::Enter => {
+                        let line = command_input.trim().to_string();
+                        if !line.is_empty() {
+                            if line.eq_ignore_ascii_case("q") || line.eq_ignore_ascii_case("quit") {
+                                break;
+                            }
+                            match execute_command(&radio, state.as_ref(), &line).await {
+                                Ok(message) => status = message,
+                                Err(error) => status = format!("error: {error}"),
+                            }
+                        }
+                        command_input.clear();
                     }
-                    KeyCode::Char('r') => {
-                        let next = !state.rit_xit.main_rit_enabled.unwrap_or(false);
-                        radio.set_main_rit_enabled(next).await?;
-                    }
-                    KeyCode::Char('+') => bump_rit(&radio, state.as_ref(), 100).await?,
-                    KeyCode::Char('-') => bump_rit(&radio, state.as_ref(), -100).await?,
-                    KeyCode::Char('k') => {
-                        let speed = state
-                            .keyer
-                            .as_ref()
-                            .and_then(|keyer| keyer.speed_wpm)
-                            .unwrap_or(20);
-                        radio.set_keyer_speed(speed.saturating_add(1)).await?;
-                    }
-                    KeyCode::Char('c') => radio.send_cw("CQ TEST").await?,
-                    KeyCode::Char('x') => radio.stop_cw().await?,
-                    KeyCode::Char('n') => {
-                        let enabled = !state
-                            .main_rx
-                            .rf
-                            .noise_reduction
-                            .as_ref()
-                            .and_then(|setting| setting.enabled)
-                            .unwrap_or(false);
-                        radio
-                            .set_main_noise_reduction(if enabled {
-                                LeveledSetting::enabled(3)
-                            } else {
-                                LeveledSetting::disabled()
-                            })
-                            .await?;
+                    KeyCode::Char(ch)
+                        if !key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !key.modifiers.contains(KeyModifiers::ALT) =>
+                    {
+                        command_input.push(ch);
                     }
                     _ => {}
                 }
@@ -393,19 +385,27 @@ async fn run_ui(
     Ok(())
 }
 
-fn draw(frame: &mut Frame<'_>, state: &RadioState, last_update: &str, session_summary: &str) {
+fn draw(
+    frame: &mut Frame<'_>,
+    state: &RadioState,
+    last_update: &str,
+    session_summary: &str,
+    status: &str,
+    command_input: &str,
+) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(8),
-            Constraint::Length(5),
+            Constraint::Length(10),
+            Constraint::Length(3),
         ])
         .split(frame.area());
 
     let title = Paragraph::new(Line::from(vec![
         Span::styled("radio-cat-rs TUI", Style::default().fg(Color::Cyan)),
-        Span::raw(format!("  {session_summary}  q quit")),
+        Span::raw(format!("  {session_summary}  ctrl-c/quit exit")),
     ]))
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(title, chunks[0]);
@@ -416,11 +416,15 @@ fn draw(frame: &mut Frame<'_>, state: &RadioState, last_update: &str, session_su
     frame.render_widget(body, chunks[1]);
 
     let help = Paragraph::new(format!(
-        "keys: f freq | m mode | p PTT | s split | r RIT | +/- RIT offset | k WPM | c send CW | x stop CW | n NR\nlast update: {last_update}"
+        "status: {status}\nlast update: {last_update}\nexamples: set-freq-main 14074000 | set-mode-main usb | set-rit-main on | set-offset 250 | send-cw CQ TEST\ncommands: help, refresh, set-*-main/sub/tx, set-ptt, set-split, set-xit, set-keyer-speed, stop-cw"
     ))
-    .block(Block::default().title("Commands").borders(Borders::ALL))
+    .block(Block::default().title("Command Help").borders(Borders::ALL))
     .wrap(Wrap { trim: false });
     frame.render_widget(help, chunks[2]);
+
+    let command = Paragraph::new(format!("> {command_input}"))
+        .block(Block::default().title("Command Line").borders(Borders::ALL));
+    frame.render_widget(command, chunks[3]);
 }
 
 fn format_state(state: &RadioState) -> String {
@@ -430,19 +434,30 @@ fn format_state(state: &RadioState) -> String {
 
     format!(
         "connection: {:?}\n\
-main rx: freq={} mode={} filter_bw={:?} filter_shift={:?} nr={:?}\n\
-sub rx:  freq={} mode={}\n\
+main rx: freq={} mode={} filter_bw={:?} filter_shift={:?} preamp={} attn={} nb={} nr={} autonotch={:?}\n\
+sub rx:  freq={} mode={} filter_bw={:?} filter_shift={:?} preamp={} attn={} nb={} nr={} autonotch={:?}\n\
 tx:      freq={} mode={} power={:?} ptt={:?} split={:?}\n\
-rit/xit: main_rit={:?} sub_rit={:?} xit={:?} offset={:?}\n\
+rit/xit: main_rit={:?} sub_rit={:?} xit={:?} main_offset={:?} sub_offset={:?}\n\
 keyer:   speed_wpm={:?} sending={:?}",
         state.connection,
         opt_freq(state.main_rx.frequency),
         opt_mode(state.main_rx.mode),
         state.main_rx.filter.bandwidth_hz,
         state.main_rx.filter.shift_hz,
-        state.main_rx.rf.noise_reduction,
+        opt_setting(state.main_rx.rf.preamp),
+        opt_setting(state.main_rx.rf.attenuator),
+        opt_setting(state.main_rx.rf.noise_blanker),
+        opt_setting(state.main_rx.rf.noise_reduction),
+        state.main_rx.rf.auto_notch,
         opt_freq(sub.and_then(|rx| rx.frequency)),
         opt_mode(sub.and_then(|rx| rx.mode)),
+        sub.and_then(|rx| rx.filter.bandwidth_hz),
+        sub.and_then(|rx| rx.filter.shift_hz),
+        opt_setting(sub.and_then(|rx| rx.rf.preamp)),
+        opt_setting(sub.and_then(|rx| rx.rf.attenuator)),
+        opt_setting(sub.and_then(|rx| rx.rf.noise_blanker)),
+        opt_setting(sub.and_then(|rx| rx.rf.noise_reduction)),
+        sub.and_then(|rx| rx.rf.auto_notch),
         opt_freq(tx.and_then(|tx| tx.frequency)),
         opt_mode(tx.and_then(|tx| tx.mode)),
         tx.and_then(|tx| tx.power),
@@ -452,6 +467,7 @@ keyer:   speed_wpm={:?} sending={:?}",
         state.rit_xit.sub_rit_enabled,
         state.rit_xit.xit_enabled,
         state.rit_xit.offset_hz.map(|offset| offset.as_hz()),
+        state.rit_xit.sub_offset_hz.map(|offset| offset.as_hz()),
         keyer.and_then(|keyer| keyer.speed_wpm),
         keyer.and_then(|keyer| keyer.sending),
     )
@@ -468,38 +484,308 @@ fn opt_mode(mode: Option<Mode>) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-async fn cycle_main_frequency(radio: &Radio, state: &RadioState) -> Result<(), Box<dyn Error>> {
-    let current = state.main_rx.frequency;
-    let next = match current.map(|frequency| frequency.hz()) {
-        Some(14_074_000) => Frequency::from_hz(7_074_000),
-        Some(7_074_000) => Frequency::from_hz(21_074_000),
-        _ => Frequency::from_hz(14_074_000),
-    };
-    radio.set_main_frequency(next).await?;
-    radio.set_tx_frequency(next).await?;
-    Ok(())
+fn opt_setting(setting: Option<LeveledSetting>) -> String {
+    match setting {
+        Some(LeveledSetting {
+            enabled: Some(false),
+            ..
+        }) => "off".to_string(),
+        Some(LeveledSetting {
+            enabled: Some(true),
+            level: Some(level),
+        }) => format!("on@{level}"),
+        Some(LeveledSetting {
+            enabled: Some(true),
+            level: None,
+        }) => "on".to_string(),
+        Some(LeveledSetting {
+            enabled: None,
+            level: Some(level),
+        }) => format!("level={level}"),
+        Some(LeveledSetting {
+            enabled: None,
+            level: None,
+        }) => "unknown".to_string(),
+        None => "n/a".to_string(),
+    }
 }
 
-async fn cycle_main_mode(radio: &Radio, state: &RadioState) -> Result<(), Box<dyn Error>> {
-    let current = state.main_rx.mode;
-    let next = match current {
-        Some(Mode::Usb) => Mode::Cw,
-        Some(Mode::Cw) => Mode::Am,
-        Some(Mode::Am) => Mode::Fm,
-        _ => Mode::Usb,
-    };
-    radio.set_main_mode(next).await?;
-    radio.set_tx_mode(next).await?;
-    Ok(())
+async fn execute_command(
+    radio: &Radio,
+    state: &RadioState,
+    line: &str,
+) -> Result<String, Box<dyn Error>> {
+    let mut parts = line.split_whitespace();
+    let command = parts
+        .next()
+        .ok_or_else(|| CliError("empty command".to_string()))?;
+
+    match command {
+        "help" => Ok(help_text()),
+        "refresh" => {
+            radio.refresh().await?;
+            Ok("refresh requested".to_string())
+        }
+        "set-freq-main" => {
+            let value = parse_frequency_arg(parts.next())?;
+            radio.set_main_frequency(value).await?;
+            Ok(format!("main frequency -> {}", value.hz()))
+        }
+        "set-freq-sub" => {
+            let value = parse_frequency_arg(parts.next())?;
+            radio.set_sub_frequency(value).await?;
+            Ok(format!("sub frequency -> {}", value.hz()))
+        }
+        "set-freq-tx" => {
+            let value = parse_frequency_arg(parts.next())?;
+            radio.set_tx_frequency(value).await?;
+            Ok(format!("tx frequency -> {}", value.hz()))
+        }
+        "set-mode-main" => {
+            let value = parse_mode_arg(parts.next())?;
+            radio.set_main_mode(value).await?;
+            Ok(format!("main mode -> {value}"))
+        }
+        "set-mode-sub" => {
+            let value = parse_mode_arg(parts.next())?;
+            radio.set_sub_mode(value).await?;
+            Ok(format!("sub mode -> {value}"))
+        }
+        "set-mode-tx" => {
+            let value = parse_mode_arg(parts.next())?;
+            radio.set_tx_mode(value).await?;
+            Ok(format!("tx mode -> {value}"))
+        }
+        "set-filter-bw-main" => {
+            let value = parse_u16_arg(parts.next(), "bandwidth_hz")?;
+            radio.set_main_filter_bandwidth(value).await?;
+            Ok(format!("main bandwidth -> {value}"))
+        }
+        "set-filter-bw-sub" => {
+            let value = parse_u16_arg(parts.next(), "bandwidth_hz")?;
+            radio.set_sub_filter_bandwidth(value).await?;
+            Ok(format!("sub bandwidth -> {value}"))
+        }
+        "set-filter-shift-main" => {
+            let value = parse_i16_arg(parts.next(), "shift_hz")?;
+            radio.set_main_filter_shift(value).await?;
+            Ok(format!("main filter shift -> {value}"))
+        }
+        "set-filter-shift-sub" => {
+            let value = parse_i16_arg(parts.next(), "shift_hz")?;
+            radio.set_sub_filter_shift(value).await?;
+            Ok(format!("sub filter shift -> {value}"))
+        }
+        "set-preamp-main" => {
+            let value = parse_leveled_setting_arg(parts.next())?;
+            radio.set_main_preamp(value).await?;
+            Ok("main preamp updated".to_string())
+        }
+        "set-preamp-sub" => {
+            let value = parse_leveled_setting_arg(parts.next())?;
+            radio.set_sub_preamp(value).await?;
+            Ok("sub preamp updated".to_string())
+        }
+        "set-attenuator-main" | "set-attn-main" => {
+            let value = parse_leveled_setting_arg(parts.next())?;
+            radio.set_main_attenuator(value).await?;
+            Ok("main attenuator updated".to_string())
+        }
+        "set-attenuator-sub" | "set-attn-sub" => {
+            let value = parse_leveled_setting_arg(parts.next())?;
+            radio.set_sub_attenuator(value).await?;
+            Ok("sub attenuator updated".to_string())
+        }
+        "set-nb-main" => {
+            let value = parse_leveled_setting_arg(parts.next())?;
+            radio.set_main_noise_blanker(value).await?;
+            Ok("main noise blanker updated".to_string())
+        }
+        "set-nb-sub" => {
+            let value = parse_leveled_setting_arg(parts.next())?;
+            radio.set_sub_noise_blanker(value).await?;
+            Ok("sub noise blanker updated".to_string())
+        }
+        "set-nr-main" => {
+            let value = parse_leveled_setting_arg(parts.next())?;
+            radio.set_main_noise_reduction(value).await?;
+            Ok("main noise reduction updated".to_string())
+        }
+        "set-nr-sub" => {
+            let value = parse_leveled_setting_arg(parts.next())?;
+            radio.set_sub_noise_reduction(value).await?;
+            Ok("sub noise reduction updated".to_string())
+        }
+        "set-an-main" => {
+            let value = parse_bool_arg(parts.next(), "enabled")?;
+            radio.set_main_auto_notch(value).await?;
+            Ok(format!("main auto notch -> {value}"))
+        }
+        "set-an-sub" => {
+            let value = parse_bool_arg(parts.next(), "enabled")?;
+            radio.set_sub_auto_notch(value).await?;
+            Ok(format!("sub auto notch -> {value}"))
+        }
+        "set-ptt" => {
+            let value = parse_bool_arg(parts.next(), "enabled")?;
+            radio.set_ptt(value).await?;
+            Ok(format!("ptt -> {value}"))
+        }
+        "set-split" => {
+            let value = parse_bool_arg(parts.next(), "enabled")?;
+            radio.set_split(value).await?;
+            Ok(format!("split -> {value}"))
+        }
+        "set-rit-main" => {
+            let value = parse_bool_arg(parts.next(), "enabled")?;
+            radio.set_main_rit_enabled(value).await?;
+            Ok(format!("main rit -> {value}"))
+        }
+        "set-rit-sub" => {
+            let value = parse_bool_arg(parts.next(), "enabled")?;
+            radio.set_sub_rit_enabled(value).await?;
+            Ok(format!("sub rit -> {value}"))
+        }
+        "set-xit" => {
+            let value = parse_bool_arg(parts.next(), "enabled")?;
+            radio.set_xit_enabled(value).await?;
+            Ok(format!("xit -> {value}"))
+        }
+        "set-offset" | "set-offset-main" => {
+            let value = parse_i16_arg(parts.next(), "offset_hz")?;
+            let value = value.clamp(RitXitOffsetHz::MIN, RitXitOffsetHz::MAX);
+            radio.set_main_rit_offset(RitXitOffsetHz::new(value)?).await?;
+            Ok(format!("main rit offset -> {value}"))
+        }
+        "set-offset-sub" => {
+            let value = parse_i16_arg(parts.next(), "offset_hz")?;
+            let value = value.clamp(RitXitOffsetHz::MIN, RitXitOffsetHz::MAX);
+            radio.set_sub_rit_offset(RitXitOffsetHz::new(value)?).await?;
+            Ok(format!("sub rit offset -> {value}"))
+        }
+        "set-keyer-speed" => {
+            let value = parse_u8_arg(parts.next(), "wpm")?;
+            radio.set_keyer_speed(value).await?;
+            Ok(format!("keyer speed -> {value}"))
+        }
+        "send-cw" => {
+            let text = line
+                .strip_prefix("send-cw")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| CliError("send-cw requires text".to_string()))?;
+            radio.send_cw(text).await?;
+            Ok(format!("sending cw: {text}"))
+        }
+        "stop-cw" => {
+            radio.stop_cw().await?;
+            Ok("stop cw requested".to_string())
+        }
+        "status" => Ok(format_state(state)),
+        other => Err(Box::new(CliError(format!("unknown command: {other}")))),
+    }
 }
 
-async fn bump_rit(radio: &Radio, state: &RadioState, delta: i16) -> Result<(), Box<dyn Error>> {
-    let current = state
-        .rit_xit
-        .offset_hz
-        .map(|offset| offset.as_hz())
-        .unwrap_or(0);
-    let next = (current + delta).clamp(RitXitOffsetHz::MIN, RitXitOffsetHz::MAX);
-    radio.set_rit_xit_offset(RitXitOffsetHz::new(next)?).await?;
-    Ok(())
+fn parse_frequency_arg(value: Option<&str>) -> Result<Frequency, Box<dyn Error>> {
+    let value = parse_u64_arg(value, "frequency_hz")?;
+    Ok(Frequency::from_hz(value))
+}
+
+fn parse_mode_arg(value: Option<&str>) -> Result<Mode, Box<dyn Error>> {
+    let value = value.ok_or_else(|| CliError("missing mode".to_string()))?;
+    Ok(Mode::from_str(value)?)
+}
+
+fn parse_bool_arg(value: Option<&str>, field: &str) -> Result<bool, Box<dyn Error>> {
+    let value = value.ok_or_else(|| CliError(format!("missing {field}")))?;
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" | "yes" | "enable" | "enabled" => Ok(true),
+        "0" | "false" | "off" | "no" | "disable" | "disabled" => Ok(false),
+        _ => Err(Box::new(CliError(format!("invalid {field}: {value}")))),
+    }
+}
+
+fn parse_leveled_setting_arg(value: Option<&str>) -> Result<LeveledSetting, Box<dyn Error>> {
+    let value = value.ok_or_else(|| CliError("missing setting".to_string()))?;
+    match value.to_ascii_lowercase().as_str() {
+        "off" | "false" | "0" => Ok(LeveledSetting::disabled()),
+        "on" | "true" => Ok(LeveledSetting::enabled(1)),
+        _ => {
+            let level = value
+                .parse::<u8>()
+                .map_err(|_| CliError(format!("invalid leveled setting: {value}")))?;
+            Ok(LeveledSetting::enabled(level))
+        }
+    }
+}
+
+fn parse_u8_arg(value: Option<&str>, field: &str) -> Result<u8, Box<dyn Error>> {
+    value
+        .ok_or_else(|| CliError(format!("missing {field}")))?
+        .parse::<u8>()
+        .map_err(|_| Box::new(CliError(format!("invalid {field}"))) as Box<dyn Error>)
+}
+
+fn parse_u16_arg(value: Option<&str>, field: &str) -> Result<u16, Box<dyn Error>> {
+    value
+        .ok_or_else(|| CliError(format!("missing {field}")))?
+        .parse::<u16>()
+        .map_err(|_| Box::new(CliError(format!("invalid {field}"))) as Box<dyn Error>)
+}
+
+fn parse_u64_arg(value: Option<&str>, field: &str) -> Result<u64, Box<dyn Error>> {
+    value
+        .ok_or_else(|| CliError(format!("missing {field}")))?
+        .parse::<u64>()
+        .map_err(|_| Box::new(CliError(format!("invalid {field}"))) as Box<dyn Error>)
+}
+
+fn parse_i16_arg(value: Option<&str>, field: &str) -> Result<i16, Box<dyn Error>> {
+    value
+        .ok_or_else(|| CliError(format!("missing {field}")))?
+        .parse::<i16>()
+        .map_err(|_| Box::new(CliError(format!("invalid {field}"))) as Box<dyn Error>)
+}
+
+fn help_text() -> String {
+    [
+        "help",
+        "refresh",
+        "status",
+        "set-freq-main <hz>",
+        "set-freq-sub <hz>",
+        "set-freq-tx <hz>",
+        "set-mode-main <mode>",
+        "set-mode-sub <mode>",
+        "set-mode-tx <mode>",
+        "set-filter-bw-main <hz>",
+        "set-filter-bw-sub <hz>",
+        "set-filter-shift-main <hz>",
+        "set-filter-shift-sub <hz>",
+        "set-preamp-main <off|on|level>",
+        "set-preamp-sub <off|on|level>",
+        "set-attenuator-main <off|on|level>",
+        "set-attenuator-sub <off|on|level>",
+        "set-attn-main <off|on|level>",
+        "set-attn-sub <off|on|level>",
+        "set-nb-main <off|on|level>",
+        "set-nb-sub <off|on|level>",
+        "set-nr-main <off|on|level>",
+        "set-nr-sub <off|on|level>",
+        "set-an-main <on|off>",
+        "set-an-sub <on|off>",
+        "set-ptt <on|off>",
+        "set-split <on|off>",
+        "set-rit-main <on|off>",
+        "set-rit-sub <on|off>",
+        "set-xit <on|off>",
+        "set-offset <hz>",
+        "set-offset-main <hz>",
+        "set-offset-sub <hz>",
+        "set-keyer-speed <wpm>",
+        "send-cw <text>",
+        "stop-cw",
+        "quit",
+    ]
+    .join(" | ")
 }
