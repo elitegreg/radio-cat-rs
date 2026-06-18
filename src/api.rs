@@ -604,6 +604,18 @@ mod tests {
             .any(|driver| driver.id == "icom-ic705"));
         assert!(supported_drivers()
             .iter()
+            .any(|driver| driver.id == "icom-ic7300"));
+        assert!(supported_drivers()
+            .iter()
+            .any(|driver| driver.id == "icom-ic7100"));
+        assert!(supported_drivers()
+            .iter()
+            .any(|driver| driver.id == "icom-ic7610"));
+        assert!(supported_drivers()
+            .iter()
+            .any(|driver| driver.id == "icom-ic7760"));
+        assert!(supported_drivers()
+            .iter()
             .any(|driver| driver.id == "flexradio-smartsdr"));
 
         let radio = Radio::connect(RadioConfig::dummy()).await.unwrap();

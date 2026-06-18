@@ -11,6 +11,7 @@ use super::{CivFrame, IcomCivOptions, IcomCivProfile, ResponseMatcher};
 pub struct EncodedCommand {
     pub frames: Vec<CivFrame>,
     pub matcher: ResponseMatcher,
+    pub response_receiver: Option<ReceiverPath>,
     pub optimistic: Vec<StatePatch>,
 }
 
@@ -18,11 +19,13 @@ impl EncodedCommand {
     pub fn new(
         frames: Vec<CivFrame>,
         matcher: ResponseMatcher,
+        response_receiver: Option<ReceiverPath>,
         optimistic: Vec<StatePatch>,
     ) -> Self {
         Self {
             frames,
             matcher,
+            response_receiver,
             optimistic,
         }
     }
@@ -60,6 +63,7 @@ pub fn encode(
             frequency_patches(*receiver, *frequency, state),
         )?)),
         RadioCommand::SetReceiverMode { receiver, mode } => Ok(Some(set_vfo_mode(
+            profile,
             options,
             receiver_selector(*receiver),
             *mode,
@@ -69,6 +73,7 @@ pub fn encode(
             receiver,
             bandwidth_hz,
         } => {
+            require_receiver_capability(profile, *receiver, "receiver.filter_bandwidth")?;
             require_main_receiver(*receiver, "receiver.filter_bandwidth")?;
             Ok(Some(set_filter_bandwidth(options, *bandwidth_hz, state)?))
         }
@@ -76,38 +81,55 @@ pub fn encode(
             capability: "receiver.filter_shift",
         }),
         RadioCommand::SetReceiverPreamp { receiver, setting } => {
-            require_main_receiver(*receiver, "receiver.preamp")?;
-            Ok(Some(set_preamp(options, *setting)?))
+            require_receiver_capability(profile, *receiver, "receiver.preamp")?;
+            Ok(Some(set_preamp(profile, options, *receiver, *setting)?))
         }
         RadioCommand::SetReceiverAttenuator { receiver, setting } => {
-            require_main_receiver(*receiver, "receiver.attenuator")?;
-            Ok(Some(set_attenuator(options, *setting)?))
+            require_receiver_capability(profile, *receiver, "receiver.attenuator")?;
+            Ok(Some(set_attenuator(profile, options, *receiver, *setting)?))
         }
         RadioCommand::SetReceiverNoiseBlanker { receiver, setting } => {
-            require_main_receiver(*receiver, "receiver.noise_blanker")?;
-            Ok(Some(set_bool_level(
+            require_receiver_capability(profile, *receiver, "receiver.noise_blanker")?;
+            Ok(Some(set_receiver_bool(
+                profile,
                 options,
+                *receiver,
                 &[0x16, 0x22],
                 setting_enabled(*setting),
-                vec![StatePatch::MainRxNoiseBlanker(bool_level_patch(*setting))],
+                bool_level_patch(*setting),
+                receiver_rf_patch(
+                    *receiver,
+                    ReceiverRfField::NoiseBlanker,
+                    bool_level_patch(*setting),
+                ),
             )?))
         }
         RadioCommand::SetReceiverNoiseReduction { receiver, setting } => {
-            require_main_receiver(*receiver, "receiver.noise_reduction")?;
-            Ok(Some(set_bool_level(
+            require_receiver_capability(profile, *receiver, "receiver.noise_reduction")?;
+            Ok(Some(set_receiver_bool(
+                profile,
                 options,
+                *receiver,
                 &[0x16, 0x40],
                 setting_enabled(*setting),
-                vec![StatePatch::MainRxNoiseReduction(bool_level_patch(*setting))],
+                bool_level_patch(*setting),
+                receiver_rf_patch(
+                    *receiver,
+                    ReceiverRfField::NoiseReduction,
+                    bool_level_patch(*setting),
+                ),
             )?))
         }
         RadioCommand::SetReceiverAutoNotch { receiver, enabled } => {
-            require_main_receiver(*receiver, "receiver.auto_notch")?;
-            Ok(Some(set_bool_level(
+            require_receiver_capability(profile, *receiver, "receiver.auto_notch")?;
+            Ok(Some(set_receiver_bool(
+                profile,
                 options,
+                *receiver,
                 &[0x16, 0x41],
                 *enabled,
-                vec![StatePatch::MainRxAutoNotch(*enabled)],
+                *enabled,
+                receiver_auto_notch_patch(*receiver, *enabled),
             )?))
         }
         RadioCommand::SetTxFrequency(frequency) => {
@@ -122,6 +144,7 @@ pub fn encode(
         RadioCommand::SetTxMode(mode) => {
             let receiver = tx_receiver_from_state(state);
             Ok(Some(set_vfo_mode(
+                profile,
                 options,
                 receiver_selector(receiver),
                 *mode,
@@ -140,18 +163,22 @@ pub fn encode(
                 vec![StatePatch::MainRitEnabled(*enabled)],
             )?))
         }
-        RadioCommand::SetXitEnabled(enabled) => Ok(Some(set_bool_level(
-            options,
-            &[0x21, 0x02],
-            *enabled,
-            vec![StatePatch::XitEnabled(*enabled)],
-        )?)),
+        RadioCommand::SetXitEnabled(enabled) => {
+            require_xit(profile)?;
+            Ok(Some(set_bool_level(
+                options,
+                &[0x21, 0x02],
+                *enabled,
+                vec![StatePatch::XitEnabled(*enabled)],
+            )?))
+        }
         RadioCommand::SetRitOffset { receiver, offset } => {
             require_main_receiver(*receiver, "rit.offset")?;
-            Ok(Some(set_rit_offset(options, *offset)?))
+            Ok(Some(set_rit_offset(profile, options, *offset, false)?))
         }
         RadioCommand::SetXitOffset(offset) | RadioCommand::SetRitXitOffset(offset) => {
-            Ok(Some(set_rit_offset(options, *offset)?))
+            require_xit(profile)?;
+            Ok(Some(set_rit_offset(profile, options, *offset, true)?))
         }
         RadioCommand::SetKeyerSpeed(wpm) => Ok(Some(set_keyer_speed(options, *wpm)?)),
         RadioCommand::SendCw(text) => Ok(Some(send_cw(options, text)?)),
@@ -161,120 +188,191 @@ pub fn encode(
 }
 
 pub fn encode_query(
+    profile: &IcomCivProfile,
     options: IcomCivOptions,
     semantic: &'static str,
 ) -> Result<Option<EncodedCommand>> {
-    let (payload, matcher) = match semantic {
-        "freq-main" => (
+    let encoded = match semantic {
+        "freq-main" => query(
+            options,
             vec![0x25, 0x00],
             ResponseMatcher::PayloadPrefix(vec![0x25, 0x00]),
         ),
-        "freq-sub" => (
+        "freq-sub" => query(
+            options,
             vec![0x25, 0x01],
             ResponseMatcher::PayloadPrefix(vec![0x25, 0x01]),
         ),
-        "mode-main" => (
+        "mode-main" => query(
+            options,
             vec![0x26, 0x00],
             ResponseMatcher::PayloadPrefix(vec![0x26, 0x00]),
         ),
-        "mode-sub" => (
+        "mode-sub" => query(
+            options,
             vec![0x26, 0x01],
             ResponseMatcher::PayloadPrefix(vec![0x26, 0x01]),
         ),
-        "tx-frequency" => (
+        "tx-frequency" => query(
+            options,
             vec![0x1c, 0x03],
             ResponseMatcher::PayloadPrefix(vec![0x1c, 0x03]),
         ),
-        "ptt" => (
+        "ptt" => query(
+            options,
             vec![0x1c, 0x00],
             ResponseMatcher::PayloadPrefix(vec![0x1c, 0x00]),
         ),
-        "split" => (vec![0x0f], ResponseMatcher::PayloadPrefix(vec![0x0f])),
-        "rit-offset" => (
+        "split" => query(
+            options,
+            vec![0x0f],
+            ResponseMatcher::PayloadPrefix(vec![0x0f]),
+        ),
+        "rit-offset" => query(
+            options,
             vec![0x21, 0x00],
             ResponseMatcher::PayloadPrefix(vec![0x21, 0x00]),
         ),
-        "rit" => (
+        "rit" => query(
+            options,
             vec![0x21, 0x01],
             ResponseMatcher::PayloadPrefix(vec![0x21, 0x01]),
         ),
-        "xit" => (
+        "xit" if profile.capabilities.rit_xit.xit_enabled.can_read() => query(
+            options,
             vec![0x21, 0x02],
             ResponseMatcher::PayloadPrefix(vec![0x21, 0x02]),
         ),
-        "filter-bandwidth" => (
+        "filter-bandwidth" if profile.capabilities.main_rx.filter_bandwidth.can_read() => query(
+            options,
             vec![0x1a, 0x03],
             ResponseMatcher::PayloadPrefix(vec![0x1a, 0x03]),
         ),
-        "preamp" => (
-            vec![0x16, 0x02],
-            ResponseMatcher::PayloadPrefix(vec![0x16, 0x02]),
-        ),
-        "attenuator" => (vec![0x11], ResponseMatcher::PayloadPrefix(vec![0x11])),
-        "noise-blanker" => (
-            vec![0x16, 0x22],
-            ResponseMatcher::PayloadPrefix(vec![0x16, 0x22]),
-        ),
-        "noise-reduction" => (
-            vec![0x16, 0x40],
-            ResponseMatcher::PayloadPrefix(vec![0x16, 0x40]),
-        ),
-        "auto-notch" => (
-            vec![0x16, 0x41],
-            ResponseMatcher::PayloadPrefix(vec![0x16, 0x41]),
-        ),
-        "tx-power" => (
+        "preamp-main" if profile.capabilities.main_rx.rf.preamp.can_read() => {
+            receiver_query(profile, options, ReceiverPath::Main, vec![0x16, 0x02])
+        }
+        "preamp-sub"
+            if receiver_capabilities(profile, ReceiverPath::Sub)
+                .rf
+                .preamp
+                .can_read() =>
+        {
+            receiver_query(profile, options, ReceiverPath::Sub, vec![0x16, 0x02])
+        }
+        "attenuator-main" if profile.capabilities.main_rx.rf.attenuator.can_read() => {
+            receiver_query(profile, options, ReceiverPath::Main, vec![0x11])
+        }
+        "attenuator-sub"
+            if receiver_capabilities(profile, ReceiverPath::Sub)
+                .rf
+                .attenuator
+                .can_read() =>
+        {
+            receiver_query(profile, options, ReceiverPath::Sub, vec![0x11])
+        }
+        "noise-blanker-main" if profile.capabilities.main_rx.rf.noise_blanker.can_read() => {
+            receiver_query(profile, options, ReceiverPath::Main, vec![0x16, 0x22])
+        }
+        "noise-blanker-sub"
+            if receiver_capabilities(profile, ReceiverPath::Sub)
+                .rf
+                .noise_blanker
+                .can_read() =>
+        {
+            receiver_query(profile, options, ReceiverPath::Sub, vec![0x16, 0x22])
+        }
+        "noise-reduction-main" if profile.capabilities.main_rx.rf.noise_reduction.can_read() => {
+            receiver_query(profile, options, ReceiverPath::Main, vec![0x16, 0x40])
+        }
+        "noise-reduction-sub"
+            if receiver_capabilities(profile, ReceiverPath::Sub)
+                .rf
+                .noise_reduction
+                .can_read() =>
+        {
+            receiver_query(profile, options, ReceiverPath::Sub, vec![0x16, 0x40])
+        }
+        "auto-notch-main" if profile.capabilities.main_rx.rf.auto_notch.can_read() => {
+            receiver_query(profile, options, ReceiverPath::Main, vec![0x16, 0x41])
+        }
+        "auto-notch-sub"
+            if receiver_capabilities(profile, ReceiverPath::Sub)
+                .rf
+                .auto_notch
+                .can_read() =>
+        {
+            receiver_query(profile, options, ReceiverPath::Sub, vec![0x16, 0x41])
+        }
+        "tx-power" => query(
+            options,
             vec![0x14, 0x0a],
             ResponseMatcher::PayloadPrefix(vec![0x14, 0x0a]),
         ),
-        "keyer-speed" => (
+        "keyer-speed" => query(
+            options,
             vec![0x14, 0x0c],
             ResponseMatcher::PayloadPrefix(vec![0x14, 0x0c]),
         ),
         _ => return Ok(None),
-    };
+    }?;
 
-    Ok(Some(EncodedCommand::new(
-        vec![frame(options, payload)?],
-        matcher,
-        Vec::new(),
-    )))
+    Ok(Some(encoded))
 }
 
 pub fn decode(
     profile: &IcomCivProfile,
     frame: &CivFrame,
     state: &RadioState,
+    receiver_hint: Option<ReceiverPath>,
 ) -> Result<Option<DecodedFrame>> {
     let payload = frame.payload();
     let patches = match payload {
+        [0x29, target, inner @ ..] if profile.supports_command_29 => {
+            let receiver = selector_receiver(*target)?;
+            return decode(
+                profile,
+                &CivFrame::new(frame.to(), frame.from(), inner.to_vec())?,
+                state,
+                Some(receiver),
+            );
+        }
         [0x25, selector, freq @ ..] => decode_vfo_frequency(*selector, freq, state)?,
         [0x26, selector, mode, data_mode, _filter] => {
-            decode_vfo_mode(*selector, *mode, *data_mode, state)?
+            decode_vfo_mode(profile, *selector, *mode, *data_mode, state)?
         }
         [0x1c, 0x03, freq @ ..] => vec![StatePatch::TxFrequency(Frequency::from_hz(
             decode_frequency_bcd(freq)?,
         ))],
         [0x1c, 0x00, value] => vec![StatePatch::Transmitting(decode_bool(*value, "PTT")?)],
-        [0x0f, value] => vec![StatePatch::Split(matches!(*value, 0x01))],
-        [0x21, 0x00, data @ ..] => vec![StatePatch::RitXitOffset(decode_rit_offset(data)?)],
+        [0x0f, value] => vec![StatePatch::Split(matches!(*value, 0x01 | 0x11 | 0x12))],
+        [0x21, 0x00, data @ ..] => vec![decode_rit_offset_patch(profile, decode_rit_offset(data)?)],
         [0x21, 0x01, value] => vec![StatePatch::MainRitEnabled(decode_bool(*value, "RIT")?)],
         [0x21, 0x02, value] => vec![StatePatch::XitEnabled(decode_bool(*value, "XIT")?)],
         [0x1a, 0x03, value] => decode_filter_bandwidth(*value, state)?,
-        [0x16, 0x02, value] => vec![StatePatch::MainRxPreamp(decode_preamp(*value)?)],
-        [0x11, value] => vec![StatePatch::MainRxAttenuator(decode_attenuator(*value)?)],
-        [0x16, 0x22, value] => vec![StatePatch::MainRxNoiseBlanker(decode_bool_level(
-            *value,
-            "noise-blanker",
-        )?)],
-        [0x16, 0x40, value] => vec![StatePatch::MainRxNoiseReduction(decode_bool_level(
-            *value,
-            "noise-reduction",
-        )?)],
-        [0x16, 0x41, value] => vec![StatePatch::MainRxAutoNotch(decode_bool(
-            *value,
-            "auto-notch",
-        )?)],
+        [0x16, 0x02, value] => vec![receiver_rf_patch(
+            receiver_hint.unwrap_or(ReceiverPath::Main),
+            ReceiverRfField::Preamp,
+            decode_preamp(*value)?,
+        )],
+        [0x11, value] => vec![receiver_rf_patch(
+            receiver_hint.unwrap_or(ReceiverPath::Main),
+            ReceiverRfField::Attenuator,
+            decode_attenuator(profile, *value)?,
+        )],
+        [0x16, 0x22, value] => vec![receiver_rf_patch(
+            receiver_hint.unwrap_or(ReceiverPath::Main),
+            ReceiverRfField::NoiseBlanker,
+            decode_bool_level(*value, "noise-blanker")?,
+        )],
+        [0x16, 0x40, value] => vec![receiver_rf_patch(
+            receiver_hint.unwrap_or(ReceiverPath::Main),
+            ReceiverRfField::NoiseReduction,
+            decode_bool_level(*value, "noise-reduction")?,
+        )],
+        [0x16, 0x41, value] => vec![receiver_auto_notch_patch(
+            receiver_hint.unwrap_or(ReceiverPath::Main),
+            decode_bool(*value, "auto-notch")?,
+        )],
         [0x14, 0x0a, raw @ ..] => vec![StatePatch::TxPower(raw_to_power(
             profile,
             decode_bcd_decimal_0000_0255(raw)?,
@@ -288,6 +386,169 @@ pub fn decode(
     Ok(Some(DecodedFrame::new(patches)))
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ReceiverRfField {
+    Preamp,
+    Attenuator,
+    NoiseBlanker,
+    NoiseReduction,
+}
+
+fn query(
+    options: IcomCivOptions,
+    payload: Vec<u8>,
+    matcher: ResponseMatcher,
+) -> Result<EncodedCommand> {
+    Ok(EncodedCommand::new(
+        vec![frame(options, payload)?],
+        matcher,
+        None,
+        Vec::new(),
+    ))
+}
+
+fn receiver_query(
+    profile: &IcomCivProfile,
+    options: IcomCivOptions,
+    receiver: ReceiverPath,
+    payload: Vec<u8>,
+) -> Result<EncodedCommand> {
+    if profile.supports_command_29 {
+        let wrapped = wrap_command_29(receiver, payload.clone());
+        return Ok(EncodedCommand::new(
+            vec![frame(options, wrapped.clone())?],
+            ResponseMatcher::OneOf(vec![wrapped, payload]),
+            Some(receiver),
+            Vec::new(),
+        ));
+    }
+
+    require_main_receiver(receiver, "receiver")?;
+    query(
+        options,
+        payload.clone(),
+        ResponseMatcher::PayloadPrefix(payload),
+    )
+}
+
+fn wrap_command_29(receiver: ReceiverPath, payload: Vec<u8>) -> Vec<u8> {
+    let mut wrapped = vec![0x29, receiver_selector(receiver)];
+    wrapped.extend_from_slice(&payload);
+    wrapped
+}
+
+fn set_receiver_value(
+    profile: &IcomCivProfile,
+    options: IcomCivOptions,
+    receiver: ReceiverPath,
+    command: &[u8],
+    value: u8,
+    optimistic: StatePatch,
+) -> Result<EncodedCommand> {
+    let mut payload = command.to_vec();
+    payload.push(value);
+
+    let frame_payload = if profile.supports_command_29 {
+        wrap_command_29(receiver, payload)
+    } else {
+        require_main_receiver(receiver, "receiver")?;
+        payload
+    };
+
+    Ok(EncodedCommand::new(
+        vec![frame(options, frame_payload)?],
+        ResponseMatcher::Ack,
+        Some(receiver),
+        vec![optimistic],
+    ))
+}
+
+fn require_receiver_capability(
+    profile: &IcomCivProfile,
+    receiver: ReceiverPath,
+    capability: &'static str,
+) -> Result<()> {
+    let supported = match capability {
+        "receiver.filter_bandwidth" => receiver_capabilities(profile, receiver).filter_bandwidth,
+        "receiver.preamp" => receiver_capabilities(profile, receiver).rf.preamp,
+        "receiver.attenuator" => receiver_capabilities(profile, receiver).rf.attenuator,
+        "receiver.noise_blanker" => receiver_capabilities(profile, receiver).rf.noise_blanker,
+        "receiver.noise_reduction" => receiver_capabilities(profile, receiver).rf.noise_reduction,
+        "receiver.auto_notch" => receiver_capabilities(profile, receiver).rf.auto_notch,
+        _ => {
+            return Err(RadioError::UnsupportedCapability { capability });
+        }
+    };
+
+    if supported.can_write() {
+        Ok(())
+    } else {
+        Err(RadioError::UnsupportedCapability { capability })
+    }
+}
+
+fn receiver_capabilities(
+    profile: &IcomCivProfile,
+    receiver: ReceiverPath,
+) -> &crate::ReceiverCapabilities {
+    match receiver {
+        ReceiverPath::Main => &profile.capabilities.main_rx,
+        ReceiverPath::Sub => profile
+            .capabilities
+            .sub_rx
+            .as_ref()
+            .unwrap_or(&profile.capabilities.main_rx),
+    }
+}
+
+fn require_xit(profile: &IcomCivProfile) -> Result<()> {
+    if profile.capabilities.rit_xit.xit_enabled.can_write() {
+        Ok(())
+    } else {
+        Err(RadioError::UnsupportedCapability {
+            capability: "rit_xit.xit_enabled",
+        })
+    }
+}
+
+fn receiver_rf_patch(
+    receiver: ReceiverPath,
+    field: ReceiverRfField,
+    value: LeveledSetting,
+) -> StatePatch {
+    match (receiver, field) {
+        (ReceiverPath::Main, ReceiverRfField::Preamp) => StatePatch::MainRxPreamp(value),
+        (ReceiverPath::Sub, ReceiverRfField::Preamp) => StatePatch::SubRxPreamp(value),
+        (ReceiverPath::Main, ReceiverRfField::Attenuator) => StatePatch::MainRxAttenuator(value),
+        (ReceiverPath::Sub, ReceiverRfField::Attenuator) => StatePatch::SubRxAttenuator(value),
+        (ReceiverPath::Main, ReceiverRfField::NoiseBlanker) => {
+            StatePatch::MainRxNoiseBlanker(value)
+        }
+        (ReceiverPath::Sub, ReceiverRfField::NoiseBlanker) => StatePatch::SubRxNoiseBlanker(value),
+        (ReceiverPath::Main, ReceiverRfField::NoiseReduction) => {
+            StatePatch::MainRxNoiseReduction(value)
+        }
+        (ReceiverPath::Sub, ReceiverRfField::NoiseReduction) => {
+            StatePatch::SubRxNoiseReduction(value)
+        }
+    }
+}
+
+fn receiver_auto_notch_patch(receiver: ReceiverPath, enabled: bool) -> StatePatch {
+    match receiver {
+        ReceiverPath::Main => StatePatch::MainRxAutoNotch(enabled),
+        ReceiverPath::Sub => StatePatch::SubRxAutoNotch(enabled),
+    }
+}
+
+fn decode_rit_offset_patch(profile: &IcomCivProfile, offset: RitXitOffsetHz) -> StatePatch {
+    if profile.capabilities.rit_xit.xit_enabled.can_read() {
+        StatePatch::RitXitOffset(offset)
+    } else {
+        StatePatch::RitOffset(offset)
+    }
+}
+
 fn set_vfo_frequency(
     options: IcomCivOptions,
     selector: u8,
@@ -299,23 +560,26 @@ fn set_vfo_frequency(
     Ok(EncodedCommand::new(
         vec![frame(options, payload)?],
         ResponseMatcher::Ack,
+        None,
         optimistic,
     ))
 }
 
 fn set_vfo_mode(
+    profile: &IcomCivProfile,
     options: IcomCivOptions,
     selector: u8,
     mode: Mode,
     optimistic: Vec<StatePatch>,
 ) -> Result<EncodedCommand> {
-    let (mode_byte, data_mode) = encode_mode(mode)?;
+    let (mode_byte, data_mode) = encode_mode(profile, mode)?;
     Ok(EncodedCommand::new(
         vec![frame(
             options,
             vec![0x26, selector, mode_byte, data_mode, options.mode_filter],
         )?],
         ResponseMatcher::Ack,
+        None,
         optimistic,
     ))
 }
@@ -331,11 +595,17 @@ fn set_filter_bandwidth(
     Ok(EncodedCommand::new(
         vec![frame(options, vec![0x1a, 0x03, encode_bcd_byte(code)?])?],
         ResponseMatcher::Ack,
+        None,
         vec![StatePatch::MainRxFilterBandwidth(actual)],
     ))
 }
 
-fn set_preamp(options: IcomCivOptions, setting: LeveledSetting) -> Result<EncodedCommand> {
+fn set_preamp(
+    profile: &IcomCivProfile,
+    options: IcomCivOptions,
+    receiver: ReceiverPath,
+    setting: LeveledSetting,
+) -> Result<EncodedCommand> {
     let value = if setting.enabled == Some(false) {
         0x00
     } else {
@@ -352,20 +622,35 @@ fn set_preamp(options: IcomCivOptions, setting: LeveledSetting) -> Result<Encode
         }
     };
 
-    Ok(EncodedCommand::new(
-        vec![frame(options, vec![0x16, 0x02, value])?],
-        ResponseMatcher::Ack,
-        vec![StatePatch::MainRxPreamp(decode_preamp(value)?)],
-    ))
+    set_receiver_value(
+        profile,
+        options,
+        receiver,
+        &[0x16, 0x02],
+        value,
+        receiver_rf_patch(receiver, ReceiverRfField::Preamp, decode_preamp(value)?),
+    )
 }
 
-fn set_attenuator(options: IcomCivOptions, setting: LeveledSetting) -> Result<EncodedCommand> {
-    let value = if setting_enabled(setting) { 0x20 } else { 0x00 };
-    Ok(EncodedCommand::new(
-        vec![frame(options, vec![0x11, value])?],
-        ResponseMatcher::Ack,
-        vec![StatePatch::MainRxAttenuator(decode_attenuator(value)?)],
-    ))
+fn set_attenuator(
+    profile: &IcomCivProfile,
+    options: IcomCivOptions,
+    receiver: ReceiverPath,
+    setting: LeveledSetting,
+) -> Result<EncodedCommand> {
+    let value = encode_attenuator(profile, setting)?;
+    set_receiver_value(
+        profile,
+        options,
+        receiver,
+        &[0x11],
+        value,
+        receiver_rf_patch(
+            receiver,
+            ReceiverRfField::Attenuator,
+            decode_attenuator(profile, value)?,
+        ),
+    )
 }
 
 fn set_bool_level(
@@ -379,8 +664,22 @@ fn set_bool_level(
     Ok(EncodedCommand::new(
         vec![frame(options, payload)?],
         ResponseMatcher::Ack,
+        None,
         optimistic,
     ))
+}
+
+fn set_receiver_bool<T>(
+    profile: &IcomCivProfile,
+    options: IcomCivOptions,
+    receiver: ReceiverPath,
+    command: &[u8],
+    enabled: bool,
+    _receiver_hint: T,
+    optimistic: StatePatch,
+) -> Result<EncodedCommand> {
+    let value = if enabled { 0x01 } else { 0x00 };
+    set_receiver_value(profile, options, receiver, command, value, optimistic)
 }
 
 fn set_tx_power(
@@ -394,6 +693,7 @@ fn set_tx_power(
     Ok(EncodedCommand::new(
         vec![frame(options, payload)?],
         ResponseMatcher::Ack,
+        None,
         vec![StatePatch::TxPower(raw_to_power(profile, raw))],
     ))
 }
@@ -405,6 +705,7 @@ fn set_ptt(options: IcomCivOptions, enabled: bool) -> Result<EncodedCommand> {
             vec![0x1c, 0x00, if enabled { 0x01 } else { 0x00 }],
         )?],
         ResponseMatcher::Ack,
+        None,
         vec![StatePatch::Transmitting(enabled)],
     ))
 }
@@ -416,17 +717,30 @@ fn set_split(options: IcomCivOptions, enabled: bool) -> Result<EncodedCommand> {
             vec![0x0f, if enabled { 0x01 } else { 0x00 }],
         )?],
         ResponseMatcher::Ack,
+        None,
         vec![StatePatch::Split(enabled)],
     ))
 }
 
-fn set_rit_offset(options: IcomCivOptions, offset: RitXitOffsetHz) -> Result<EncodedCommand> {
+fn set_rit_offset(
+    profile: &IcomCivProfile,
+    options: IcomCivOptions,
+    offset: RitXitOffsetHz,
+    xit_requested: bool,
+) -> Result<EncodedCommand> {
     let mut payload = vec![0x21, 0x00];
     payload.extend_from_slice(&encode_rit_offset(offset)?);
     Ok(EncodedCommand::new(
         vec![frame(options, payload)?],
         ResponseMatcher::Ack,
-        vec![StatePatch::RitXitOffset(offset)],
+        None,
+        vec![
+            if xit_requested && profile.capabilities.rit_xit.xit_enabled.can_write() {
+                StatePatch::RitXitOffset(offset)
+            } else {
+                StatePatch::RitOffset(offset)
+            },
+        ],
     ))
 }
 
@@ -437,6 +751,7 @@ fn set_keyer_speed(options: IcomCivOptions, wpm: u8) -> Result<EncodedCommand> {
     Ok(EncodedCommand::new(
         vec![frame(options, payload)?],
         ResponseMatcher::Ack,
+        None,
         vec![StatePatch::KeyerSpeed(raw_to_wpm(raw))],
     ))
 }
@@ -460,6 +775,7 @@ fn send_cw(options: IcomCivOptions, text: &str) -> Result<EncodedCommand> {
     Ok(EncodedCommand::new(
         frames,
         ResponseMatcher::Ack,
+        None,
         vec![StatePatch::KeyerSending(true)],
     ))
 }
@@ -468,6 +784,7 @@ fn stop_cw(options: IcomCivOptions) -> Result<EncodedCommand> {
     Ok(EncodedCommand::new(
         vec![frame(options, vec![0x17, 0xff])?],
         ResponseMatcher::Ack,
+        None,
         vec![StatePatch::KeyerSending(false)],
     ))
 }
@@ -479,12 +796,13 @@ fn decode_vfo_frequency(selector: u8, data: &[u8], state: &RadioState) -> Result
 }
 
 fn decode_vfo_mode(
+    profile: &IcomCivProfile,
     selector: u8,
     mode_byte: u8,
     data_mode: u8,
     state: &RadioState,
 ) -> Result<Vec<StatePatch>> {
-    let mode = decode_mode(mode_byte, data_mode)?;
+    let mode = decode_mode(profile, mode_byte, data_mode)?;
     let receiver = selector_receiver(selector)?;
     Ok(mode_patches(receiver, mode, state))
 }
@@ -607,60 +925,47 @@ fn decode_frequency_bcd(bytes: &[u8]) -> Result<u64> {
     })
 }
 
-fn encode_mode(mode: Mode) -> Result<(u8, u8)> {
-    match mode {
-        Mode::Lsb => Ok((0x00, 0x00)),
-        Mode::Usb => Ok((0x01, 0x00)),
-        Mode::Am => Ok((0x02, 0x00)),
-        Mode::Cw => Ok((0x03, 0x00)),
-        Mode::Rtty => Ok((0x04, 0x00)),
-        Mode::Fm => Ok((0x05, 0x00)),
-        Mode::Wfm => Ok((0x06, 0x00)),
-        Mode::CwReverse => Ok((0x07, 0x00)),
-        Mode::RttyReverse => Ok((0x08, 0x00)),
-        Mode::DigitalVoice => Ok((0x17, 0x00)),
-        Mode::DataLsb => Ok((0x00, 0x01)),
-        Mode::DataUsb => Ok((0x01, 0x01)),
-        Mode::DataFm => Ok((0x05, 0x01)),
-        Mode::DataAm => Ok((0x02, 0x01)),
-        _ => Err(RadioError::InvalidValue {
-            field: "mode",
-            message: format!("mode {mode} is not supported by icom"),
-        }),
-    }
-}
-
-fn decode_mode(mode: u8, data_mode: u8) -> Result<Mode> {
-    let data_enabled = match data_mode {
-        0x00 => false,
-        0x01 => true,
-        other => {
-            return Err(RadioError::Decode {
-                command: "mode",
-                message: format!("unsupported data-mode byte 0x{other:02x}"),
-            })
-        }
+fn encode_mode(profile: &IcomCivProfile, mode: Mode) -> Result<(u8, u8)> {
+    let (base_mode, data_mode) = match mode {
+        Mode::DataLsb => (Mode::Lsb, 0x01),
+        Mode::DataUsb => (Mode::Usb, 0x01),
+        Mode::DataFm => (Mode::Fm, 0x01),
+        Mode::DataAm => (Mode::Am, 0x01),
+        other => (other, 0x00),
     };
 
-    match (mode, data_enabled) {
-        (0x00, false) => Ok(Mode::Lsb),
-        (0x00, true) => Ok(Mode::DataLsb),
-        (0x01, false) => Ok(Mode::Usb),
-        (0x01, true) => Ok(Mode::DataUsb),
-        (0x02, false) => Ok(Mode::Am),
-        (0x02, true) => Ok(Mode::DataAm),
-        (0x03, _) => Ok(Mode::Cw),
-        (0x04, _) => Ok(Mode::Rtty),
-        (0x05, false) => Ok(Mode::Fm),
-        (0x05, true) => Ok(Mode::DataFm),
-        (0x06, _) => Ok(Mode::Wfm),
-        (0x07, _) => Ok(Mode::CwReverse),
-        (0x08, _) => Ok(Mode::RttyReverse),
-        (0x17, _) => Ok(Mode::DigitalVoice),
-        (other, _) => Err(RadioError::Decode {
+    let mode_byte = profile
+        .mode_map
+        .iter()
+        .find_map(|(raw, mapped)| (*mapped == base_mode).then_some(*raw))
+        .ok_or_else(|| RadioError::InvalidValue {
+            field: "mode",
+            message: format!("mode {mode} is not supported by {}", profile.id()),
+        })?;
+
+    Ok((mode_byte, data_mode))
+}
+
+fn decode_mode(profile: &IcomCivProfile, mode: u8, data_mode: u8) -> Result<Mode> {
+    let base_mode = profile
+        .mode_map
+        .iter()
+        .find_map(|(raw, mapped)| (*raw == mode).then_some(*mapped))
+        .ok_or_else(|| RadioError::Decode {
             command: "mode",
-            message: format!("unsupported IC-705 mode byte 0x{other:02x}"),
-        }),
+            message: format!("unsupported {} mode byte 0x{mode:02x}", profile.id()),
+        })?;
+
+    if data_mode == 0x00 {
+        return Ok(base_mode);
+    }
+
+    match base_mode {
+        Mode::Lsb => Ok(Mode::DataLsb),
+        Mode::Usb => Ok(Mode::DataUsb),
+        Mode::Am => Ok(Mode::DataAm),
+        Mode::Fm => Ok(Mode::DataFm),
+        _ => Ok(base_mode),
     }
 }
 
@@ -709,14 +1014,51 @@ fn decode_preamp(value: u8) -> Result<LeveledSetting> {
     }
 }
 
-fn decode_attenuator(value: u8) -> Result<LeveledSetting> {
-    match value {
-        0x00 => Ok(LeveledSetting::disabled()),
-        0x20 => Ok(LeveledSetting::enabled(20)),
-        other => Err(RadioError::Decode {
+fn encode_attenuator(profile: &IcomCivProfile, setting: LeveledSetting) -> Result<u8> {
+    if !setting_enabled(setting) {
+        return Ok(0x00);
+    }
+
+    let desired = setting.level.unwrap_or_else(|| {
+        profile
+            .attenuator_values_db
+            .iter()
+            .copied()
+            .find(|value| *value > 0)
+            .unwrap_or(0)
+    });
+    if desired == 0 {
+        return Ok(0x00);
+    }
+
+    if profile.attenuator_values_db.contains(&desired) {
+        Ok(desired)
+    } else {
+        Err(RadioError::InvalidValue {
+            field: "attenuator.level",
+            message: format!(
+                "attenuator level {desired} dB is not supported by {}",
+                profile.id()
+            ),
+        })
+    }
+}
+
+fn decode_attenuator(profile: &IcomCivProfile, value: u8) -> Result<LeveledSetting> {
+    if value == 0x00 {
+        return Ok(LeveledSetting::disabled());
+    }
+
+    if profile.attenuator_values_db.contains(&value) {
+        Ok(LeveledSetting::enabled(value))
+    } else {
+        Err(RadioError::Decode {
             command: "attenuator",
-            message: format!("unsupported attenuator byte 0x{other:02x}"),
-        }),
+            message: format!(
+                "unsupported attenuator value 0x{value:02x} for {}",
+                profile.id()
+            ),
+        })
     }
 }
 
@@ -881,9 +1223,14 @@ enum FilterFamily {
 
 fn filter_family(mode: Mode) -> Result<FilterFamily> {
     match mode {
-        Mode::Lsb | Mode::Usb | Mode::DataLsb | Mode::DataUsb | Mode::Cw | Mode::CwReverse => {
-            Ok(FilterFamily::SsbCw)
-        }
+        Mode::Lsb
+        | Mode::Usb
+        | Mode::DataLsb
+        | Mode::DataUsb
+        | Mode::Cw
+        | Mode::CwReverse
+        | Mode::Psk
+        | Mode::PskReverse => Ok(FilterFamily::SsbCw),
         Mode::Rtty | Mode::RttyReverse => Ok(FilterFamily::Rtty),
         Mode::Am | Mode::DataAm => Ok(FilterFamily::Am),
         other => Err(RadioError::UnsupportedCapability {
@@ -912,11 +1259,11 @@ fn power_to_raw(profile: &IcomCivProfile, power: Power) -> u16 {
 
 fn raw_to_power(profile: &IcomCivProfile, raw: u16) -> Power {
     let max_milliwatts = profile.max_tx_power_watts as u64 * 1_000;
-    let milliwatts = ((raw as u64 * max_milliwatts + 127) / 255) as u16;
-    if milliwatts % 1_000 == 0 {
-        Power::from_watts(milliwatts / 1_000)
+    let milliwatts = (raw as u64 * max_milliwatts + 127) / 255;
+    if milliwatts % 1_000 == 0 || milliwatts > u16::MAX as u64 {
+        Power::from_watts(((milliwatts + 500) / 1_000) as u16)
     } else {
-        Power::new(milliwatts, PowerUnit::Milliwatts)
+        Power::new(milliwatts as u16, PowerUnit::Milliwatts)
     }
 }
 
@@ -1018,20 +1365,9 @@ mod tests {
     }
 
     #[test]
-    fn main_rit_xit_offset_commands_encode_identically_for_shared_radios() {
+    fn xit_and_shared_offset_commands_encode_identically_for_shared_radios() {
         let target = RitXitOffsetHz::new(250).unwrap();
 
-        let rit = encode(
-            profile(),
-            options(),
-            &RadioCommand::SetRitOffset {
-                receiver: ReceiverPath::Main,
-                offset: target,
-            },
-            &RadioState::default(),
-        )
-        .unwrap()
-        .unwrap();
         let xit = encode(
             profile(),
             options(),
@@ -1049,10 +1385,20 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(rit.frames, xit.frames);
-        assert_eq!(rit.frames, both.frames);
-        assert_eq!(rit.optimistic, xit.optimistic);
-        assert_eq!(rit.optimistic, both.optimistic);
+        assert_eq!(xit.frames, both.frames);
+        assert_eq!(xit.optimistic, both.optimistic);
+    }
+
+    #[test]
+    fn rit_only_profiles_reject_xit_commands() {
+        let ic7100 = crate::protocol::icom_civ::profile_by_id("icom-ic7100").unwrap();
+        let result = encode(
+            ic7100,
+            IcomCivOptions::defaults(ic7100),
+            &RadioCommand::SetXitEnabled(true),
+            &RadioState::default(),
+        );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1078,11 +1424,23 @@ mod tests {
 
     #[test]
     fn modes_include_wfm_and_digital_voice() {
-        assert_eq!(encode_mode(Mode::Wfm).unwrap(), (0x06, 0x00));
-        assert_eq!(encode_mode(Mode::DigitalVoice).unwrap(), (0x17, 0x00));
-        assert_eq!(decode_mode(0x06, 0x00).unwrap(), Mode::Wfm);
-        assert_eq!(decode_mode(0x17, 0x00).unwrap(), Mode::DigitalVoice);
-        assert_eq!(decode_mode(0x01, 0x01).unwrap(), Mode::DataUsb);
+        let ic7100 = crate::protocol::icom_civ::profile_by_id("icom-ic7100").unwrap();
+        assert_eq!(encode_mode(ic7100, Mode::Wfm).unwrap(), (0x06, 0x00));
+        assert_eq!(
+            encode_mode(ic7100, Mode::DigitalVoice).unwrap(),
+            (0x17, 0x00)
+        );
+        assert_eq!(decode_mode(ic7100, 0x06, 0x00).unwrap(), Mode::Wfm);
+        assert_eq!(decode_mode(ic7100, 0x17, 0x00).unwrap(), Mode::DigitalVoice);
+        assert_eq!(decode_mode(ic7100, 0x01, 0x01).unwrap(), Mode::DataUsb);
+
+        let ic7610 = crate::protocol::icom_civ::profile_by_id("icom-ic7610").unwrap();
+        assert_eq!(encode_mode(ic7610, Mode::Psk).unwrap(), (0x12, 0x00));
+        assert_eq!(decode_mode(ic7610, 0x17, 0x00).unwrap(), Mode::PskReverse);
+
+        let ic7760 = crate::protocol::icom_civ::profile_by_id("icom-ic7760").unwrap();
+        assert_eq!(encode_mode(ic7760, Mode::PskReverse).unwrap(), (0x13, 0x00));
+        assert_eq!(decode_mode(ic7760, 0x13, 0x00).unwrap(), Mode::PskReverse);
     }
 
     #[test]
@@ -1099,7 +1457,7 @@ mod tests {
         };
 
         let frame = CivFrame::new(0xe0, 0xa4, [0x25, 0x01, 0x00, 0x00, 0x03, 0x07, 0x00]).unwrap();
-        let decoded = decode(profile(), &frame, &state).unwrap().unwrap();
+        let decoded = decode(profile(), &frame, &state, None).unwrap().unwrap();
         assert_eq!(
             decoded.patches,
             vec![
@@ -1109,10 +1467,121 @@ mod tests {
         );
 
         let frame = CivFrame::new(0xe0, 0xa4, [0x26, 0x00, 0x17, 0x00, 0x03]).unwrap();
-        let decoded = decode(profile(), &frame, &state).unwrap().unwrap();
+        let decoded = decode(profile(), &frame, &state, None).unwrap().unwrap();
         assert!(decoded
             .patches
             .contains(&StatePatch::MainRxMode(Mode::DigitalVoice)));
+    }
+
+    #[test]
+    fn attenuator_mapping_follows_profile_tables() {
+        let ic7100 = crate::protocol::icom_civ::profile_by_id("icom-ic7100").unwrap();
+        assert_eq!(
+            decode_attenuator(ic7100, 12).unwrap(),
+            LeveledSetting::enabled(12)
+        );
+
+        let ic7610 = crate::protocol::icom_civ::profile_by_id("icom-ic7610").unwrap();
+        assert_eq!(
+            encode_attenuator(ic7610, LeveledSetting::enabled(15)).unwrap(),
+            15
+        );
+        assert_eq!(
+            encode_attenuator(ic7610, LeveledSetting::enabled(24)).unwrap(),
+            24
+        );
+        assert!(encode_attenuator(ic7610, LeveledSetting::enabled(20)).is_err());
+        assert!(encode_attenuator(ic7610, LeveledSetting::enabled(27)).is_err());
+    }
+
+    #[test]
+    fn ic7610_and_ic7760_expose_filter_bandwidth_query_and_command() {
+        let state = RadioState {
+            main_rx: ReceiverState {
+                mode: Some(Mode::Usb),
+                ..ReceiverState::default()
+            },
+            ..RadioState::default()
+        };
+
+        for id in ["icom-ic7610", "icom-ic7760"] {
+            let profile = crate::protocol::icom_civ::profile_by_id(id).unwrap();
+            let options = IcomCivOptions::defaults(profile);
+
+            let query = encode_query(profile, options, "filter-bandwidth")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                query.frames[0].as_bytes(),
+                &[0xfe, 0xfe, options.radio_address, options.controller_address, 0x1a, 0x03, 0xfd]
+            );
+
+            let command = encode(
+                profile,
+                options,
+                &RadioCommand::SetReceiverFilterBandwidth {
+                    receiver: ReceiverPath::Main,
+                    bandwidth_hz: 2_400,
+                },
+                &state,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                command.frames[0].as_bytes(),
+                &[0xfe, 0xfe, options.radio_address, options.controller_address, 0x1a, 0x03, 0x28, 0xfd]
+            );
+        }
+    }
+
+    #[test]
+    fn ic7610_exposes_main_rf_queries() {
+        let profile = crate::protocol::icom_civ::profile_by_id("icom-ic7610").unwrap();
+        let options = IcomCivOptions::defaults(profile);
+
+        let preamp = encode_query(profile, options, "preamp-main").unwrap().unwrap();
+        assert_eq!(
+            preamp.frames[0].as_bytes(),
+            &[0xfe, 0xfe, options.radio_address, options.controller_address, 0x16, 0x02, 0xfd]
+        );
+
+        let attenuator = encode_query(profile, options, "attenuator-main")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            attenuator.frames[0].as_bytes(),
+            &[0xfe, 0xfe, options.radio_address, options.controller_address, 0x11, 0xfd]
+        );
+    }
+
+    #[test]
+    fn ic7760_receiver_queries_and_wrapped_responses_target_sub_receiver() {
+        let profile = crate::protocol::icom_civ::profile_by_id("icom-ic7760").unwrap();
+        let encoded = encode_query(profile, IcomCivOptions::defaults(profile), "preamp-sub")
+            .unwrap()
+            .unwrap();
+        assert_eq!(encoded.response_receiver, Some(ReceiverPath::Sub));
+        assert!(matches!(encoded.matcher, ResponseMatcher::OneOf(_)));
+
+        let state = RadioState {
+            sub_rx: Some(ReceiverState::default()),
+            ..RadioState::default()
+        };
+        let wrapped = CivFrame::new(0xe0, 0xb2, [0x29, 0x01, 0x16, 0x02, 0x01]).unwrap();
+        let decoded = decode(profile, &wrapped, &state, None).unwrap().unwrap();
+        assert_eq!(
+            decoded.patches,
+            vec![StatePatch::SubRxPreamp(LeveledSetting::enabled(1))]
+        );
+
+        let unwrapped = CivFrame::new(0xe0, 0xb2, [0x16, 0x02, 0x01]).unwrap();
+        let decoded = decode(profile, &unwrapped, &state, Some(ReceiverPath::Sub))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            decoded.patches,
+            vec![StatePatch::SubRxPreamp(LeveledSetting::enabled(1))]
+        );
     }
 
     #[test]
@@ -1120,6 +1589,9 @@ mod tests {
         assert_eq!(power_to_raw(profile(), Power::from_watts(10)), 255);
         assert_eq!(raw_to_power(profile(), 255), Power::from_watts(10));
         assert_eq!(raw_to_power(profile(), 128).unit(), PowerUnit::Milliwatts);
+
+        let ic7760 = crate::protocol::icom_civ::profile_by_id("icom-ic7760").unwrap();
+        assert_eq!(raw_to_power(ic7760, 255), Power::from_watts(200));
     }
 
     #[test]

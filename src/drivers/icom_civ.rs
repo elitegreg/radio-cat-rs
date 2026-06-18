@@ -62,10 +62,22 @@ impl RadioDriver for IcomCivDriver {
         RadioState {
             connection: ConnectionState::Connecting,
             main_rx: ReceiverState::default(),
-            sub_rx: Some(ReceiverState::default()),
-            tx: Some(TransmitterState::default()),
+            sub_rx: self
+                .profile
+                .capabilities
+                .sub_rx
+                .map(|_| ReceiverState::default()),
+            tx: self
+                .profile
+                .capabilities
+                .tx
+                .map(|_| TransmitterState::default()),
             rit_xit: RitXitState::default(),
-            keyer: Some(KeyerState::default()),
+            keyer: self
+                .profile
+                .capabilities
+                .keyer
+                .map(|_| KeyerState::default()),
         }
     }
 

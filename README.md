@@ -79,7 +79,7 @@ This includes `dummy` and Kenwood-ASCII profile IDs such as:
 - `kenwood-ts590`, `kenwood-ts890`, `kenwood-ts990`, `kenwood-ts2000`, `kenwood-ts480`, `kenwood-ts570`, `kenwood-ts870`, `kenwood-if232`
 - `elecraft-k4`, `elecraft-k3`, `elecraft-k2`
 - `yaesu-ftdx101`, `yaesu-ftdx10`, `yaesu-ft710`, `yaesu-ft891`, `yaesu-ft991`
-- `icom-ic705`
+- `icom-ic705`, `icom-ic7100`, `icom-ic7300`, `icom-ic7610`, `icom-ic7760`
 - `flexradio-smartsdr`
 
 ## Serial/TCP connections and driver options

@@ -60,9 +60,7 @@ pub const FLEXRADIO_SMARTSDR: SmartSdrProfile = SmartSdrProfile {
 pub const SUPPORTED_PROFILES: &[SmartSdrProfile] = &[FLEXRADIO_SMARTSDR];
 
 pub fn profile_by_id(id: &str) -> Option<&'static SmartSdrProfile> {
-    SUPPORTED_PROFILES
-        .iter()
-        .find(|profile| {
-            profile.id().eq_ignore_ascii_case(id) || id.eq_ignore_ascii_case("flexradio-smarthdr")
-        })
+    SUPPORTED_PROFILES.iter().find(|profile| {
+        profile.id().eq_ignore_ascii_case(id) || id.eq_ignore_ascii_case("flexradio-smarthdr")
+    })
 }

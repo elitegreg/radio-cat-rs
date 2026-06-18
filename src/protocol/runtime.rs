@@ -553,7 +553,14 @@ impl IcomCivRuntime {
         wait_timeout: Duration,
         ctx: &mut dyn ProtocolContext,
     ) -> Result<()> {
-        for frame in encoded.frames {
+        let icom_civ::EncodedCommand {
+            frames,
+            matcher,
+            response_receiver,
+            ..
+        } = encoded;
+
+        for frame in frames {
             tracing::debug!(
                 driver = %self.profile.id(),
                 tx_bytes = ?frame.as_bytes(),
@@ -563,14 +570,15 @@ impl IcomCivRuntime {
             transport.write_all(frame.as_bytes()).await?;
             transport.flush().await?;
 
-            if encoded.matcher.expects_response() {
+            if matcher.expects_response() {
                 match self
                     .process_incoming_with_expected(
                         transport,
                         wait_timeout,
                         default_source,
-                        Some(&encoded.matcher),
+                        Some(&matcher),
                         Some(frame.as_bytes()),
+                        response_receiver,
                         ctx,
                     )
                     .await?
@@ -601,6 +609,7 @@ impl IcomCivRuntime {
         default_source: UpdateSource,
         expected: Option<&IcomResponseMatcher>,
         echo: Option<&[u8]>,
+        receiver_hint: Option<crate::ReceiverPath>,
         ctx: &mut dyn ProtocolContext,
     ) -> Result<IcomWaitOutcome> {
         let deadline = Instant::now() + wait_timeout;
@@ -699,7 +708,7 @@ impl IcomCivRuntime {
                     }
                 }
 
-                self.decode_and_publish_frame(&frame, default_source, ctx);
+                self.decode_and_publish_frame(&frame, default_source, receiver_hint, ctx);
 
                 if matched_expected {
                     return Ok(IcomWaitOutcome::Matched);
@@ -720,9 +729,10 @@ impl IcomCivRuntime {
         &self,
         frame: &CivFrame,
         default_source: UpdateSource,
+        receiver_hint: Option<crate::ReceiverPath>,
         ctx: &mut dyn ProtocolContext,
     ) {
-        match icom_civ::decode(self.profile, frame, ctx.state()) {
+        match icom_civ::decode(self.profile, frame, ctx.state(), receiver_hint) {
             Ok(Some(decoded)) => {
                 let source = decoded.source_hint.unwrap_or(default_source);
                 tracing::debug!(
@@ -777,7 +787,9 @@ impl NativeProtocol for IcomCivRuntime {
         for step in self.profile.startup {
             match *step {
                 icom_civ::StartupStep::Query(semantic) => {
-                    let Some(encoded) = icom_civ::encode_query(self.options, semantic)? else {
+                    let Some(encoded) =
+                        icom_civ::encode_query(self.profile, self.options, semantic)?
+                    else {
                         tracing::trace!(driver = %self.profile.id(), semantic, "ICOM startup semantic skipped");
                         continue;
                     };
@@ -820,20 +832,22 @@ impl NativeProtocol for IcomCivRuntime {
         ctx: &mut dyn ProtocolContext,
     ) -> Result<()> {
         if command_matches_state(&command, state_before) {
-            for semantic in icom_validation_queries(&command, state_before) {
-                let Some(encoded) = (match icom_civ::encode_query(self.options, semantic) {
-                    Ok(encoded) => encoded,
-                    Err(error) => {
-                        tracing::warn!(
-                            driver = %self.profile.id(),
-                            ?command,
-                            semantic,
-                            ?error,
-                            "failed to encode ICOM validation query"
-                        );
-                        continue;
-                    }
-                }) else {
+            for semantic in icom_validation_queries(self.profile, &command, state_before) {
+                let Some(encoded) =
+                    (match icom_civ::encode_query(self.profile, self.options, semantic) {
+                        Ok(encoded) => encoded,
+                        Err(error) => {
+                            tracing::warn!(
+                                driver = %self.profile.id(),
+                                ?command,
+                                semantic,
+                                ?error,
+                                "failed to encode ICOM validation query"
+                            );
+                            continue;
+                        }
+                    })
+                else {
                     continue;
                 };
 
@@ -905,6 +919,7 @@ impl NativeProtocol for IcomCivRuntime {
                 default_source,
                 None,
                 None,
+                None,
                 ctx,
             )
             .await?,
@@ -920,7 +935,8 @@ impl NativeProtocol for IcomCivRuntime {
         if let Some(plan) = self.profile.poll {
             tracing::debug!(driver = %self.profile.id(), query_count = plan.queries.len(), "running ICOM poll plan");
             for semantic in plan.queries {
-                let Some(encoded) = icom_civ::encode_query(self.options, semantic)? else {
+                let Some(encoded) = icom_civ::encode_query(self.profile, self.options, semantic)?
+                else {
                     continue;
                 };
 
@@ -1717,7 +1733,11 @@ fn kenwood_validation_queries(
     kenwood_timeout_recovery_queries(profile, command, state_before)
 }
 
-fn icom_validation_queries(command: &RadioCommand, state_before: &RadioState) -> Vec<&'static str> {
+fn icom_validation_queries(
+    profile: &'static IcomCivProfile,
+    command: &RadioCommand,
+    state_before: &RadioState,
+) -> Vec<&'static str> {
     match command {
         RadioCommand::SetReceiverFrequency { receiver, .. } => match receiver {
             ReceiverPath::Main => vec!["freq-main"],
@@ -1729,11 +1749,27 @@ fn icom_validation_queries(command: &RadioCommand, state_before: &RadioState) ->
         },
         RadioCommand::SetReceiverFilterBandwidth { .. } => vec!["filter-bandwidth"],
         RadioCommand::SetReceiverFilterShift { .. } => Vec::new(),
-        RadioCommand::SetReceiverPreamp { .. } => vec!["preamp"],
-        RadioCommand::SetReceiverAttenuator { .. } => vec!["attenuator"],
-        RadioCommand::SetReceiverNoiseBlanker { .. } => vec!["noise-blanker"],
-        RadioCommand::SetReceiverNoiseReduction { .. } => vec!["noise-reduction"],
-        RadioCommand::SetReceiverAutoNotch { .. } => vec!["auto-notch"],
+        RadioCommand::SetReceiverPreamp { receiver, .. } => {
+            receiver_semantic(profile, *receiver, "preamp-main", "preamp-sub")
+        }
+        RadioCommand::SetReceiverAttenuator { receiver, .. } => {
+            receiver_semantic(profile, *receiver, "attenuator-main", "attenuator-sub")
+        }
+        RadioCommand::SetReceiverNoiseBlanker { receiver, .. } => receiver_semantic(
+            profile,
+            *receiver,
+            "noise-blanker-main",
+            "noise-blanker-sub",
+        ),
+        RadioCommand::SetReceiverNoiseReduction { receiver, .. } => receiver_semantic(
+            profile,
+            *receiver,
+            "noise-reduction-main",
+            "noise-reduction-sub",
+        ),
+        RadioCommand::SetReceiverAutoNotch { receiver, .. } => {
+            receiver_semantic(profile, *receiver, "auto-notch-main", "auto-notch-sub")
+        }
         RadioCommand::SetTxFrequency(_) => vec!["tx-frequency"],
         RadioCommand::SetTxMode(_) => match tx_receiver_for_validation(state_before) {
             ReceiverPath::Main => vec!["mode-main"],
@@ -1743,12 +1779,31 @@ fn icom_validation_queries(command: &RadioCommand, state_before: &RadioState) ->
         RadioCommand::SetPtt(_) => vec!["ptt"],
         RadioCommand::SetSplit(_) => vec!["split"],
         RadioCommand::SetRitEnabled { .. } => vec!["rit"],
-        RadioCommand::SetXitEnabled(_) => vec!["xit"],
+        RadioCommand::SetXitEnabled(_) => {
+            if profile.capabilities.rit_xit.xit_enabled.can_read() {
+                vec!["xit"]
+            } else {
+                Vec::new()
+            }
+        }
         RadioCommand::SetRitOffset { .. }
         | RadioCommand::SetXitOffset(_)
         | RadioCommand::SetRitXitOffset(_) => vec!["rit-offset"],
         RadioCommand::SetKeyerSpeed(_) => vec!["keyer-speed"],
         RadioCommand::SendCw(_) | RadioCommand::StopCw | RadioCommand::Refresh => Vec::new(),
+    }
+}
+
+fn receiver_semantic(
+    profile: &'static IcomCivProfile,
+    receiver: ReceiverPath,
+    main: &'static str,
+    sub: &'static str,
+) -> Vec<&'static str> {
+    match receiver {
+        ReceiverPath::Main => vec![main],
+        ReceiverPath::Sub if profile.supports_command_29 => vec![sub],
+        ReceiverPath::Sub => Vec::new(),
     }
 }
 

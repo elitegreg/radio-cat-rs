@@ -28,12 +28,22 @@ pub struct PollPlan {
     pub queries: &'static [&'static str],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IcomArchitecture {
+    DualVfo,
+    DualRx,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IcomCivProfile {
     pub descriptor: DriverDescriptor,
+    pub architecture: IcomArchitecture,
     pub default_radio_address: u8,
     pub default_controller_address: u8,
     pub max_tx_power_watts: u16,
+    pub mode_map: &'static [(u8, crate::Mode)],
+    pub attenuator_values_db: &'static [u8],
+    pub supports_command_29: bool,
     pub capabilities: RadioCapabilities,
     pub startup: &'static [StartupStep],
     pub poll: Option<PollPlan>,
@@ -116,6 +126,12 @@ const WO: Capability = Capability::WriteOnly;
 const UNSUPPORTED: Capability = Capability::Unsupported;
 
 const MAIN_RF: ReceiverRfCapabilities = ReceiverRfCapabilities::new(RW, RW, RW, RW, RW);
+const RX_WITH_RF_NO_FILTER_SHIFT: ReceiverCapabilities =
+    ReceiverCapabilities::new(RW, RW, RW, UNSUPPORTED, MAIN_RF);
+const RX_WITH_RF_NO_BANDWIDTH: ReceiverCapabilities =
+    ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, MAIN_RF);
+const RX_FREQ_MODE_ONLY: ReceiverCapabilities =
+    ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, NO_RF);
 const NO_RF: ReceiverRfCapabilities = ReceiverRfCapabilities::new(
     UNSUPPORTED,
     UNSUPPORTED,
@@ -124,15 +140,21 @@ const NO_RF: ReceiverRfCapabilities = ReceiverRfCapabilities::new(
     UNSUPPORTED,
 );
 
-const IC705_MAIN_RX: ReceiverCapabilities =
-    ReceiverCapabilities::new(RW, RW, RW, UNSUPPORTED, MAIN_RF);
-const IC705_SUB_RX: ReceiverCapabilities =
-    ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, NO_RF);
+const IC705_MAIN_RX: ReceiverCapabilities = RX_WITH_RF_NO_FILTER_SHIFT;
+const IC705_SUB_RX: ReceiverCapabilities = RX_FREQ_MODE_ONLY;
 const IC705_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, RW, RW, RW);
-const IC705_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
+const ICOM_SHARED_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
     RW,
     UNSUPPORTED,
     RW,
+    RW,
+    UNSUPPORTED,
+    RitXitOffsetType::Shared,
+);
+const ICOM_SHARED_RIT_ONLY: RitXitCapabilities = RitXitCapabilities::new(
+    RW,
+    UNSUPPORTED,
+    UNSUPPORTED,
     RW,
     UNSUPPORTED,
     RitXitOffsetType::Shared,
@@ -181,6 +203,208 @@ const IC705_POLL_QUERIES: &[&str] = &[
     "keyer-speed",
 ];
 
+const IC7100_STARTUP: &[StartupStep] = &[
+    StartupStep::Query("freq-main"),
+    StartupStep::Query("freq-sub"),
+    StartupStep::Query("mode-main"),
+    StartupStep::Query("mode-sub"),
+    StartupStep::Query("tx-frequency"),
+    StartupStep::Query("ptt"),
+    StartupStep::Query("split"),
+    StartupStep::Query("rit-offset"),
+    StartupStep::Query("rit"),
+    StartupStep::Query("filter-bandwidth"),
+    StartupStep::Query("preamp-main"),
+    StartupStep::Query("attenuator-main"),
+    StartupStep::Query("noise-blanker-main"),
+    StartupStep::Query("noise-reduction-main"),
+    StartupStep::Query("auto-notch-main"),
+    StartupStep::Query("tx-power"),
+    StartupStep::Query("keyer-speed"),
+];
+
+const IC7100_POLL_QUERIES: &[&str] = &[
+    "freq-main",
+    "freq-sub",
+    "mode-main",
+    "mode-sub",
+    "tx-frequency",
+    "ptt",
+    "split",
+    "rit-offset",
+    "rit",
+    "filter-bandwidth",
+    "preamp-main",
+    "attenuator-main",
+    "noise-blanker-main",
+    "noise-reduction-main",
+    "auto-notch-main",
+    "tx-power",
+    "keyer-speed",
+];
+
+const IC7610_STARTUP: &[StartupStep] = &[
+    StartupStep::Query("freq-main"),
+    StartupStep::Query("freq-sub"),
+    StartupStep::Query("mode-main"),
+    StartupStep::Query("mode-sub"),
+    StartupStep::Query("tx-frequency"),
+    StartupStep::Query("ptt"),
+    StartupStep::Query("split"),
+    StartupStep::Query("rit-offset"),
+    StartupStep::Query("rit"),
+    StartupStep::Query("xit"),
+    StartupStep::Query("filter-bandwidth"),
+    StartupStep::Query("preamp-main"),
+    StartupStep::Query("attenuator-main"),
+    StartupStep::Query("noise-blanker-main"),
+    StartupStep::Query("noise-reduction-main"),
+    StartupStep::Query("auto-notch-main"),
+    StartupStep::Query("tx-power"),
+    StartupStep::Query("keyer-speed"),
+];
+
+const IC7610_POLL_QUERIES: &[&str] = &[
+    "freq-main",
+    "freq-sub",
+    "mode-main",
+    "mode-sub",
+    "tx-frequency",
+    "ptt",
+    "split",
+    "rit-offset",
+    "rit",
+    "xit",
+    "filter-bandwidth",
+    "preamp-main",
+    "attenuator-main",
+    "noise-blanker-main",
+    "noise-reduction-main",
+    "auto-notch-main",
+    "tx-power",
+    "keyer-speed",
+];
+
+const IC7760_STARTUP: &[StartupStep] = &[
+    StartupStep::Query("freq-main"),
+    StartupStep::Query("freq-sub"),
+    StartupStep::Query("mode-main"),
+    StartupStep::Query("mode-sub"),
+    StartupStep::Query("tx-frequency"),
+    StartupStep::Query("ptt"),
+    StartupStep::Query("split"),
+    StartupStep::Query("rit-offset"),
+    StartupStep::Query("rit"),
+    StartupStep::Query("xit"),
+    StartupStep::Query("filter-bandwidth"),
+    StartupStep::Query("preamp-main"),
+    StartupStep::Query("preamp-sub"),
+    StartupStep::Query("attenuator-main"),
+    StartupStep::Query("attenuator-sub"),
+    StartupStep::Query("noise-blanker-main"),
+    StartupStep::Query("noise-blanker-sub"),
+    StartupStep::Query("noise-reduction-main"),
+    StartupStep::Query("noise-reduction-sub"),
+    StartupStep::Query("auto-notch-main"),
+    StartupStep::Query("auto-notch-sub"),
+    StartupStep::Query("tx-power"),
+    StartupStep::Query("keyer-speed"),
+];
+
+const IC7760_POLL_QUERIES: &[&str] = &[
+    "freq-main",
+    "freq-sub",
+    "mode-main",
+    "mode-sub",
+    "tx-frequency",
+    "ptt",
+    "split",
+    "rit-offset",
+    "rit",
+    "xit",
+    "filter-bandwidth",
+    "preamp-main",
+    "preamp-sub",
+    "attenuator-main",
+    "attenuator-sub",
+    "noise-blanker-main",
+    "noise-blanker-sub",
+    "noise-reduction-main",
+    "noise-reduction-sub",
+    "auto-notch-main",
+    "auto-notch-sub",
+    "tx-power",
+    "keyer-speed",
+];
+
+const IC705_MODES: &[(u8, crate::Mode)] = &[
+    (0x00, crate::Mode::Lsb),
+    (0x01, crate::Mode::Usb),
+    (0x02, crate::Mode::Am),
+    (0x03, crate::Mode::Cw),
+    (0x04, crate::Mode::Rtty),
+    (0x05, crate::Mode::Fm),
+    (0x06, crate::Mode::Wfm),
+    (0x07, crate::Mode::CwReverse),
+    (0x08, crate::Mode::RttyReverse),
+    (0x17, crate::Mode::DigitalVoice),
+];
+
+const IC7300_MODES: &[(u8, crate::Mode)] = &[
+    (0x00, crate::Mode::Lsb),
+    (0x01, crate::Mode::Usb),
+    (0x02, crate::Mode::Am),
+    (0x03, crate::Mode::Cw),
+    (0x04, crate::Mode::Rtty),
+    (0x05, crate::Mode::Fm),
+    (0x07, crate::Mode::CwReverse),
+    (0x08, crate::Mode::RttyReverse),
+];
+
+const IC7100_MODES: &[(u8, crate::Mode)] = &[
+    (0x00, crate::Mode::Lsb),
+    (0x01, crate::Mode::Usb),
+    (0x02, crate::Mode::Am),
+    (0x03, crate::Mode::Cw),
+    (0x04, crate::Mode::Rtty),
+    (0x05, crate::Mode::Fm),
+    (0x06, crate::Mode::Wfm),
+    (0x07, crate::Mode::CwReverse),
+    (0x08, crate::Mode::RttyReverse),
+    (0x17, crate::Mode::DigitalVoice),
+];
+
+const IC7610_MODES: &[(u8, crate::Mode)] = &[
+    (0x00, crate::Mode::Lsb),
+    (0x01, crate::Mode::Usb),
+    (0x02, crate::Mode::Am),
+    (0x03, crate::Mode::Cw),
+    (0x04, crate::Mode::Rtty),
+    (0x05, crate::Mode::Fm),
+    (0x07, crate::Mode::CwReverse),
+    (0x08, crate::Mode::RttyReverse),
+    (0x12, crate::Mode::Psk),
+    (0x17, crate::Mode::PskReverse),
+];
+
+const IC7760_MODES: &[(u8, crate::Mode)] = &[
+    (0x00, crate::Mode::Lsb),
+    (0x01, crate::Mode::Usb),
+    (0x02, crate::Mode::Am),
+    (0x03, crate::Mode::Cw),
+    (0x04, crate::Mode::Rtty),
+    (0x05, crate::Mode::Fm),
+    (0x07, crate::Mode::CwReverse),
+    (0x08, crate::Mode::RttyReverse),
+    (0x12, crate::Mode::Psk),
+    (0x13, crate::Mode::PskReverse),
+];
+
+const ATTENUATOR_20_DB: &[u8] = &[0, 20];
+const ATTENUATOR_12_DB: &[u8] = &[0, 12];
+const ATTENUATOR_3_TO_24_DB: &[u8] = &[0, 3, 6, 9, 12, 15, 18, 21, 24];
+const ATTENUATOR_3_TO_45_DB: &[u8] = &[0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45];
+
 const fn descriptor(
     id: &'static str,
     display_name: &'static str,
@@ -193,29 +417,143 @@ const fn descriptor(
     }
 }
 
-pub const SUPPORTED_PROFILES: &[IcomCivProfile] = &[IcomCivProfile {
-    descriptor: descriptor(
-        "icom-ic705",
-        "Icom IC-705",
-        "Icom CI-V profile for IC-705 radios.",
-    ),
-    default_radio_address: 0xa4,
-    default_controller_address: 0xe0,
-    max_tx_power_watts: 10,
-    capabilities: RadioCapabilities::new(
-        ReceiverKind::DualVfo,
-        IC705_MAIN_RX,
-        Some(IC705_SUB_RX),
-        Some(IC705_TX),
-        IC705_RIT_XIT,
-        Some(IC705_KEYER),
-        StateUpdateCapability::Polling,
-    ),
-    startup: IC705_STARTUP,
-    poll: Some(PollPlan {
-        queries: IC705_POLL_QUERIES,
-    }),
-}];
+pub const SUPPORTED_PROFILES: &[IcomCivProfile] = &[
+    IcomCivProfile {
+        descriptor: descriptor(
+            "icom-ic705",
+            "Icom IC-705",
+            "Icom CI-V profile for IC-705 radios.",
+        ),
+        architecture: IcomArchitecture::DualVfo,
+        default_radio_address: 0xa4,
+        default_controller_address: 0xe0,
+        max_tx_power_watts: 10,
+        mode_map: IC705_MODES,
+        attenuator_values_db: ATTENUATOR_20_DB,
+        supports_command_29: false,
+        capabilities: RadioCapabilities::new(
+            ReceiverKind::DualVfo,
+            IC705_MAIN_RX,
+            Some(IC705_SUB_RX),
+            Some(IC705_TX),
+            ICOM_SHARED_RIT_XIT,
+            Some(IC705_KEYER),
+            StateUpdateCapability::Polling,
+        ),
+        startup: IC705_STARTUP,
+        poll: Some(PollPlan {
+            queries: IC705_POLL_QUERIES,
+        }),
+    },
+    IcomCivProfile {
+        descriptor: descriptor(
+            "icom-ic7300",
+            "Icom IC-7300",
+            "Icom CI-V profile for IC-7300 radios.",
+        ),
+        architecture: IcomArchitecture::DualVfo,
+        default_radio_address: 0x94,
+        default_controller_address: 0xe0,
+        max_tx_power_watts: 100,
+        mode_map: IC7300_MODES,
+        attenuator_values_db: ATTENUATOR_20_DB,
+        supports_command_29: false,
+        capabilities: RadioCapabilities::new(
+            ReceiverKind::DualVfo,
+            IC705_MAIN_RX,
+            Some(IC705_SUB_RX),
+            Some(IC705_TX),
+            ICOM_SHARED_RIT_XIT,
+            Some(IC705_KEYER),
+            StateUpdateCapability::Polling,
+        ),
+        startup: IC705_STARTUP,
+        poll: Some(PollPlan {
+            queries: IC705_POLL_QUERIES,
+        }),
+    },
+    IcomCivProfile {
+        descriptor: descriptor(
+            "icom-ic7100",
+            "Icom IC-7100",
+            "Icom CI-V profile for IC-7100 radios.",
+        ),
+        architecture: IcomArchitecture::DualVfo,
+        default_radio_address: 0x88,
+        default_controller_address: 0xe0,
+        max_tx_power_watts: 100,
+        mode_map: IC7100_MODES,
+        attenuator_values_db: ATTENUATOR_12_DB,
+        supports_command_29: false,
+        capabilities: RadioCapabilities::new(
+            ReceiverKind::DualVfo,
+            IC705_MAIN_RX,
+            Some(IC705_SUB_RX),
+            Some(IC705_TX),
+            ICOM_SHARED_RIT_ONLY,
+            Some(IC705_KEYER),
+            StateUpdateCapability::Polling,
+        ),
+        startup: IC7100_STARTUP,
+        poll: Some(PollPlan {
+            queries: IC7100_POLL_QUERIES,
+        }),
+    },
+    IcomCivProfile {
+        descriptor: descriptor(
+            "icom-ic7610",
+            "Icom IC-7610",
+            "Icom CI-V profile for IC-7610 radios.",
+        ),
+        architecture: IcomArchitecture::DualRx,
+        default_radio_address: 0x98,
+        default_controller_address: 0xe0,
+        max_tx_power_watts: 100,
+        mode_map: IC7610_MODES,
+        attenuator_values_db: ATTENUATOR_3_TO_24_DB,
+        supports_command_29: false,
+        capabilities: RadioCapabilities::new(
+            ReceiverKind::DualRx,
+            RX_WITH_RF_NO_FILTER_SHIFT,
+            Some(RX_FREQ_MODE_ONLY),
+            Some(IC705_TX),
+            ICOM_SHARED_RIT_XIT,
+            Some(IC705_KEYER),
+            StateUpdateCapability::Polling,
+        ),
+        startup: IC7610_STARTUP,
+        poll: Some(PollPlan {
+            queries: IC7610_POLL_QUERIES,
+        }),
+    },
+    IcomCivProfile {
+        descriptor: descriptor(
+            "icom-ic7760",
+            "Icom IC-7760",
+            "Icom CI-V profile for IC-7760 radios.",
+        ),
+        architecture: IcomArchitecture::DualRx,
+        default_radio_address: 0xb2,
+        default_controller_address: 0xe0,
+        max_tx_power_watts: 200,
+        mode_map: IC7760_MODES,
+        attenuator_values_db: ATTENUATOR_3_TO_45_DB,
+        supports_command_29: true,
+        capabilities: RadioCapabilities::new(
+            ReceiverKind::DualRx,
+            RX_WITH_RF_NO_FILTER_SHIFT,
+            Some(RX_WITH_RF_NO_BANDWIDTH),
+            Some(IC705_TX),
+            ICOM_SHARED_RIT_XIT,
+            Some(IC705_KEYER),
+            StateUpdateCapability::Polling,
+        ),
+        startup: IC7760_STARTUP,
+        poll: Some(PollPlan {
+            queries: IC7760_POLL_QUERIES,
+        }),
+    },
+];
 
 pub fn profile_by_id(id: &str) -> Option<&'static IcomCivProfile> {
     SUPPORTED_PROFILES
@@ -310,5 +648,47 @@ mod tests {
         let profile = profile_by_id("icom-ic705").unwrap();
         assert!(IcomCivOptions::parse(profile, "poll_interval=0.01").is_err());
         assert!(IcomCivOptions::parse(profile, "poll_interval=6").is_err());
+    }
+
+    #[test]
+    fn profiles_cover_supported_icom_matrix() {
+        assert_eq!(SUPPORTED_PROFILES.len(), 5);
+        assert!(profile_by_id("icom-ic705").is_some());
+        assert!(profile_by_id("icom-ic7300").is_some());
+        assert!(profile_by_id("ICOM-IC7100").is_some());
+        assert!(profile_by_id("icom-ic7610").is_some());
+        assert!(profile_by_id("icom-ic7760").is_some());
+    }
+
+    #[test]
+    fn profile_metadata_matches_target_radios() {
+        let ic7100 = profile_by_id("icom-ic7100").unwrap();
+        assert_eq!(ic7100.default_radio_address, 0x88);
+        assert_eq!(
+            ic7100.capabilities.rit_xit.xit_enabled,
+            Capability::Unsupported
+        );
+
+        let ic7610 = profile_by_id("icom-ic7610").unwrap();
+        assert_eq!(ic7610.architecture, IcomArchitecture::DualRx);
+        assert_eq!(ic7610.capabilities.receiver_kind, ReceiverKind::DualRx);
+        assert_eq!(
+            ic7610.capabilities.main_rx.filter_bandwidth,
+            Capability::ReadWrite
+        );
+        assert_eq!(ic7610.capabilities.main_rx.rf.preamp, Capability::ReadWrite);
+        assert_eq!(ic7610.attenuator_values_db, ATTENUATOR_3_TO_24_DB);
+
+        let ic7760 = profile_by_id("icom-ic7760").unwrap();
+        assert!(ic7760.supports_command_29);
+        assert_eq!(ic7760.max_tx_power_watts, 200);
+        assert_eq!(
+            ic7760.capabilities.main_rx.filter_bandwidth,
+            Capability::ReadWrite
+        );
+        assert_eq!(
+            ic7760.capabilities.sub_rx.unwrap().rf.preamp,
+            Capability::ReadWrite
+        );
     }
 }
