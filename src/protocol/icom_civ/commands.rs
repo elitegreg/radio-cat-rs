@@ -150,7 +150,9 @@ pub fn encode(
             require_main_receiver(*receiver, "rit.offset")?;
             Ok(Some(set_rit_offset(options, *offset)?))
         }
-        RadioCommand::SetRitXitOffset(offset) => Ok(Some(set_rit_offset(options, *offset)?)),
+        RadioCommand::SetXitOffset(offset) | RadioCommand::SetRitXitOffset(offset) => {
+            Ok(Some(set_rit_offset(options, *offset)?))
+        }
         RadioCommand::SetKeyerSpeed(wpm) => Ok(Some(set_keyer_speed(options, *wpm)?)),
         RadioCommand::SendCw(text) => Ok(Some(send_cw(options, text)?)),
         RadioCommand::StopCw => Ok(Some(stop_cw(options)?)),
@@ -1013,6 +1015,44 @@ mod tests {
             decode_rit_offset(&[0x50, 0x02, 0x01]).unwrap(),
             RitXitOffsetHz::new(-250).unwrap()
         );
+    }
+
+    #[test]
+    fn main_rit_xit_offset_commands_encode_identically_for_shared_radios() {
+        let target = RitXitOffsetHz::new(250).unwrap();
+
+        let rit = encode(
+            profile(),
+            options(),
+            &RadioCommand::SetRitOffset {
+                receiver: ReceiverPath::Main,
+                offset: target,
+            },
+            &RadioState::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let xit = encode(
+            profile(),
+            options(),
+            &RadioCommand::SetXitOffset(target),
+            &RadioState::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let both = encode(
+            profile(),
+            options(),
+            &RadioCommand::SetRitXitOffset(target),
+            &RadioState::default(),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(rit.frames, xit.frames);
+        assert_eq!(rit.frames, both.frames);
+        assert_eq!(rit.optimistic, xit.optimistic);
+        assert_eq!(rit.optimistic, both.optimistic);
     }
 
     #[test]

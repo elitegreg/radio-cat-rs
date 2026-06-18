@@ -179,6 +179,7 @@ fn print_rit_xit(caps: &RitXitCapabilities) {
     println!("  xit enabled: {}", describe_capability(caps.xit_enabled));
     println!("  main offset: {}", describe_capability(caps.offset));
     println!("  sub offset: {}", describe_capability(caps.sub_offset));
+    println!("  offset type: {}", describe_rit_xit_offset_type(caps.offset_type));
     println!();
 }
 
@@ -210,6 +211,13 @@ fn describe_state_updates(updates: StateUpdateCapability) -> &'static str {
         StateUpdateCapability::Native => "native",
         StateUpdateCapability::Polling => "polling",
         StateUpdateCapability::Hybrid => "hybrid (native + polling)",
+    }
+}
+
+fn describe_rit_xit_offset_type(offset_type: radio_cat_rs::RitXitOffsetType) -> &'static str {
+    match offset_type {
+        radio_cat_rs::RitXitOffsetType::Shared => "shared",
+        radio_cat_rs::RitXitOffsetType::Independent => "independent",
     }
 }
 

@@ -130,9 +130,10 @@ impl RadioDriver for DummyRadioDriver {
             RadioCommand::SetXitEnabled(enabled) => vec![StatePatch::XitEnabled(enabled)],
             RadioCommand::SetRitOffset { receiver, offset } => receiver_patch(
                 receiver,
-                StatePatch::RitXitOffset(offset),
-                StatePatch::SubRitXitOffset(offset),
+                StatePatch::RitOffset(offset),
+                StatePatch::SubRitOffset(offset),
             ),
+            RadioCommand::SetXitOffset(offset) => vec![StatePatch::XitOffset(offset)],
             RadioCommand::SetRitXitOffset(offset) => vec![StatePatch::RitXitOffset(offset)],
 
             RadioCommand::SetKeyerSpeed(wpm) => vec![StatePatch::KeyerSpeed(wpm)],
@@ -208,6 +209,9 @@ fn dummy_state(connection: ConnectionState) -> RadioState {
             sub_rit_enabled: Some(false),
             xit_enabled: Some(false),
             offset_hz: Some(RitXitOffsetHz::new(0).expect("zero is a valid RIT/XIT offset")),
+            xit_offset_hz: Some(
+                RitXitOffsetHz::new(0).expect("zero is a valid RIT/XIT offset"),
+            ),
             sub_offset_hz: Some(RitXitOffsetHz::new(0).expect("zero is a valid RIT/XIT offset")),
         },
         keyer: Some(crate::KeyerState {
@@ -220,7 +224,7 @@ fn dummy_state(connection: ConnectionState) -> RadioState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Capability;
+    use crate::{Capability, RitXitOffsetType};
 
     #[test]
     fn dummy_reports_all_normalized_capabilities() {
@@ -233,6 +237,7 @@ mod tests {
         );
         assert_eq!(caps.tx.unwrap().split, Capability::ReadWrite);
         assert_eq!(caps.rit_xit.offset, Capability::ReadWrite);
+        assert_eq!(caps.rit_xit.offset_type, RitXitOffsetType::Independent);
         assert!(caps.keyer.unwrap().send_cw.is_supported());
     }
 
@@ -240,5 +245,38 @@ mod tests {
     fn dummy_receives_passthrough_options() {
         let driver = DummyRadioDriver::with_options("foo=bar,answer=42");
         assert_eq!(driver.options(), "foo=bar,answer=42");
+    }
+
+    #[tokio::test]
+    async fn dummy_supports_independent_rit_and_xit_offsets() {
+        let mut driver = DummyRadioDriver::new();
+        let state = driver.initial_state();
+        let offset = RitXitOffsetHz::new(125).unwrap();
+        let xit = RitXitOffsetHz::new(-250).unwrap();
+        let shared = RitXitOffsetHz::new(400).unwrap();
+
+        let outcome = driver
+            .handle_command(
+                RadioCommand::SetRitOffset {
+                    receiver: ReceiverPath::Main,
+                    offset,
+                },
+                &state,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.patches, vec![StatePatch::RitOffset(offset)]);
+
+        let outcome = driver
+            .handle_command(RadioCommand::SetXitOffset(xit), &state)
+            .await
+            .unwrap();
+        assert_eq!(outcome.patches, vec![StatePatch::XitOffset(xit)]);
+
+        let outcome = driver
+            .handle_command(RadioCommand::SetRitXitOffset(shared), &state)
+            .await
+            .unwrap();
+        assert_eq!(outcome.patches, vec![StatePatch::RitXitOffset(shared)]);
     }
 }

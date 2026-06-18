@@ -3,7 +3,8 @@ use std::time::Duration;
 use crate::{
     capabilities::{
         Capability, KeyerCapabilities, RadioCapabilities, ReceiverCapabilities, ReceiverKind,
-        ReceiverRfCapabilities, RitXitCapabilities, StateUpdateCapability, TransmitterCapabilities,
+        ReceiverRfCapabilities, RitXitCapabilities, RitXitOffsetType, StateUpdateCapability,
+        TransmitterCapabilities,
     },
     driver::DriverDescriptor,
     error::{RadioError, Result},
@@ -128,8 +129,14 @@ const IC705_MAIN_RX: ReceiverCapabilities =
 const IC705_SUB_RX: ReceiverCapabilities =
     ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, NO_RF);
 const IC705_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, RW, RW, RW);
-const IC705_RIT_XIT: RitXitCapabilities =
-    RitXitCapabilities::new(RW, UNSUPPORTED, RW, RW, UNSUPPORTED);
+const IC705_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
+    RW,
+    UNSUPPORTED,
+    RW,
+    RW,
+    UNSUPPORTED,
+    RitXitOffsetType::Shared,
+);
 const IC705_KEYER: KeyerCapabilities = KeyerCapabilities::new(RW, UNSUPPORTED, WO, WO);
 
 const IC705_STARTUP: &[StartupStep] = &[

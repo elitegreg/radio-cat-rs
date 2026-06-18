@@ -68,7 +68,7 @@ pub fn encode(
             }
             Ok(Some(encode_offset(profile, *receiver, *offset, state)?))
         }
-        RadioCommand::SetRitXitOffset(target_offset) => {
+        RadioCommand::SetXitOffset(target_offset) | RadioCommand::SetRitXitOffset(target_offset) => {
             require_writable(profile.capabilities.rit_xit.offset, "rit_xit.offset_hz")?;
             if is_k2(profile) {
                 return Err(RadioError::UnsupportedCapability {
@@ -144,7 +144,7 @@ pub fn decode(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result<Optio
             )?)]
         }
         "RO$" | "RO$S" if uses_ro_offset(profile) => {
-            vec![StatePatch::SubRitXitOffset(parse_offset(
+            vec![StatePatch::SubRitOffset(parse_offset(
                 "RO",
                 frame.payload(),
             )?)]
@@ -318,7 +318,7 @@ fn offset_capability(profile: &KenwoodAsciiProfile, receiver: ReceiverPath) -> C
 fn offset_patch(receiver: ReceiverPath, offset: RitXitOffsetHz) -> StatePatch {
     match receiver {
         ReceiverPath::Main => StatePatch::RitXitOffset(offset),
-        ReceiverPath::Sub => StatePatch::SubRitXitOffset(offset),
+        ReceiverPath::Sub => StatePatch::SubRitOffset(offset),
     }
 }
 
@@ -446,6 +446,35 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(encoded.frames[0].as_str(), "RD0300;");
+    }
+
+    #[test]
+    fn main_rit_xit_offset_commands_encode_identically_for_shared_radios() {
+        let ts590 = profile_by_id("kenwood-ts590").unwrap();
+        let mut state = RadioState::default();
+        state.rit_xit.offset_hz = Some(RitXitOffsetHz::new(100).unwrap());
+        let target = RitXitOffsetHz::new(250).unwrap();
+
+        let rit = encode(
+            ts590,
+            &RadioCommand::SetRitOffset {
+                receiver: ReceiverPath::Main,
+                offset: target,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        let xit = encode(ts590, &RadioCommand::SetXitOffset(target), &state)
+            .unwrap()
+            .unwrap();
+        let both = encode(ts590, &RadioCommand::SetRitXitOffset(target), &state)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(rit.frames, xit.frames);
+        assert_eq!(rit.frames, both.frames);
+        assert_eq!(rit.optimistic, both.optimistic);
     }
 
     #[test]
@@ -592,7 +621,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             ro.patches,
-            vec![StatePatch::SubRitXitOffset(
+            vec![StatePatch::SubRitOffset(
                 RitXitOffsetHz::new(42).unwrap()
             )]
         );

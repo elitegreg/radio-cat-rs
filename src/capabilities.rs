@@ -45,7 +45,10 @@ impl RadioCapabilities {
             main_rx: ReceiverCapabilities::all(),
             sub_rx: Some(ReceiverCapabilities::all()),
             tx: Some(TransmitterCapabilities::all()),
-            rit_xit: RitXitCapabilities::all(),
+            rit_xit: RitXitCapabilities {
+                offset_type: RitXitOffsetType::Independent,
+                ..RitXitCapabilities::all()
+            },
             keyer: Some(KeyerCapabilities::all()),
             state_updates: StateUpdateCapability::Native,
         }
@@ -183,6 +186,12 @@ impl TransmitterCapabilities {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RitXitOffsetType {
+    Shared,
+    Independent,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RitXitCapabilities {
     pub main_rit_enabled: Capability,
@@ -190,6 +199,7 @@ pub struct RitXitCapabilities {
     pub xit_enabled: Capability,
     pub offset: Capability,
     pub sub_offset: Capability,
+    pub offset_type: RitXitOffsetType,
 }
 
 impl RitXitCapabilities {
@@ -200,6 +210,7 @@ impl RitXitCapabilities {
             xit_enabled: Capability::ReadWrite,
             offset: Capability::ReadWrite,
             sub_offset: Capability::ReadWrite,
+            offset_type: RitXitOffsetType::Shared,
         }
     }
 
@@ -209,6 +220,7 @@ impl RitXitCapabilities {
         xit_enabled: Capability,
         offset: Capability,
         sub_offset: Capability,
+        offset_type: RitXitOffsetType,
     ) -> Self {
         Self {
             main_rit_enabled,
@@ -216,6 +228,7 @@ impl RitXitCapabilities {
             xit_enabled,
             offset,
             sub_offset,
+            offset_type,
         }
     }
 }

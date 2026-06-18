@@ -126,6 +126,7 @@ pub struct RitXitState {
     pub sub_rit_enabled: Option<bool>,
     pub xit_enabled: Option<bool>,
     pub offset_hz: Option<RitXitOffsetHz>,
+    pub xit_offset_hz: Option<RitXitOffsetHz>,
     pub sub_offset_hz: Option<RitXitOffsetHz>,
 }
 

@@ -16,7 +16,8 @@ pub use actor::RadioTask;
 pub use api::{supported_drivers, Radio, RadioConfig};
 pub use capabilities::{
     Capability, KeyerCapabilities, RadioCapabilities, ReceiverCapabilities, ReceiverKind,
-    ReceiverRfCapabilities, RitXitCapabilities, StateUpdateCapability, TransmitterCapabilities,
+    ReceiverRfCapabilities, RitXitCapabilities, RitXitOffsetType, StateUpdateCapability,
+    TransmitterCapabilities,
 };
 pub use command::{RadioCommand, ReceiverPath};
 pub use driver::{DriverCommandOutcome, DriverDescriptor, RadioDriver};

@@ -3,7 +3,8 @@ use std::time::Duration;
 use crate::{
     capabilities::{
         Capability, KeyerCapabilities, RadioCapabilities, ReceiverCapabilities, ReceiverKind,
-        ReceiverRfCapabilities, RitXitCapabilities, StateUpdateCapability, TransmitterCapabilities,
+        ReceiverRfCapabilities, RitXitCapabilities, RitXitOffsetType, StateUpdateCapability,
+        TransmitterCapabilities,
     },
     driver::DriverDescriptor,
 };
@@ -91,11 +92,24 @@ const NO_FILTER_NO_RF_RX: ReceiverCapabilities =
 const FULL_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, RW, RW, RW);
 const IF232_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, UNSUPPORTED, RW, RW);
 
-const MAIN_RIT_XIT: RitXitCapabilities =
-    RitXitCapabilities::new(RW, UNSUPPORTED, RW, RW, UNSUPPORTED);
-const K4_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(RW, RW, RW, RW, RW);
-const K2_RIT_XIT: RitXitCapabilities =
-    RitXitCapabilities::new(RW, UNSUPPORTED, RW, RO, UNSUPPORTED);
+const MAIN_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
+    RW,
+    UNSUPPORTED,
+    RW,
+    RW,
+    UNSUPPORTED,
+    RitXitOffsetType::Shared,
+);
+const K4_RIT_XIT: RitXitCapabilities =
+    RitXitCapabilities::new(RW, RW, RW, RW, RW, RitXitOffsetType::Shared);
+const K2_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
+    RW,
+    UNSUPPORTED,
+    RW,
+    RO,
+    UNSUPPORTED,
+    RitXitOffsetType::Shared,
+);
 
 const FULL_KEYER: KeyerCapabilities = KeyerCapabilities::new(RW, UNSUPPORTED, WO, WO);
 const YAESU_KEYER: KeyerCapabilities =
@@ -829,6 +843,10 @@ mod tests {
         assert_eq!(
             k4.capabilities.rit_xit.sub_rit_enabled,
             Capability::ReadWrite
+        );
+        assert_eq!(
+            k4.capabilities.rit_xit.offset_type,
+            RitXitOffsetType::Shared
         );
 
         let yaesu = profile_by_id("yaesu-ftdx10").unwrap();

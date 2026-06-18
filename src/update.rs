@@ -114,7 +114,8 @@ pub enum StateField {
     SubRitEnabled,
     XitEnabled,
     RitXitOffset,
-    SubRitXitOffset,
+    XitOffset,
+    SubRitOffset,
 
     KeyerPresent,
     KeyerSpeed,
@@ -205,8 +206,10 @@ pub enum StatePatch {
     MainRitEnabled(bool),
     SubRitEnabled(bool),
     XitEnabled(bool),
+    RitOffset(RitXitOffsetHz),
     RitXitOffset(RitXitOffsetHz),
-    SubRitXitOffset(RitXitOffsetHz),
+    XitOffset(RitXitOffsetHz),
+    SubRitOffset(RitXitOffsetHz),
 
     KeyerPresent(bool),
     KeyerSpeed(u8),
@@ -429,14 +432,27 @@ impl StateReducer {
                     changes.add(ChangeFlags::RIT_XIT, StateField::XitEnabled);
                 }
             }
-            StatePatch::RitXitOffset(value) => {
+            StatePatch::RitOffset(value) => {
                 if set_option(&mut self.state.rit_xit.offset_hz, value) {
                     changes.add(ChangeFlags::RIT_XIT, StateField::RitXitOffset);
                 }
             }
-            StatePatch::SubRitXitOffset(value) => {
+            StatePatch::RitXitOffset(value) => {
+                if set_option(&mut self.state.rit_xit.offset_hz, value) {
+                    changes.add(ChangeFlags::RIT_XIT, StateField::RitXitOffset);
+                }
+                if set_option(&mut self.state.rit_xit.xit_offset_hz, value) {
+                    changes.add(ChangeFlags::RIT_XIT, StateField::XitOffset);
+                }
+            }
+            StatePatch::XitOffset(value) => {
+                if set_option(&mut self.state.rit_xit.xit_offset_hz, value) {
+                    changes.add(ChangeFlags::RIT_XIT, StateField::XitOffset);
+                }
+            }
+            StatePatch::SubRitOffset(value) => {
                 if set_option(&mut self.state.rit_xit.sub_offset_hz, value) {
-                    changes.add(ChangeFlags::RIT_XIT, StateField::SubRitXitOffset);
+                    changes.add(ChangeFlags::RIT_XIT, StateField::SubRitOffset);
                 }
             }
 
@@ -556,5 +572,33 @@ mod tests {
             changes.fields.as_slice(),
             &[StateField::SubRxPresent, StateField::SubRxMode]
         );
+    }
+
+    #[test]
+    fn shared_rit_xit_offset_patch_updates_both_main_offsets() {
+        let mut reducer = StateReducer::new(RadioState::default());
+        let offset = crate::RitXitOffsetHz::new(250).unwrap();
+
+        let changes = reducer.apply_patch(StatePatch::RitXitOffset(offset));
+
+        assert_eq!(reducer.state().rit_xit.offset_hz, Some(offset));
+        assert_eq!(reducer.state().rit_xit.xit_offset_hz, Some(offset));
+        assert_eq!(
+            changes.fields.as_slice(),
+            &[StateField::RitXitOffset, StateField::XitOffset]
+        );
+    }
+
+    #[test]
+    fn independent_rit_and_xit_patches_only_update_target_field() {
+        let mut reducer = StateReducer::new(RadioState::default());
+        let rit = crate::RitXitOffsetHz::new(100).unwrap();
+        let xit = crate::RitXitOffsetHz::new(-200).unwrap();
+
+        reducer.apply_patch(StatePatch::RitOffset(rit));
+        reducer.apply_patch(StatePatch::XitOffset(xit));
+
+        assert_eq!(reducer.state().rit_xit.offset_hz, Some(rit));
+        assert_eq!(reducer.state().rit_xit.xit_offset_hz, Some(xit));
     }
 }

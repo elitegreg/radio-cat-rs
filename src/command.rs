@@ -60,6 +60,7 @@ pub enum RadioCommand {
         receiver: ReceiverPath,
         offset: RitXitOffsetHz,
     },
+    SetXitOffset(RitXitOffsetHz),
     SetRitXitOffset(RitXitOffsetHz),
 
     SetKeyerSpeed(u8),

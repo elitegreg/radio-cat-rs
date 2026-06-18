@@ -416,7 +416,7 @@ fn draw(
     frame.render_widget(body, chunks[1]);
 
     let help = Paragraph::new(format!(
-        "status: {status}\nlast update: {last_update}\nexamples: set-freq-main 14074000 | set-mode-main usb | set-rit-main on | set-offset 250 | send-cw CQ TEST\ncommands: help, refresh, set-*-main/sub/tx, set-ptt, set-split, set-xit, set-keyer-speed, stop-cw"
+        "status: {status}\nlast update: {last_update}\nexamples: set-freq-main 14074000 | set-mode-main usb | set-rit-main on | set-offset 250 | set-offset-xit 250 | send-cw CQ TEST\ncommands: help, refresh, set-*-main/sub/tx, set-ptt, set-split, set-xit, set-keyer-speed, stop-cw"
     ))
     .block(Block::default().title("Command Help").borders(Borders::ALL))
     .wrap(Wrap { trim: false });
@@ -437,7 +437,7 @@ fn format_state(state: &RadioState) -> String {
 main rx: freq={} mode={} filter_bw={:?} filter_shift={:?} preamp={} attn={} nb={} nr={} autonotch={:?}\n\
 sub rx:  freq={} mode={} filter_bw={:?} filter_shift={:?} preamp={} attn={} nb={} nr={} autonotch={:?}\n\
 tx:      freq={} mode={} power={:?} ptt={:?} split={:?}\n\
-rit/xit: main_rit={:?} sub_rit={:?} xit={:?} main_offset={:?} sub_offset={:?}\n\
+rit/xit: main_rit={:?} sub_rit={:?} xit={:?} main_offset={:?} xit_offset={:?} sub_offset={:?}\n\
 keyer:   speed_wpm={:?} sending={:?}",
         state.connection,
         opt_freq(state.main_rx.frequency),
@@ -467,6 +467,7 @@ keyer:   speed_wpm={:?} sending={:?}",
         state.rit_xit.sub_rit_enabled,
         state.rit_xit.xit_enabled,
         state.rit_xit.offset_hz.map(|offset| offset.as_hz()),
+        state.rit_xit.xit_offset_hz.map(|offset| offset.as_hz()),
         state.rit_xit.sub_offset_hz.map(|offset| offset.as_hz()),
         keyer.and_then(|keyer| keyer.speed_wpm),
         keyer.and_then(|keyer| keyer.sending),
@@ -657,6 +658,12 @@ async fn execute_command(
             radio.set_main_rit_offset(RitXitOffsetHz::new(value)?).await?;
             Ok(format!("main rit offset -> {value}"))
         }
+        "set-offset-xit" => {
+            let value = parse_i16_arg(parts.next(), "offset_hz")?;
+            let value = value.clamp(RitXitOffsetHz::MIN, RitXitOffsetHz::MAX);
+            radio.set_main_xit_offset(RitXitOffsetHz::new(value)?).await?;
+            Ok(format!("main xit offset -> {value}"))
+        }
         "set-offset-sub" => {
             let value = parse_i16_arg(parts.next(), "offset_hz")?;
             let value = value.clamp(RitXitOffsetHz::MIN, RitXitOffsetHz::MAX);
@@ -781,6 +788,7 @@ fn help_text() -> String {
         "set-xit <on|off>",
         "set-offset <hz>",
         "set-offset-main <hz>",
+        "set-offset-xit <hz>",
         "set-offset-sub <hz>",
         "set-keyer-speed <wpm>",
         "send-cw <text>",
