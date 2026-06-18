@@ -655,19 +655,25 @@ async fn execute_command(
         "set-offset" | "set-offset-main" => {
             let value = parse_i16_arg(parts.next(), "offset_hz")?;
             let value = value.clamp(RitXitOffsetHz::MIN, RitXitOffsetHz::MAX);
-            radio.set_main_rit_offset(RitXitOffsetHz::new(value)?).await?;
+            radio
+                .set_main_rit_offset(RitXitOffsetHz::new(value)?)
+                .await?;
             Ok(format!("main rit offset -> {value}"))
         }
         "set-offset-xit" => {
             let value = parse_i16_arg(parts.next(), "offset_hz")?;
             let value = value.clamp(RitXitOffsetHz::MIN, RitXitOffsetHz::MAX);
-            radio.set_main_xit_offset(RitXitOffsetHz::new(value)?).await?;
+            radio
+                .set_main_xit_offset(RitXitOffsetHz::new(value)?)
+                .await?;
             Ok(format!("main xit offset -> {value}"))
         }
         "set-offset-sub" => {
             let value = parse_i16_arg(parts.next(), "offset_hz")?;
             let value = value.clamp(RitXitOffsetHz::MIN, RitXitOffsetHz::MAX);
-            radio.set_sub_rit_offset(RitXitOffsetHz::new(value)?).await?;
+            radio
+                .set_sub_rit_offset(RitXitOffsetHz::new(value)?)
+                .await?;
             Ok(format!("sub rit offset -> {value}"))
         }
         "set-keyer-speed" => {

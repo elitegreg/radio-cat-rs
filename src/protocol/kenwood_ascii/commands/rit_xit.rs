@@ -68,7 +68,8 @@ pub fn encode(
             }
             Ok(Some(encode_offset(profile, *receiver, *offset, state)?))
         }
-        RadioCommand::SetXitOffset(target_offset) | RadioCommand::SetRitXitOffset(target_offset) => {
+        RadioCommand::SetXitOffset(target_offset)
+        | RadioCommand::SetRitXitOffset(target_offset) => {
             require_writable(profile.capabilities.rit_xit.offset, "rit_xit.offset_hz")?;
             if is_k2(profile) {
                 return Err(RadioError::UnsupportedCapability {
@@ -621,9 +622,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             ro.patches,
-            vec![StatePatch::SubRitOffset(
-                RitXitOffsetHz::new(42).unwrap()
-            )]
+            vec![StatePatch::SubRitOffset(RitXitOffsetHz::new(42).unwrap())]
         );
 
         let rc = decode(ts590, &AsciiFrame::new("RC;").unwrap())

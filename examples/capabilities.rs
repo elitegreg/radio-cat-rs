@@ -3,6 +3,7 @@ use std::{env, error::Error, fmt};
 use radio_cat_rs::protocol::{
     icom_civ::profile_by_id as icom_profile_by_id,
     kenwood_ascii::profile_by_id as kenwood_profile_by_id,
+    smartsdr::profile_by_id as smartsdr_profile_by_id,
 };
 use radio_cat_rs::{
     capabilities::{
@@ -38,6 +39,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else if let Some(profile) = kenwood_profile_by_id(descriptor.id) {
         profile.capabilities
     } else if let Some(profile) = icom_profile_by_id(descriptor.id) {
+        profile.capabilities
+    } else if let Some(profile) = smartsdr_profile_by_id(descriptor.id) {
         profile.capabilities
     } else {
         return Err(CliError(format!(
@@ -179,7 +182,10 @@ fn print_rit_xit(caps: &RitXitCapabilities) {
     println!("  xit enabled: {}", describe_capability(caps.xit_enabled));
     println!("  main offset: {}", describe_capability(caps.offset));
     println!("  sub offset: {}", describe_capability(caps.sub_offset));
-    println!("  offset type: {}", describe_rit_xit_offset_type(caps.offset_type));
+    println!(
+        "  offset type: {}",
+        describe_rit_xit_offset_type(caps.offset_type)
+    );
     println!();
 }
 

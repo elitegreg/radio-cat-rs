@@ -6,7 +6,7 @@ use crate::{
     actor::{send_command, CommandEnvelope, RadioTask},
     command::{RadioCommand, ReceiverPath},
     drivers,
-    drivers::{DummyRadioDriver, IcomCivDriver, KenwoodAsciiDriver},
+    drivers::{DummyRadioDriver, FlexRadioSmartSdrDriver, IcomCivDriver, KenwoodAsciiDriver},
     error::{RadioError, Result},
     transport::{
         boxed_transport, open_transport, BoxedCatTransport, CatTransport, TransportConfig,
@@ -119,6 +119,10 @@ impl Radio {
     }
 
     pub async fn build(config: RadioConfig) -> Result<(Self, RadioTask)> {
+        if FlexRadioSmartSdrDriver::from_driver_id(&config.driver, "").is_some() {
+            FlexRadioSmartSdrDriver::validate_transport_config(&config.transport)?;
+        }
+
         tracing::debug!(
             driver = %config.driver,
             transport = ?config.transport,
@@ -189,12 +193,18 @@ impl Radio {
                 Some(driver) => Box::new(driver),
                 None => match IcomCivDriver::from_driver_id(driver_id, config.options.clone())? {
                     Some(driver) => Box::new(driver),
-                    None => {
-                        tracing::error!(driver = %config.driver, "unsupported radio driver requested");
-                        return Err(RadioError::UnsupportedDriver {
-                            driver: config.driver,
-                        });
-                    }
+                    None => match FlexRadioSmartSdrDriver::from_driver_id(
+                        driver_id,
+                        config.options.clone(),
+                    ) {
+                        Some(driver) => Box::new(driver),
+                        None => {
+                            tracing::error!(driver = %config.driver, "unsupported radio driver requested");
+                            return Err(RadioError::UnsupportedDriver {
+                                driver: config.driver,
+                            });
+                        }
+                    },
                 },
             },
         };
@@ -582,7 +592,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn supported_driver_list_contains_dummy_kenwood_and_icom_profiles() {
+    async fn supported_driver_list_contains_dummy_kenwood_icom_and_flex_profiles() {
         assert!(supported_drivers()
             .iter()
             .any(|driver| driver.id == "dummy"));
@@ -592,6 +602,9 @@ mod tests {
         assert!(supported_drivers()
             .iter()
             .any(|driver| driver.id == "icom-ic705"));
+        assert!(supported_drivers()
+            .iter()
+            .any(|driver| driver.id == "flexradio-smartsdr"));
 
         let radio = Radio::connect(RadioConfig::dummy()).await.unwrap();
         assert_eq!(
@@ -608,6 +621,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(icom.driver_descriptor().id, "icom-ic705");
+    }
+
+    #[tokio::test]
+    async fn flexradio_build_rejects_non_tcp_transport_configs() {
+        let serial_error = match Radio::build(
+            RadioConfig::new("flexradio-smartsdr").with_serial_transport("/dev/null", 38_400),
+        )
+        .await
+        {
+            Ok(_) => panic!("expected serial SmartSDR build to fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            serial_error,
+            RadioError::InvalidValue {
+                field: "transport",
+                ..
+            }
+        ));
+
+        let none_error = match Radio::build(RadioConfig::new("flexradio-smartsdr")).await {
+            Ok(_) => panic!("expected transport-less SmartSDR build to fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            none_error,
+            RadioError::InvalidValue {
+                field: "transport",
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

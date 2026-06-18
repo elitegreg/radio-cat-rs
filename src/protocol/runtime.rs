@@ -13,13 +13,15 @@ use crate::{
             FrameSplitter as KenwoodFrameSplitter, KenwoodAsciiProfile, ResponseMatcher,
             StartupStep,
         },
+        smartsdr::{self, LineSplitter as SmartSdrLineSplitter, SmartSdrProfile},
     },
     transport::CatTransport,
-    RadioCommand, RadioState, ReceiverPath, StatePatch, UpdateSource,
+    ConnectionState, RadioCommand, RadioState, ReceiverPath, StatePatch, UpdateSource,
 };
 
 const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 const STARTUP_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
+const SMARTSDR_STARTUP_TIMEOUT: Duration = Duration::from_millis(1_500);
 
 pub(crate) trait ProtocolContext: Send {
     fn state(&self) -> &RadioState;
@@ -71,6 +73,10 @@ pub(crate) fn native_protocol_for_driver(
     if let Some(profile) = icom_civ::profile_by_id(driver_id) {
         let options = IcomCivOptions::parse(profile, options)?;
         return Ok(Some(Box::new(IcomCivRuntime::new(profile, options))));
+    }
+
+    if let Some(profile) = smartsdr::profile_by_id(driver_id) {
+        return Ok(Some(Box::new(SmartSdrRuntime::new(profile))));
     }
 
     Ok(None)
@@ -517,6 +523,13 @@ enum IcomWaitOutcome {
     Collision,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SmartSdrWaitOutcome {
+    Matched,
+    Timeout,
+    Rejected { code: u32, message: String },
+}
+
 struct IcomCivRuntime {
     profile: &'static IcomCivProfile,
     options: IcomCivOptions,
@@ -930,6 +943,326 @@ impl NativeProtocol for IcomCivRuntime {
     }
 }
 
+struct SmartSdrRuntime {
+    profile: &'static SmartSdrProfile,
+    line_splitter: SmartSdrLineSplitter,
+    next_sequence: u32,
+    version: Option<String>,
+    handle: Option<String>,
+    saw_slice_status: bool,
+}
+
+impl SmartSdrRuntime {
+    fn new(profile: &'static SmartSdrProfile) -> Self {
+        Self {
+            profile,
+            line_splitter: SmartSdrLineSplitter::new(),
+            next_sequence: 1,
+            version: None,
+            handle: None,
+            saw_slice_status: false,
+        }
+    }
+
+    async fn send_encoded(
+        &mut self,
+        transport: &mut dyn CatTransport,
+        encoded: smartsdr::EncodedCommand,
+        default_source: UpdateSource,
+        wait_timeout: Duration,
+        ctx: &mut dyn ProtocolContext,
+    ) -> Result<()> {
+        for command in encoded.commands {
+            self.send_command_body(transport, &command, default_source, wait_timeout, ctx)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn send_command_body(
+        &mut self,
+        transport: &mut dyn CatTransport,
+        command: &str,
+        default_source: UpdateSource,
+        wait_timeout: Duration,
+        ctx: &mut dyn ProtocolContext,
+    ) -> Result<()> {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+
+        let frame = smartsdr::command_frame(sequence, command)?;
+        tracing::debug!(
+            driver = %self.profile.id(),
+            sequence,
+            tx_frame = frame.trim_end(),
+            "sending SmartSDR command"
+        );
+        transport.write_all(frame.as_bytes()).await?;
+        transport.flush().await?;
+
+        match self
+            .process_incoming_with_expected(
+                transport,
+                wait_timeout,
+                default_source,
+                Some(sequence),
+                ctx,
+            )
+            .await?
+        {
+            SmartSdrWaitOutcome::Matched => Ok(()),
+            SmartSdrWaitOutcome::Timeout => Err(RadioError::Timeout {
+                command: "smartsdr-command-response",
+            }),
+            SmartSdrWaitOutcome::Rejected { code, message } => Err(RadioError::Decode {
+                command: "smartsdr-response",
+                message: format!("radio rejected command with 0x{code:08X}: {message}"),
+            }),
+        }
+    }
+
+    async fn process_incoming_with_expected(
+        &mut self,
+        transport: &mut dyn CatTransport,
+        wait_timeout: Duration,
+        default_source: UpdateSource,
+        expected_sequence: Option<u32>,
+        ctx: &mut dyn ProtocolContext,
+    ) -> Result<SmartSdrWaitOutcome> {
+        let deadline = Instant::now() + wait_timeout;
+        let mut saw_lines = false;
+
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(if expected_sequence.is_none() && saw_lines {
+                    SmartSdrWaitOutcome::Matched
+                } else {
+                    SmartSdrWaitOutcome::Timeout
+                });
+            }
+
+            let remaining = deadline.saturating_duration_since(now);
+            let mut buf = [0u8; 1024];
+            let count = match timeout(remaining, transport.read_some(&mut buf)).await {
+                Ok(read_result) => read_result?,
+                Err(_) => {
+                    return Ok(if expected_sequence.is_none() && saw_lines {
+                        SmartSdrWaitOutcome::Matched
+                    } else {
+                        SmartSdrWaitOutcome::Timeout
+                    })
+                }
+            };
+
+            if count == 0 {
+                return Ok(if expected_sequence.is_none() && saw_lines {
+                    SmartSdrWaitOutcome::Matched
+                } else {
+                    SmartSdrWaitOutcome::Timeout
+                });
+            }
+
+            let lines = self.line_splitter.push(&buf[..count])?;
+            let mut response_outcome = None;
+            for line in lines {
+                saw_lines = true;
+                match smartsdr::parse_line(&line)? {
+                    smartsdr::IncomingLine::Version(version) => {
+                        tracing::debug!(
+                            driver = %self.profile.id(),
+                            version = %version,
+                            "received SmartSDR protocol version"
+                        );
+                        self.version = Some(version);
+                    }
+                    smartsdr::IncomingLine::Handle(handle) => {
+                        tracing::debug!(
+                            driver = %self.profile.id(),
+                            handle = %handle,
+                            "received SmartSDR client handle"
+                        );
+                        self.handle = Some(handle);
+                    }
+                    smartsdr::IncomingLine::Status(message) => {
+                        if message.starts_with("slice ") {
+                            self.saw_slice_status = true;
+                        }
+                        match smartsdr::decode_status(self.profile, &message, ctx.state()) {
+                            Ok(Some(decoded)) => {
+                                let source = decoded.source_hint.unwrap_or(default_source);
+                                ctx.publish_patches(decoded.patches, source);
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                tracing::warn!(
+                                    driver = %self.profile.id(),
+                                    line = %line,
+                                    ?error,
+                                    "failed to decode SmartSDR status line"
+                                );
+                            }
+                        }
+                    }
+                    smartsdr::IncomingLine::Response(response) => {
+                        tracing::debug!(
+                            driver = %self.profile.id(),
+                            sequence = response.sequence,
+                            code = format_args!("{:08X}", response.code),
+                            message = %response.message,
+                            "received SmartSDR command response"
+                        );
+                        if expected_sequence == Some(response.sequence) {
+                            response_outcome = Some(if response.code == 0 {
+                                SmartSdrWaitOutcome::Matched
+                            } else {
+                                SmartSdrWaitOutcome::Rejected {
+                                    code: response.code,
+                                    message: response.message,
+                                }
+                            });
+                        }
+                    }
+                    smartsdr::IncomingLine::Message(message) => {
+                        tracing::debug!(
+                            driver = %self.profile.id(),
+                            message = %message,
+                            "received SmartSDR message line"
+                        );
+                    }
+                    smartsdr::IncomingLine::Unknown(text) => {
+                        tracing::trace!(
+                            driver = %self.profile.id(),
+                            line = %text,
+                            "ignoring unknown SmartSDR line"
+                        );
+                    }
+                }
+            }
+
+            if let Some(outcome) = response_outcome {
+                return Ok(outcome);
+            }
+
+            if expected_sequence.is_none() && saw_lines {
+                return Ok(SmartSdrWaitOutcome::Matched);
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl NativeProtocol for SmartSdrRuntime {
+    fn id(&self) -> &'static str {
+        self.profile.id()
+    }
+
+    fn poll_interval(&self) -> Option<Duration> {
+        None
+    }
+
+    async fn startup(
+        &mut self,
+        transport: &mut dyn CatTransport,
+        ctx: &mut dyn ProtocolContext,
+    ) -> Result<()> {
+        let _ = self
+            .process_incoming_with_expected(
+                transport,
+                STARTUP_RESPONSE_TIMEOUT,
+                UpdateSource::Native,
+                None,
+                ctx,
+            )
+            .await?;
+
+        self.send_command_body(
+            transport,
+            &format!("sub slice {}", self.profile.slice),
+            UpdateSource::Native,
+            SMARTSDR_STARTUP_TIMEOUT,
+            ctx,
+        )
+        .await?;
+
+        let _ = self
+            .process_incoming_with_expected(
+                transport,
+                STARTUP_RESPONSE_TIMEOUT,
+                UpdateSource::Native,
+                None,
+                ctx,
+            )
+            .await?;
+
+        ctx.publish_patches(
+            vec![StatePatch::Connection(ConnectionState::Ready)],
+            UpdateSource::Native,
+        );
+
+        Ok(())
+    }
+
+    async fn dispatch_command(
+        &mut self,
+        transport: &mut dyn CatTransport,
+        command: RadioCommand,
+        state_before: &RadioState,
+        ctx: &mut dyn ProtocolContext,
+    ) -> Result<()> {
+        if command_matches_state(&command, state_before) {
+            tracing::debug!(
+                driver = %self.profile.id(),
+                ?command,
+                "validated current state; skipping SmartSDR setter"
+            );
+            return Ok(());
+        }
+
+        let Some(encoded) = smartsdr::encode(self.profile, &command, state_before)? else {
+            return Ok(());
+        };
+
+        self.send_encoded(
+            transport,
+            encoded,
+            UpdateSource::CommandResponse,
+            COMMAND_RESPONSE_TIMEOUT,
+            ctx,
+        )
+        .await
+    }
+
+    async fn process_incoming(
+        &mut self,
+        transport: &mut dyn CatTransport,
+        wait_timeout: Duration,
+        default_source: UpdateSource,
+        ctx: &mut dyn ProtocolContext,
+    ) -> Result<bool> {
+        Ok(matches!(
+            self.process_incoming_with_expected(
+                transport,
+                wait_timeout,
+                default_source,
+                None,
+                ctx,
+            )
+            .await?,
+            SmartSdrWaitOutcome::Matched
+        ))
+    }
+
+    async fn poll(
+        &mut self,
+        _transport: &mut dyn CatTransport,
+        _ctx: &mut dyn ProtocolContext,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
 fn encode_kenwood_command(
     profile: &'static KenwoodAsciiProfile,
     command: &RadioCommand,
@@ -1279,24 +1612,34 @@ fn command_matches_state(command: &RadioCommand, state: &RadioState) -> bool {
         } => receiver_state(state, *receiver)
             .and_then(|rx| rx.filter.bandwidth_hz)
             .is_some_and(|current| current == *bandwidth_hz),
-        RadioCommand::SetReceiverFilterShift { receiver, shift_hz } => receiver_state(state, *receiver)
-            .and_then(|rx| rx.filter.shift_hz)
-            .is_some_and(|current| current == *shift_hz),
+        RadioCommand::SetReceiverFilterShift { receiver, shift_hz } => {
+            receiver_state(state, *receiver)
+                .and_then(|rx| rx.filter.shift_hz)
+                .is_some_and(|current| current == *shift_hz)
+        }
         RadioCommand::SetReceiverPreamp { receiver, setting } => receiver_state(state, *receiver)
             .and_then(|rx| rx.rf.preamp)
             .is_some_and(|current| current == *setting),
-        RadioCommand::SetReceiverAttenuator { receiver, setting } => receiver_state(state, *receiver)
-            .and_then(|rx| rx.rf.attenuator)
-            .is_some_and(|current| current == *setting),
-        RadioCommand::SetReceiverNoiseBlanker { receiver, setting } => receiver_state(state, *receiver)
-            .and_then(|rx| rx.rf.noise_blanker)
-            .is_some_and(|current| current == *setting),
-        RadioCommand::SetReceiverNoiseReduction { receiver, setting } => receiver_state(state, *receiver)
-            .and_then(|rx| rx.rf.noise_reduction)
-            .is_some_and(|current| current == *setting),
-        RadioCommand::SetReceiverAutoNotch { receiver, enabled } => receiver_state(state, *receiver)
-            .and_then(|rx| rx.rf.auto_notch)
-            .is_some_and(|current| current == *enabled),
+        RadioCommand::SetReceiverAttenuator { receiver, setting } => {
+            receiver_state(state, *receiver)
+                .and_then(|rx| rx.rf.attenuator)
+                .is_some_and(|current| current == *setting)
+        }
+        RadioCommand::SetReceiverNoiseBlanker { receiver, setting } => {
+            receiver_state(state, *receiver)
+                .and_then(|rx| rx.rf.noise_blanker)
+                .is_some_and(|current| current == *setting)
+        }
+        RadioCommand::SetReceiverNoiseReduction { receiver, setting } => {
+            receiver_state(state, *receiver)
+                .and_then(|rx| rx.rf.noise_reduction)
+                .is_some_and(|current| current == *setting)
+        }
+        RadioCommand::SetReceiverAutoNotch { receiver, enabled } => {
+            receiver_state(state, *receiver)
+                .and_then(|rx| rx.rf.auto_notch)
+                .is_some_and(|current| current == *enabled)
+        }
         RadioCommand::SetTxFrequency(frequency) => state
             .tx
             .as_ref()

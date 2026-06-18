@@ -79,6 +79,8 @@ This includes `dummy` and Kenwood-ASCII profile IDs such as:
 - `kenwood-ts590`, `kenwood-ts890`, `kenwood-ts990`, `kenwood-ts2000`, `kenwood-ts480`, `kenwood-ts570`, `kenwood-ts870`, `kenwood-if232`
 - `elecraft-k4`, `elecraft-k3`, `elecraft-k2`
 - `yaesu-ftdx101`, `yaesu-ftdx10`, `yaesu-ft710`, `yaesu-ft891`, `yaesu-ft991`
+- `icom-ic705`
+- `flexradio-smartsdr`
 
 ## Serial/TCP connections and driver options
 
@@ -107,6 +109,16 @@ let radio = Radio::connect(RadioConfig::dummy()).await?;
 ```
 
 The `options` string is passed through to the selected driver unchanged. The core API does not parse it, so future drivers can use driver-specific formats while keeping one common construction path.
+
+`flexradio-smartsdr` is TCP-only. Use `with_tcp_transport(...)` or `with_tcp_socket(...)` when calling `Radio::connect`, for example:
+
+```rust
+use radio_cat_rs::RadioConfig;
+
+# fn example() -> RadioConfig {
+RadioConfig::new("flexradio-smartsdr").with_tcp_socket("127.0.0.1", 4992)
+# }
+```
 
 ## Provided transports
 

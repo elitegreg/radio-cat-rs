@@ -1,15 +1,19 @@
 mod dummy;
+mod flexradio_smartsdr;
 mod icom_civ;
 mod kenwood_ascii;
 
 pub use dummy::{DummyRadioDriver, DUMMY_DRIVER};
+pub use flexradio_smartsdr::FlexRadioSmartSdrDriver;
 pub use icom_civ::IcomCivDriver;
 pub use kenwood_ascii::KenwoodAsciiDriver;
 
 use std::sync::OnceLock;
 
 use crate::{
-    protocol::{icom_civ as icom_protocol, kenwood_ascii as kenwood_protocol},
+    protocol::{
+        icom_civ as icom_protocol, kenwood_ascii as kenwood_protocol, smartsdr as smartsdr_protocol,
+    },
     DriverDescriptor,
 };
 
@@ -20,7 +24,8 @@ pub fn supported_drivers() -> &'static [DriverDescriptor] {
         .get_or_init(|| {
             let mut descriptors = Vec::with_capacity(
                 1 + kenwood_protocol::SUPPORTED_PROFILES.len()
-                    + icom_protocol::SUPPORTED_PROFILES.len(),
+                    + icom_protocol::SUPPORTED_PROFILES.len()
+                    + smartsdr_protocol::SUPPORTED_PROFILES.len(),
             );
             descriptors.push(DUMMY_DRIVER);
             descriptors.extend(
@@ -30,6 +35,11 @@ pub fn supported_drivers() -> &'static [DriverDescriptor] {
             );
             descriptors.extend(
                 icom_protocol::SUPPORTED_PROFILES
+                    .iter()
+                    .map(|profile| profile.descriptor),
+            );
+            descriptors.extend(
+                smartsdr_protocol::SUPPORTED_PROFILES
                     .iter()
                     .map(|profile| profile.descriptor),
             );

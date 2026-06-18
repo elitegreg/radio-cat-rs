@@ -64,7 +64,9 @@ impl CatTransport for SharedMockTransport {
 async fn ic705_actor_skips_mode_set_when_validation_query_confirms_state() {
     let transport = SharedMockTransport::default();
 
-    transport.push_read(response([0x26, 0x00, 0x03, 0x00, 0x03])).await;
+    transport
+        .push_read(response([0x26, 0x00, 0x03, 0x00, 0x03]))
+        .await;
 
     let radio = Radio::connect_with_transport(
         RadioConfig::new("icom-ic705").with_options("poll_interval=0.2"),
@@ -81,7 +83,9 @@ async fn ic705_actor_skips_mode_set_when_validation_query_confirms_state() {
     .unwrap();
 
     let baseline = transport.written_len().await;
-    transport.push_read(response([0x26, 0x00, 0x03, 0x00, 0x03])).await;
+    transport
+        .push_read(response([0x26, 0x00, 0x03, 0x00, 0x03]))
+        .await;
 
     radio.set_main_mode(Mode::Cw).await.unwrap();
 
@@ -94,7 +98,9 @@ async fn ic705_actor_skips_mode_set_when_validation_query_confirms_state() {
 async fn ic705_actor_sends_mode_set_when_validation_query_disagrees() {
     let transport = SharedMockTransport::default();
 
-    transport.push_read(response([0x26, 0x00, 0x03, 0x00, 0x03])).await;
+    transport
+        .push_read(response([0x26, 0x00, 0x03, 0x00, 0x03]))
+        .await;
 
     let radio = Radio::connect_with_transport(
         RadioConfig::new("icom-ic705").with_options("poll_interval=0.2"),
@@ -111,7 +117,9 @@ async fn ic705_actor_sends_mode_set_when_validation_query_disagrees() {
     .unwrap();
 
     let baseline = transport.written_len().await;
-    transport.push_read(response([0x26, 0x00, 0x01, 0x00, 0x03])).await;
+    transport
+        .push_read(response([0x26, 0x00, 0x01, 0x00, 0x03]))
+        .await;
     transport.push_read(response([0xfb])).await;
 
     radio.set_main_mode(Mode::Cw).await.unwrap();
@@ -120,7 +128,10 @@ async fn ic705_actor_sends_mode_set_when_validation_query_disagrees() {
     let additional = &written[baseline..];
     assert_eq!(
         additional,
-        &[command([0x26, 0x00]), command([0x26, 0x00, 0x03, 0x00, 0x01])]
+        &[
+            command([0x26, 0x00]),
+            command([0x26, 0x00, 0x03, 0x00, 0x01])
+        ]
     );
 }
 
