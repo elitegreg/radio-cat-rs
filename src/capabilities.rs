@@ -4,6 +4,7 @@ pub enum Capability {
     ReadOnly,
     WriteOnly,
     ReadWrite,
+    Emulated,
 }
 
 impl Capability {
@@ -12,7 +13,7 @@ impl Capability {
     }
 
     pub const fn can_read(self) -> bool {
-        matches!(self, Self::ReadOnly | Self::ReadWrite)
+        matches!(self, Self::ReadOnly | Self::ReadWrite | Self::Emulated)
     }
 
     pub const fn can_write(self) -> bool {

@@ -26,7 +26,7 @@ pub fn encode(
             Ok(Some(EncodedCommand::new(
                 vec![AsciiFrame::new(format!("KY {text};"))?],
                 ResponseMatcher::None,
-                vec![StatePatch::KeyerSending(true)],
+                Vec::new(),
                 CommandPriority::Normal,
             )))
         }
@@ -35,7 +35,7 @@ pub fn encode(
             Ok(Some(EncodedCommand::new(
                 vec![AsciiFrame::new(stop_frame(profile))?],
                 ResponseMatcher::None,
-                vec![StatePatch::KeyerSending(false)],
+                Vec::new(),
                 CommandPriority::High,
             )))
         }

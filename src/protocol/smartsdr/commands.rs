@@ -2,7 +2,7 @@ use crate::{
     command::{RadioCommand, ReceiverPath},
     error::RadioError,
     update::{StatePatch, UpdateSource},
-    Frequency, LeveledSetting, Mode, RadioState, Result, RitXitOffsetHz,
+    Frequency, LeveledSetting, Mode, Power, RadioState, Result, RitXitOffsetHz,
 };
 
 use super::SmartSdrProfile;
@@ -264,9 +264,13 @@ pub fn encode(
             )],
             mode_patches(*mode),
         ))),
-        RadioCommand::SetTxPower(_) => Err(RadioError::UnsupportedCapability {
-            capability: "tx.power",
-        }),
+        RadioCommand::SetTxPower(power) => {
+            let watts = encode_rfpower(*power)?;
+            Ok(Some(EncodedCommand::new(
+                vec![format!("transmit set rfpower={watts}")],
+                vec![StatePatch::TxPower(Power::from_watts(watts))],
+            )))
+        }
         RadioCommand::SetPtt(enabled) => Ok(Some(EncodedCommand::new(
             if *enabled {
                 vec![
@@ -331,16 +335,14 @@ pub fn encode(
                 StatePatch::XitOffset(*offset),
             ],
         ))),
-        RadioCommand::SetKeyerSpeed(_) => Err(RadioError::UnsupportedCapability {
-            capability: "keyer.speed_wpm",
-        }),
+        RadioCommand::SetKeyerSpeed(wpm) => Ok(Some(set_keyer_speed(*wpm)?)),
         RadioCommand::SendCw(text) => Ok(Some(EncodedCommand::new(
             vec![format!("cwx send \"{}\"", encode_cw_text(text)?)],
-            vec![StatePatch::KeyerSending(true)],
+            Vec::new(),
         ))),
         RadioCommand::StopCw => Ok(Some(EncodedCommand::new(
             vec!["cwx clear".to_string()],
-            vec![StatePatch::KeyerSending(false)],
+            Vec::new(),
         ))),
         RadioCommand::Refresh => Ok(None),
     }
@@ -351,11 +353,39 @@ pub fn decode_status(
     message: &str,
     state: &RadioState,
 ) -> Result<Option<DecodedFrame>> {
+    decode_message(profile, message, state)
+}
+
+pub fn decode_response(
+    profile: &SmartSdrProfile,
+    command: &str,
+    message: &str,
+    state: &RadioState,
+) -> Result<Option<DecodedFrame>> {
+    match command {
+        command if command.starts_with("slice info ") => decode_message(profile, message, state),
+        "cwx" => decode_cwx_status(message.strip_prefix("cwx ").unwrap_or(message)).map(Some),
+        "transmit info" => decode_transmit_status(message).map(Some),
+        _ => decode_message(profile, message, state),
+    }
+}
+
+fn decode_message(
+    profile: &SmartSdrProfile,
+    message: &str,
+    state: &RadioState,
+) -> Result<Option<DecodedFrame>> {
     if let Some(rest) = message.strip_prefix("slice ") {
         return decode_slice_status(profile, rest, state).map(Some);
     }
     if let Some(rest) = message.strip_prefix("interlock ") {
         return decode_interlock_status(rest).map(Some);
+    }
+    if let Some(rest) = message.strip_prefix("cwx ") {
+        return decode_cwx_status(rest).map(Some);
+    }
+    if let Some(rest) = message.strip_prefix("transmit ") {
+        return decode_transmit_status(rest).map(Some);
     }
 
     Ok(None)
@@ -493,6 +523,66 @@ fn decode_interlock_status(rest: &str) -> Result<DecodedFrame> {
             .map(StatePatch::Transmitting)
             .collect(),
     ))
+}
+
+fn set_keyer_speed(wpm: u8) -> Result<EncodedCommand> {
+    if !(5..=100).contains(&wpm) {
+        return Err(RadioError::InvalidValue {
+            field: "keyer.speed_wpm",
+            message: "expected 5..=100".to_string(),
+        });
+    }
+
+    Ok(EncodedCommand::new(
+        vec![format!("cwx wpm {wpm}")],
+        vec![StatePatch::KeyerSpeed(wpm)],
+    ))
+}
+
+fn decode_cwx_status(rest: &str) -> Result<DecodedFrame> {
+    let mut wpm = None;
+
+    for token in rest.split_whitespace() {
+        let Some((field, value)) = token.split_once('=') else {
+            continue;
+        };
+
+        if field == "wpm" {
+            let parsed = value.parse::<u8>().map_err(|error| RadioError::Decode {
+                command: "cwx",
+                message: error.to_string(),
+            })?;
+            if !(5..=100).contains(&parsed) {
+                return Err(RadioError::Decode {
+                    command: "cwx",
+                    message: format!("expected wpm in 5..=100, got {parsed}"),
+                });
+            }
+            wpm = Some(parsed);
+        }
+    }
+
+    Ok(DecodedFrame::new(
+        wpm.into_iter().map(StatePatch::KeyerSpeed).collect(),
+    ))
+}
+
+fn decode_transmit_status(rest: &str) -> Result<DecodedFrame> {
+    let mut patches = Vec::new();
+
+    for token in rest.split_whitespace() {
+        let Some((field, value)) = token.split_once('=') else {
+            continue;
+        };
+
+        match field {
+            "freq" => patches.push(StatePatch::TxFrequency(parse_frequency_mhz(value)?)),
+            "rfpower" => patches.push(StatePatch::TxPower(parse_rfpower(value)?)),
+            _ => {}
+        }
+    }
+
+    Ok(DecodedFrame::new(patches))
 }
 
 fn rf_level_command(
@@ -681,6 +771,26 @@ fn parse_percent(value: &str, command: &'static str) -> Result<u8> {
     Ok(level)
 }
 
+fn parse_rfpower(value: &str) -> Result<Power> {
+    let watts = value.parse::<u16>().map_err(|error| RadioError::Decode {
+        command: "rfpower",
+        message: error.to_string(),
+    })?;
+    Ok(Power::from_watts(watts))
+}
+
+fn encode_rfpower(power: Power) -> Result<u16> {
+    let microwatts = power.as_microwatts();
+    if microwatts % 1_000_000 != 0 {
+        return Err(RadioError::InvalidValue {
+            field: "tx.power",
+            message: "SmartSDR rfpower requires whole-watt values".to_string(),
+        });
+    }
+
+    Ok((microwatts / 1_000_000) as u16)
+}
+
 fn parse_bool_text(value: &str, command: &'static str) -> Result<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "on" | "true" | "t" => Ok(true),
@@ -821,6 +931,67 @@ mod tests {
         .unwrap();
 
         assert_eq!(encoded.commands, vec!["cwx send \"CQ\u{7f}TEST\""]);
+    }
+
+    #[test]
+    fn encodes_keyer_speed_for_cwx() {
+        let encoded = encode(profile(), &RadioCommand::SetKeyerSpeed(32), &state())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(encoded.commands, vec!["cwx wpm 32"]);
+        assert_eq!(encoded.optimistic, vec![StatePatch::KeyerSpeed(32)]);
+    }
+
+    #[test]
+    fn encodes_tx_power_as_transmit_set_rfpower() {
+        let encoded = encode(
+            profile(),
+            &RadioCommand::SetTxPower(Power::from_watts(50)),
+            &state(),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(encoded.commands, vec!["transmit set rfpower=50"]);
+        assert_eq!(encoded.optimistic, vec![StatePatch::TxPower(Power::from_watts(50))]);
+    }
+
+    #[test]
+    fn decodes_cwx_wpm_status() {
+        let decoded = decode_status(profile(), "cwx wpm=27 break_in_delay=100", &state())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(decoded.patches, vec![StatePatch::KeyerSpeed(27)]);
+    }
+
+    #[test]
+    fn decodes_cwx_query_response_without_prefix() {
+        let decoded = decode_response(profile(), "cwx", "wpm=31 break_in_delay=100", &state())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(decoded.patches, vec![StatePatch::KeyerSpeed(31)]);
+    }
+
+    #[test]
+    fn decodes_transmit_info_response() {
+        let decoded = decode_response(
+            profile(),
+            "transmit info",
+            "transmit freq=14.025000 rfpower=100 tunepower=10 vox_enable=0 speed=25",
+            &state(),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(decoded
+            .patches
+            .contains(&StatePatch::TxFrequency(Frequency::from_hz(14_025_000))));
+        assert!(decoded
+            .patches
+            .contains(&StatePatch::TxPower(Power::from_watts(100))));
     }
 
     #[test]

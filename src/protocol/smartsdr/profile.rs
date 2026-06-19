@@ -22,13 +22,14 @@ impl SmartSdrProfile {
 
 const RW: Capability = Capability::ReadWrite;
 const WO: Capability = Capability::WriteOnly;
+const EMULATED: Capability = Capability::Emulated;
 const UNSUPPORTED: Capability = Capability::Unsupported;
 
 const SMARTSDR_RX_RF: ReceiverRfCapabilities =
     ReceiverRfCapabilities::new(UNSUPPORTED, UNSUPPORTED, RW, RW, RW);
 const SMARTSDR_RX: ReceiverCapabilities = ReceiverCapabilities::new(RW, RW, RW, RW, SMARTSDR_RX_RF);
 const SMARTSDR_TX: TransmitterCapabilities =
-    TransmitterCapabilities::new(RW, RW, UNSUPPORTED, RW, UNSUPPORTED);
+    TransmitterCapabilities::new(RW, RW, RW, RW, UNSUPPORTED);
 const SMARTSDR_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
     RW,
     UNSUPPORTED,
@@ -37,7 +38,7 @@ const SMARTSDR_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
     UNSUPPORTED,
     RitXitOffsetType::Independent,
 );
-const SMARTSDR_KEYER: KeyerCapabilities = KeyerCapabilities::new(UNSUPPORTED, UNSUPPORTED, WO, WO);
+const SMARTSDR_KEYER: KeyerCapabilities = KeyerCapabilities::new(RW, EMULATED, WO, WO);
 
 pub const FLEXRADIO_SMARTSDR: SmartSdrProfile = SmartSdrProfile {
     descriptor: DriverDescriptor {
@@ -63,4 +64,20 @@ pub fn profile_by_id(id: &str) -> Option<&'static SmartSdrProfile> {
     SUPPORTED_PROFILES.iter().find(|profile| {
         profile.id().eq_ignore_ascii_case(id) || id.eq_ignore_ascii_case("flexradio-smarthdr")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smartsdr_keyer_supports_speed_and_emulated_sending() {
+        let profile = profile_by_id("flexradio-smartsdr").unwrap();
+        let keyer = profile.capabilities.keyer.unwrap();
+
+        assert_eq!(keyer.speed_wpm, Capability::ReadWrite);
+        assert_eq!(keyer.sending, Capability::Emulated);
+        assert_eq!(keyer.send_cw, Capability::WriteOnly);
+        assert_eq!(keyer.stop_cw, Capability::WriteOnly);
+    }
 }

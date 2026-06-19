@@ -776,7 +776,7 @@ fn send_cw(options: IcomCivOptions, text: &str) -> Result<EncodedCommand> {
         frames,
         ResponseMatcher::Ack,
         None,
-        vec![StatePatch::KeyerSending(true)],
+        Vec::new(),
     ))
 }
 
@@ -785,7 +785,7 @@ fn stop_cw(options: IcomCivOptions) -> Result<EncodedCommand> {
         vec![frame(options, vec![0x17, 0xff])?],
         ResponseMatcher::Ack,
         None,
-        vec![StatePatch::KeyerSending(false)],
+        Vec::new(),
     ))
 }
 
@@ -1513,7 +1513,15 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 query.frames[0].as_bytes(),
-                &[0xfe, 0xfe, options.radio_address, options.controller_address, 0x1a, 0x03, 0xfd]
+                &[
+                    0xfe,
+                    0xfe,
+                    options.radio_address,
+                    options.controller_address,
+                    0x1a,
+                    0x03,
+                    0xfd
+                ]
             );
 
             let command = encode(
@@ -1529,7 +1537,16 @@ mod tests {
             .unwrap();
             assert_eq!(
                 command.frames[0].as_bytes(),
-                &[0xfe, 0xfe, options.radio_address, options.controller_address, 0x1a, 0x03, 0x28, 0xfd]
+                &[
+                    0xfe,
+                    0xfe,
+                    options.radio_address,
+                    options.controller_address,
+                    0x1a,
+                    0x03,
+                    0x28,
+                    0xfd
+                ]
             );
         }
     }
@@ -1539,10 +1556,20 @@ mod tests {
         let profile = crate::protocol::icom_civ::profile_by_id("icom-ic7610").unwrap();
         let options = IcomCivOptions::defaults(profile);
 
-        let preamp = encode_query(profile, options, "preamp-main").unwrap().unwrap();
+        let preamp = encode_query(profile, options, "preamp-main")
+            .unwrap()
+            .unwrap();
         assert_eq!(
             preamp.frames[0].as_bytes(),
-            &[0xfe, 0xfe, options.radio_address, options.controller_address, 0x16, 0x02, 0xfd]
+            &[
+                0xfe,
+                0xfe,
+                options.radio_address,
+                options.controller_address,
+                0x16,
+                0x02,
+                0xfd
+            ]
         );
 
         let attenuator = encode_query(profile, options, "attenuator-main")
@@ -1550,7 +1577,14 @@ mod tests {
             .unwrap();
         assert_eq!(
             attenuator.frames[0].as_bytes(),
-            &[0xfe, 0xfe, options.radio_address, options.controller_address, 0x11, 0xfd]
+            &[
+                0xfe,
+                0xfe,
+                options.radio_address,
+                options.controller_address,
+                0x11,
+                0xfd
+            ]
         );
     }
 

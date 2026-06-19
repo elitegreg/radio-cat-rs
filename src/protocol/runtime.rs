@@ -1023,6 +1023,7 @@ impl SmartSdrRuntime {
                 wait_timeout,
                 default_source,
                 Some(sequence),
+                Some(command),
                 ctx,
             )
             .await?
@@ -1044,6 +1045,7 @@ impl SmartSdrRuntime {
         wait_timeout: Duration,
         default_source: UpdateSource,
         expected_sequence: Option<u32>,
+        expected_command: Option<&str>,
         ctx: &mut dyn ProtocolContext,
     ) -> Result<SmartSdrWaitOutcome> {
         let deadline = Instant::now() + wait_timeout;
@@ -1130,14 +1132,39 @@ impl SmartSdrRuntime {
                             "received SmartSDR command response"
                         );
                         if expected_sequence == Some(response.sequence) {
-                            response_outcome = Some(if response.code == 0 {
-                                SmartSdrWaitOutcome::Matched
+                            if response.code == 0 {
+                                if let Some(command) = expected_command {
+                                    match smartsdr::decode_response(
+                                        self.profile,
+                                        command,
+                                        &response.message,
+                                        ctx.state(),
+                                    ) {
+                                        Ok(Some(decoded)) => {
+                                            let source =
+                                                decoded.source_hint.unwrap_or(default_source);
+                                            ctx.publish_patches(decoded.patches, source);
+                                        }
+                                        Ok(None) => {}
+                                        Err(error) => {
+                                            tracing::warn!(
+                                                driver = %self.profile.id(),
+                                                command,
+                                                message = %response.message,
+                                                ?error,
+                                                "failed to decode SmartSDR response payload"
+                                            );
+                                        }
+                                    }
+                                }
+
+                                response_outcome = Some(SmartSdrWaitOutcome::Matched);
                             } else {
-                                SmartSdrWaitOutcome::Rejected {
+                                response_outcome = Some(SmartSdrWaitOutcome::Rejected {
                                     code: response.code,
                                     message: response.message,
-                                }
-                            });
+                                });
+                            }
                         }
                     }
                     smartsdr::IncomingLine::Message(message) => {
@@ -1189,6 +1216,7 @@ impl NativeProtocol for SmartSdrRuntime {
                 STARTUP_RESPONSE_TIMEOUT,
                 UpdateSource::Native,
                 None,
+                None,
                 ctx,
             )
             .await?;
@@ -1202,11 +1230,48 @@ impl NativeProtocol for SmartSdrRuntime {
         )
         .await?;
 
+        self.send_command_body(
+            transport,
+            "sub cwx all",
+            UpdateSource::Native,
+            SMARTSDR_STARTUP_TIMEOUT,
+            ctx,
+        )
+        .await?;
+
+        self.send_command_body(
+            transport,
+            &format!("slice info {}", self.profile.slice),
+            UpdateSource::Native,
+            SMARTSDR_STARTUP_TIMEOUT,
+            ctx,
+        )
+        .await?;
+
+        self.send_command_body(
+            transport,
+            "cwx",
+            UpdateSource::Native,
+            SMARTSDR_STARTUP_TIMEOUT,
+            ctx,
+        )
+        .await?;
+
+        self.send_command_body(
+            transport,
+            "transmit info",
+            UpdateSource::Native,
+            SMARTSDR_STARTUP_TIMEOUT,
+            ctx,
+        )
+        .await?;
+
         let _ = self
             .process_incoming_with_expected(
                 transport,
                 STARTUP_RESPONSE_TIMEOUT,
                 UpdateSource::Native,
+                None,
                 None,
                 ctx,
             )
@@ -1262,6 +1327,7 @@ impl NativeProtocol for SmartSdrRuntime {
                 transport,
                 wait_timeout,
                 default_source,
+                None,
                 None,
                 ctx,
             )

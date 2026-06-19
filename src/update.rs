@@ -132,6 +132,7 @@ pub enum UpdateSource {
     CommandResponse,
     ManualRefresh,
     Optimistic,
+    Emulated,
 }
 
 #[derive(Debug, Clone)]

@@ -6,6 +6,7 @@ pub mod driver;
 pub mod drivers;
 pub mod error;
 mod frequency;
+mod keyer_emulation;
 pub mod mode;
 pub mod protocol;
 pub mod state;

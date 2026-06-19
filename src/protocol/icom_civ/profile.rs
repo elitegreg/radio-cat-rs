@@ -123,6 +123,7 @@ impl IcomCivOptions {
 
 const RW: Capability = Capability::ReadWrite;
 const WO: Capability = Capability::WriteOnly;
+const EMULATED: Capability = Capability::Emulated;
 const UNSUPPORTED: Capability = Capability::Unsupported;
 
 const MAIN_RF: ReceiverRfCapabilities = ReceiverRfCapabilities::new(RW, RW, RW, RW, RW);
@@ -159,7 +160,7 @@ const ICOM_SHARED_RIT_ONLY: RitXitCapabilities = RitXitCapabilities::new(
     UNSUPPORTED,
     RitXitOffsetType::Shared,
 );
-const IC705_KEYER: KeyerCapabilities = KeyerCapabilities::new(RW, UNSUPPORTED, WO, WO);
+const IC705_KEYER: KeyerCapabilities = KeyerCapabilities::new(RW, EMULATED, WO, WO);
 
 const IC705_STARTUP: &[StartupStep] = &[
     StartupStep::Query("freq-main"),
@@ -677,6 +678,10 @@ mod tests {
             Capability::ReadWrite
         );
         assert_eq!(ic7610.capabilities.main_rx.rf.preamp, Capability::ReadWrite);
+        assert_eq!(
+            ic7610.capabilities.keyer.unwrap().sending,
+            Capability::Emulated
+        );
         assert_eq!(ic7610.attenuator_values_db, ATTENUATOR_3_TO_24_DB);
 
         let ic7760 = profile_by_id("icom-ic7760").unwrap();

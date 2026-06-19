@@ -2,7 +2,8 @@ use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use radio_cat_rs::{
-    CatTransport, Frequency, LeveledSetting, Mode, Radio, RadioConfig, RadioError, Result,
+    CatTransport, Frequency, LeveledSetting, Mode, Power, Radio, RadioConfig, RadioError,
+    Result,
 };
 use tokio::sync::Mutex;
 
@@ -63,10 +64,19 @@ impl CatTransport for SharedMockTransport {
 async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
     let transport = SharedMockTransport::default();
     transport.push_read(lines(["V1.0.0.0", "HABC1234"])).await;
+    transport.push_read(lines(["R1|0||"])).await;
+    transport.push_read(lines(["R2|0||"])).await;
     transport
         .push_read(lines([
-            "R1|0||",
-            "S0|slice 0 RF_frequency=14.074 mode=DIGU filter_lo=300 filter_hi=2700 rit_on=1 rit_freq=50 xit_on=0 xit_freq=0 nr=on nr_level=25 nb=off anf=on",
+            "R3|0|slice 0 RF_frequency=14.074 mode=DIGU filter_lo=300 filter_hi=2700 rit_on=1 rit_freq=50 xit_on=0 xit_freq=0 nr=on nr_level=25 nb=off anf=on",
+        ]))
+        .await;
+    transport
+        .push_read(lines(["R4|0|wpm=25 break_in_delay=100"]))
+        .await;
+    transport
+        .push_read(lines([
+            "R5|0|transmit freq=14.074000 rfpower=100 tunepower=10 vox_enable=0 speed=25",
             "S0|interlock state=READY",
         ]))
         .await;
@@ -84,6 +94,9 @@ async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
                 && state.main_rx.frequency == Some(Frequency::from_hz(14_074_000))
                 && state.main_rx.mode == Some(Mode::DataUsb)
                 && state.main_rx.rf.noise_reduction == Some(LeveledSetting::enabled(25))
+                && state.keyer.as_ref().and_then(|keyer| keyer.speed_wpm) == Some(25)
+                && state.tx.as_ref().and_then(|tx| tx.power)
+                    == Some(radio_cat_rs::Power::from_watts(100))
         }
     })
     .await
@@ -91,7 +104,12 @@ async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
 
     let baseline = transport.written_len().await;
     transport
-        .push_read(lines(["R2|0||", "S0|slice 0 RF_frequency=7.03"]))
+        .push_read(lines(["R6|0||", "S0|transmit rfpower=50"]))
+        .await;
+    radio.set_tx_power(Power::from_watts(50)).await.unwrap();
+
+    transport
+        .push_read(lines(["R7|0||", "S0|slice 0 RF_frequency=7.03"]))
         .await;
     radio
         .set_main_frequency(Frequency::from_hz(7_030_000))
@@ -99,17 +117,22 @@ async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
         .unwrap();
 
     transport
-        .push_read(lines(["R3|0||", "S0|slice 0 nr=on nr_level=37"]))
+        .push_read(lines(["R8|0||", "S0|slice 0 nr=on nr_level=37"]))
         .await;
     radio
         .set_main_noise_reduction(LeveledSetting::enabled(37))
         .await
         .unwrap();
 
-    transport.push_read(lines(["R4|0||"])).await;
+    transport
+        .push_read(lines(["R9|0||", "S0|cwx wpm=30 break_in_delay=100"]))
+        .await;
+    radio.set_keyer_speed(30).await.unwrap();
+
+    transport.push_read(lines(["R10|0||"])).await;
     transport
         .push_read(lines([
-            "R5|0||",
+            "R11|0||",
             "S0|interlock state=TRANSMITTING source=SW",
         ]))
         .await;
@@ -121,6 +144,8 @@ async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
             let state = radio.latest_state();
             state.main_rx.frequency == Some(Frequency::from_hz(7_030_000))
                 && state.main_rx.rf.noise_reduction == Some(LeveledSetting::enabled(37))
+                && state.keyer.as_ref().and_then(|keyer| keyer.speed_wpm) == Some(30)
+                && state.tx.as_ref().and_then(|tx| tx.power) == Some(Power::from_watts(50))
                 && state.tx.as_ref().and_then(|tx| tx.transmitting) == Some(true)
         }
     })
@@ -132,10 +157,12 @@ async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
     assert_eq!(
         additional,
         &[
-            b"C2|slice t 0 7.030000 autopan=1\n".to_vec(),
-            b"C3|slice s 0 nr=on nr_level=37\n".to_vec(),
-            b"C4|slice s 0 tx=1\n".to_vec(),
-            b"C5|xmit 1\n".to_vec(),
+            b"C6|transmit set rfpower=50\n".to_vec(),
+            b"C7|slice t 0 7.030000 autopan=1\n".to_vec(),
+            b"C8|slice s 0 nr=on nr_level=37\n".to_vec(),
+            b"C9|cwx wpm 30\n".to_vec(),
+            b"C10|slice s 0 tx=1\n".to_vec(),
+            b"C11|xmit 1\n".to_vec(),
         ]
     );
 }

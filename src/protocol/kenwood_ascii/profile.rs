@@ -63,6 +63,7 @@ impl KenwoodAsciiProfile {
 const RW: Capability = Capability::ReadWrite;
 const RO: Capability = Capability::ReadOnly;
 const WO: Capability = Capability::WriteOnly;
+const EMULATED: Capability = Capability::Emulated;
 const UNSUPPORTED: Capability = Capability::Unsupported;
 
 const FULL_RF: ReceiverRfCapabilities = ReceiverRfCapabilities::new(RW, RW, RW, RW, RW);
@@ -111,7 +112,7 @@ const K2_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
     RitXitOffsetType::Shared,
 );
 
-const FULL_KEYER: KeyerCapabilities = KeyerCapabilities::new(RW, UNSUPPORTED, WO, WO);
+const FULL_KEYER: KeyerCapabilities = KeyerCapabilities::new(RW, EMULATED, WO, WO);
 const YAESU_KEYER: KeyerCapabilities =
     KeyerCapabilities::new(RW, UNSUPPORTED, UNSUPPORTED, UNSUPPORTED);
 
@@ -848,6 +849,7 @@ mod tests {
             k4.capabilities.rit_xit.offset_type,
             RitXitOffsetType::Shared
         );
+        assert_eq!(k4.capabilities.keyer.unwrap().sending, Capability::Emulated);
 
         let yaesu = profile_by_id("yaesu-ftdx10").unwrap();
         let keyer = yaesu.capabilities.keyer.unwrap();

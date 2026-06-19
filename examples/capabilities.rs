@@ -209,6 +209,7 @@ fn describe_capability(capability: Capability) -> &'static str {
         Capability::ReadOnly => "readable",
         Capability::WriteOnly => "writable",
         Capability::ReadWrite => "read/write",
+        Capability::Emulated => "emulated",
     }
 }
 
