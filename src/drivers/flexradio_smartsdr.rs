@@ -4,7 +4,7 @@ use crate::{
     command::RadioCommand,
     driver::{DriverCommandOutcome, DriverDescriptor, RadioDriver},
     error::{RadioError, Result},
-    protocol::smartsdr::{encode, profile_by_id, SmartSdrProfile},
+    protocol::smartsdr::{encode, profile_by_id, SmartSdrOptions, SmartSdrProfile},
     transport::TransportConfig,
     ConnectionState, KeyerState, RadioCapabilities, RadioState, ReceiverState, RitXitState,
     TransmitterState,
@@ -12,20 +12,29 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct FlexRadioSmartSdrDriver {
-    profile: &'static SmartSdrProfile,
+    profile: SmartSdrProfile,
     options: String,
+    parsed_options: SmartSdrOptions,
 }
 
 impl FlexRadioSmartSdrDriver {
-    pub fn new(profile: &'static SmartSdrProfile, options: impl Into<String>) -> Self {
-        Self {
+    pub fn new(profile: &'static SmartSdrProfile, options: impl Into<String>) -> Result<Self> {
+        let options = options.into();
+        let parsed_options = SmartSdrOptions::parse(profile, &options)?;
+        let mut profile = *profile;
+        profile.slice = parsed_options.slice;
+        Ok(Self {
             profile,
-            options: options.into(),
-        }
+            options,
+            parsed_options,
+        })
     }
 
-    pub fn from_driver_id(id: &str, options: impl Into<String>) -> Option<Self> {
-        profile_by_id(id).map(|profile| Self::new(profile, options))
+    pub fn from_driver_id(id: &str, options: impl Into<String>) -> Result<Option<Self>> {
+        match profile_by_id(id) {
+            Some(profile) => Self::new(profile, options).map(Some),
+            None => Ok(None),
+        }
     }
 
     pub fn validate_transport_config(config: &TransportConfig) -> Result<()> {
@@ -67,7 +76,7 @@ impl RadioDriver for FlexRadioSmartSdrDriver {
     async fn start(&mut self) -> Result<Vec<crate::StatePatch>> {
         tracing::info!(
             driver = %self.profile.id(),
-            slice = self.profile.slice,
+            slice = self.parsed_options.slice,
             options = %self.options,
             "flexradio smartsdr driver start"
         );
@@ -86,7 +95,7 @@ impl RadioDriver for FlexRadioSmartSdrDriver {
             return Ok(DriverCommandOutcome::manual_refresh(Vec::new()));
         }
 
-        let encoded = encode(self.profile, &command, current_state)?.ok_or(
+        let encoded = encode(&self.profile, &command, current_state)?.ok_or(
             RadioError::UnsupportedCapability {
                 capability: "command",
             },
@@ -100,6 +109,6 @@ impl RadioDriver for FlexRadioSmartSdrDriver {
             "encoded SmartSDR command"
         );
 
-        Ok(DriverCommandOutcome::command_response(encoded.optimistic))
+        Ok(DriverCommandOutcome::command_response(Vec::new()))
     }
 }

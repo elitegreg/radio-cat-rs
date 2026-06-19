@@ -186,10 +186,7 @@ pub fn encode(
             let shift_hz = receiver_shift(state).unwrap_or(DEFAULT_FILTER_SHIFT_HZ);
             let (low, high) = filter_edges(*bandwidth_hz, shift_hz)?;
             Ok(Some(EncodedCommand::new(
-                vec![format!(
-                    "slice s {} filter_lo={} filter_hi={}",
-                    profile.slice, low, high
-                )],
+                vec![format!("filt {} {} {}", profile.slice, low, high)],
                 vec![
                     StatePatch::MainRxFilterBandwidth(*bandwidth_hz),
                     StatePatch::MainRxFilterShift(shift_hz),
@@ -201,10 +198,7 @@ pub fn encode(
             let bandwidth_hz = receiver_bandwidth(state).unwrap_or(DEFAULT_FILTER_BANDWIDTH_HZ);
             let (low, high) = filter_edges(bandwidth_hz, *shift_hz)?;
             Ok(Some(EncodedCommand::new(
-                vec![format!(
-                    "slice s {} filter_lo={} filter_hi={}",
-                    profile.slice, low, high
-                )],
+                vec![format!("filt {} {} {}", profile.slice, low, high)],
                 vec![
                     StatePatch::MainRxFilterBandwidth(bandwidth_hz),
                     StatePatch::MainRxFilterShift(*shift_hz),
@@ -907,10 +901,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(
-            encoded.commands,
-            vec!["slice s 0 filter_lo=100 filter_hi=2900"]
-        );
+        assert_eq!(encoded.commands, vec!["filt 0 100 2900"]);
         assert_eq!(
             encoded.optimistic,
             vec![

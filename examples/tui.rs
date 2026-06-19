@@ -6,7 +6,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use radio_cat_rs::{
-    supported_drivers, Frequency, LeveledSetting, Mode, Radio, RadioConfig, RadioState,
+    supported_drivers, Frequency, LeveledSetting, Mode, Power, Radio, RadioConfig, RadioState,
     RitXitOffsetHz, StateUpdate, TransportConfig,
 };
 use ratatui::{
@@ -416,7 +416,7 @@ fn draw(
     frame.render_widget(body, chunks[1]);
 
     let help = Paragraph::new(format!(
-        "status: {status}\nlast update: {last_update}\nexamples: set-freq-main 14074000 | set-mode-main usb | set-rit-main on | set-offset 250 | set-offset-xit 250 | send-cw CQ TEST\ncommands: help, refresh, set-*-main/sub/tx, set-ptt, set-split, set-xit, set-keyer-speed, stop-cw"
+        "status: {status}\nlast update: {last_update}\nexamples: set-freq-main 14074000 | set-mode-main usb | set-power 50 | set-rit-main on | set-offset 250 | set-offset-xit 250 | send-cw CQ TEST\ncommands: help, refresh, set-*-main/sub/tx, set-power, set-ptt, set-split, set-xit, set-keyer-speed, stop-cw"
     ))
     .block(Block::default().title("Command Help").borders(Borders::ALL))
     .wrap(Wrap { trim: false });
@@ -627,6 +627,11 @@ async fn execute_command(
             radio.set_sub_auto_notch(value).await?;
             Ok(format!("sub auto notch -> {value}"))
         }
+        "set-power" | "set-tx-power" => {
+            let value = parse_u16_arg(parts.next(), "watts")?;
+            radio.set_tx_power(Power::from_watts(value)).await?;
+            Ok(format!("tx power -> {value} W"))
+        }
         "set-ptt" => {
             let value = parse_bool_arg(parts.next(), "enabled")?;
             radio.set_ptt(value).await?;
@@ -787,6 +792,8 @@ fn help_text() -> String {
         "set-nr-sub <off|on|level>",
         "set-an-main <on|off>",
         "set-an-sub <on|off>",
+        "set-power <watts>",
+        "set-tx-power <watts>",
         "set-ptt <on|off>",
         "set-split <on|off>",
         "set-rit-main <on|off>",

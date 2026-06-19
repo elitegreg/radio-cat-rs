@@ -5,6 +5,7 @@ use crate::{
         TransmitterCapabilities,
     },
     driver::DriverDescriptor,
+    error::{RadioError, Result},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +18,56 @@ pub struct SmartSdrProfile {
 impl SmartSdrProfile {
     pub const fn id(self) -> &'static str {
         self.descriptor.id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmartSdrOptions {
+    pub slice: u8,
+}
+
+impl SmartSdrOptions {
+    pub fn defaults(profile: &SmartSdrProfile) -> Self {
+        Self {
+            slice: profile.slice,
+        }
+    }
+
+    pub fn parse(profile: &SmartSdrProfile, options: &str) -> Result<Self> {
+        let mut parsed = Self::defaults(profile);
+
+        for part in options.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+
+            let (key, value) = part
+                .split_once('=')
+                .ok_or_else(|| RadioError::InvalidValue {
+                    field: "options",
+                    message: format!("expected key=value option, got {part:?}"),
+                })?;
+            let key = key.trim().replace('-', "_").to_ascii_lowercase();
+            let value = value.trim();
+
+            match key.as_str() {
+                "slice" | "slice_index" => {
+                    parsed.slice = value.parse::<u8>().map_err(|error| RadioError::InvalidValue {
+                        field: "slice",
+                        message: error.to_string(),
+                    })?;
+                }
+                _ => {
+                    return Err(RadioError::InvalidValue {
+                        field: "options",
+                        message: format!("unknown SmartSDR option {key:?}"),
+                    });
+                }
+            }
+        }
+
+        Ok(parsed)
     }
 }
 
@@ -44,7 +95,7 @@ pub const FLEXRADIO_SMARTSDR: SmartSdrProfile = SmartSdrProfile {
     descriptor: DriverDescriptor {
         id: "flexradio-smartsdr",
         display_name: "FlexRadio SmartSDR",
-        description: "FlexRadio SmartSDR TCP slice control (fixed slice 0).",
+        description: "FlexRadio SmartSDR TCP slice control (default slice 0; configurable via options).",
     },
     slice: 0,
     capabilities: RadioCapabilities::new(
@@ -79,5 +130,21 @@ mod tests {
         assert_eq!(keyer.sending, Capability::Emulated);
         assert_eq!(keyer.send_cw, Capability::WriteOnly);
         assert_eq!(keyer.stop_cw, Capability::WriteOnly);
+    }
+
+    #[test]
+    fn smartsdr_options_default_to_profile_slice() {
+        let profile = profile_by_id("flexradio-smartsdr").unwrap();
+        let options = SmartSdrOptions::parse(profile, "").unwrap();
+
+        assert_eq!(options.slice, 0);
+    }
+
+    #[test]
+    fn smartsdr_options_parse_slice_override() {
+        let profile = profile_by_id("flexradio-smartsdr").unwrap();
+        let options = SmartSdrOptions::parse(profile, "slice=2").unwrap();
+
+        assert_eq!(options.slice, 2);
     }
 }

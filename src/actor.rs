@@ -109,10 +109,17 @@ impl RadioTask {
                 Ok(None) => break,
                 Err(_) => {
                     self.finish_emulated_keyer_if_due();
-                    let _ = self
+
+                    if let Err(error) = self
                         .process_native_incoming(Duration::from_millis(1), UpdateSource::Native)
-                        .await?;
-                    self.run_poll_if_due().await?;
+                        .await
+                    {
+                        tracing::warn!(driver = %driver.id, ?error, "native incoming processing failed");
+                    }
+
+                    if let Err(error) = self.run_poll_if_due().await {
+                        tracing::warn!(driver = %driver.id, ?error, "native poll failed");
+                    }
                 }
             }
         }

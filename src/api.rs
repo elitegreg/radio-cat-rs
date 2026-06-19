@@ -119,7 +119,7 @@ impl Radio {
     }
 
     pub async fn build(config: RadioConfig) -> Result<(Self, RadioTask)> {
-        if FlexRadioSmartSdrDriver::from_driver_id(&config.driver, "").is_some() {
+        if FlexRadioSmartSdrDriver::from_driver_id(&config.driver, "")?.is_some() {
             FlexRadioSmartSdrDriver::validate_transport_config(&config.transport)?;
         }
 
@@ -196,7 +196,7 @@ impl Radio {
                     None => match FlexRadioSmartSdrDriver::from_driver_id(
                         driver_id,
                         config.options.clone(),
-                    ) {
+                    )? {
                         Some(driver) => Box::new(driver),
                         None => {
                             tracing::error!(driver = %config.driver, "unsupported radio driver requested");

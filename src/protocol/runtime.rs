@@ -76,6 +76,9 @@ pub(crate) fn native_protocol_for_driver(
     }
 
     if let Some(profile) = smartsdr::profile_by_id(driver_id) {
+        let options = smartsdr::SmartSdrOptions::parse(profile, options)?;
+        let mut profile = *profile;
+        profile.slice = options.slice;
         return Ok(Some(Box::new(SmartSdrRuntime::new(profile))));
     }
 
@@ -960,7 +963,7 @@ impl NativeProtocol for IcomCivRuntime {
 }
 
 struct SmartSdrRuntime {
-    profile: &'static SmartSdrProfile,
+    profile: SmartSdrProfile,
     line_splitter: SmartSdrLineSplitter,
     next_sequence: u32,
     version: Option<String>,
@@ -969,7 +972,7 @@ struct SmartSdrRuntime {
 }
 
 impl SmartSdrRuntime {
-    fn new(profile: &'static SmartSdrProfile) -> Self {
+    fn new(profile: SmartSdrProfile) -> Self {
         Self {
             profile,
             line_splitter: SmartSdrLineSplitter::new(),
@@ -988,9 +991,18 @@ impl SmartSdrRuntime {
         wait_timeout: Duration,
         ctx: &mut dyn ProtocolContext,
     ) -> Result<()> {
-        for command in encoded.commands {
+        let smartsdr::EncodedCommand {
+            commands,
+            optimistic,
+        } = encoded;
+
+        for command in commands {
             self.send_command_body(transport, &command, default_source, wait_timeout, ctx)
                 .await?;
+        }
+
+        if !optimistic.is_empty() {
+            ctx.publish_patches(optimistic, default_source);
         }
 
         Ok(())
@@ -1107,7 +1119,7 @@ impl SmartSdrRuntime {
                         if message.starts_with("slice ") {
                             self.saw_slice_status = true;
                         }
-                        match smartsdr::decode_status(self.profile, &message, ctx.state()) {
+                        match smartsdr::decode_status(&self.profile, &message, ctx.state()) {
                             Ok(Some(decoded)) => {
                                 let source = decoded.source_hint.unwrap_or(default_source);
                                 ctx.publish_patches(decoded.patches, source);
@@ -1135,7 +1147,7 @@ impl SmartSdrRuntime {
                             if response.code == 0 {
                                 if let Some(command) = expected_command {
                                     match smartsdr::decode_response(
-                                        self.profile,
+                                        &self.profile,
                                         command,
                                         &response.message,
                                         ctx.state(),
@@ -1241,25 +1253,7 @@ impl NativeProtocol for SmartSdrRuntime {
 
         self.send_command_body(
             transport,
-            &format!("slice info {}", self.profile.slice),
-            UpdateSource::Native,
-            SMARTSDR_STARTUP_TIMEOUT,
-            ctx,
-        )
-        .await?;
-
-        self.send_command_body(
-            transport,
-            "cwx",
-            UpdateSource::Native,
-            SMARTSDR_STARTUP_TIMEOUT,
-            ctx,
-        )
-        .await?;
-
-        self.send_command_body(
-            transport,
-            "transmit info",
+            "sub tx all",
             UpdateSource::Native,
             SMARTSDR_STARTUP_TIMEOUT,
             ctx,
@@ -1301,7 +1295,7 @@ impl NativeProtocol for SmartSdrRuntime {
             return Ok(());
         }
 
-        let Some(encoded) = smartsdr::encode(self.profile, &command, state_before)? else {
+        let Some(encoded) = smartsdr::encode(&self.profile, &command, state_before)? else {
             return Ok(());
         };
 
