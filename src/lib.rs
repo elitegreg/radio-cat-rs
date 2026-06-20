@@ -9,6 +9,7 @@ mod frequency;
 mod keyer_emulation;
 pub mod mode;
 pub mod protocol;
+pub mod serial_ports;
 pub mod state;
 pub mod transport;
 pub mod update;
@@ -25,6 +26,7 @@ pub use driver::{DriverCommandOutcome, DriverDescriptor, RadioDriver};
 pub use error::{RadioError, RangeError, Result};
 pub use frequency::Frequency;
 pub use mode::{Mode, ParseModeError};
+pub use serial_ports::{list_serial_ports, SerialPortListEntry, SerialPortListError};
 pub use state::{
     ConnectionState, KeyerState, LeveledSetting, Power, PowerUnit, RadioState, ReceiverFilterState,
     ReceiverRfState, ReceiverState, RitXitOffsetHz, RitXitState, TransmitterState,
