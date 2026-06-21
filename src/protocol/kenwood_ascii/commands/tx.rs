@@ -234,7 +234,7 @@ fn encode_k4_power(power: Power) -> Result<PowerCommandEncoding> {
 fn ptt_frame(profile: &KenwoodAsciiProfile, transmitting: bool) -> &'static str {
     if is_yaesu(profile) {
         if transmitting {
-            "TX2;"
+            "TX1;"
         } else {
             "TX0;"
         }
@@ -314,7 +314,6 @@ mod tests {
     #[test]
     fn ptt_mapping_differs_by_family() {
         let ts590 = profile_by_id("kenwood-ts590").unwrap();
-        let yaesu = profile_by_id("yaesu-ftdx10").unwrap();
         let k3 = profile_by_id("elecraft-k3").unwrap();
 
         assert_eq!(
@@ -326,14 +325,6 @@ mod tests {
             "TX0;"
         );
         assert_eq!(
-            encode(yaesu, &RadioCommand::SetPtt(true))
-                .unwrap()
-                .unwrap()
-                .frames[0]
-                .as_str(),
-            "TX2;"
-        );
-        assert_eq!(
             encode(k3, &RadioCommand::SetPtt(false))
                 .unwrap()
                 .unwrap()
@@ -341,6 +332,37 @@ mod tests {
                 .as_str(),
             "RX;"
         );
+    }
+
+    #[test]
+    fn yaesu_ptt_always_uses_tx1_for_on_and_tx0_for_off() {
+        for id in [
+            "yaesu-ftdx101",
+            "yaesu-ftdx10",
+            "yaesu-ft710",
+            "yaesu-ft891",
+            "yaesu-ft991",
+        ] {
+            let profile = profile_by_id(id).unwrap();
+            assert_eq!(
+                encode(profile, &RadioCommand::SetPtt(true))
+                    .unwrap()
+                    .unwrap()
+                    .frames[0]
+                    .as_str(),
+                "TX1;",
+                "{id} should use TX1 for PTT on"
+            );
+            assert_eq!(
+                encode(profile, &RadioCommand::SetPtt(false))
+                    .unwrap()
+                    .unwrap()
+                    .frames[0]
+                    .as_str(),
+                "TX0;",
+                "{id} should use TX0 for PTT off"
+            );
+        }
     }
 
     #[test]

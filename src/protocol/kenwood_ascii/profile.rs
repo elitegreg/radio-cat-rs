@@ -338,7 +338,7 @@ const ELECRAFT_K2_STARTUP: &[StartupStep] = &[
 ];
 
 const YAESU_FTDX101_STARTUP: &[StartupStep] = &[
-    StartupStep::AutoInfo("AI2;"),
+    StartupStep::AutoInfo("AI1;"),
     StartupStep::Query("IF"),
     StartupStep::Query("FA"),
     StartupStep::Query("FB"),
@@ -366,12 +366,13 @@ const YAESU_FTDX101_STARTUP: &[StartupStep] = &[
 ];
 
 const YAESU_FTDX10_FT710_STARTUP: &[StartupStep] = &[
-    StartupStep::AutoInfo("AI2;"),
+    StartupStep::AutoInfo("AI1;"),
     StartupStep::Query("IF"),
     StartupStep::Query("FA"),
     StartupStep::Query("FB"),
     StartupStep::Query("FT"),
     StartupStep::Query("MD0"),
+    StartupStep::Query("MD1"),
     StartupStep::Query("RT"),
     StartupStep::Query("XT"),
     StartupStep::Query("SH0"),
@@ -386,7 +387,7 @@ const YAESU_FTDX10_FT710_STARTUP: &[StartupStep] = &[
 ];
 
 const YAESU_FT891_STARTUP: &[StartupStep] = &[
-    StartupStep::AutoInfo("AI2;"),
+    StartupStep::AutoInfo("AI1;"),
     StartupStep::Query("IF"),
     StartupStep::Query("FA"),
     StartupStep::Query("FB"),
@@ -407,7 +408,7 @@ const YAESU_FT891_STARTUP: &[StartupStep] = &[
 ];
 
 const YAESU_FT991_STARTUP: &[StartupStep] = &[
-    StartupStep::AutoInfo("AI2;"),
+    StartupStep::AutoInfo("AI1;"),
     StartupStep::Query("IF"),
     StartupStep::Query("FA"),
     StartupStep::Query("FB"),
@@ -875,5 +876,19 @@ mod tests {
 
         let if232 = profile_by_id("kenwood-if232").unwrap();
         assert_eq!(if232.poll.unwrap().interval, IF232_POLL);
+    }
+
+    #[test]
+    fn yaesu_dual_vfo_startup_queries_md1_for_sub_vfo_mode() {
+        for id in ["yaesu-ftdx101", "yaesu-ftdx10", "yaesu-ft710"] {
+            let profile = profile_by_id(id).unwrap();
+            assert!(
+                profile
+                    .startup
+                    .iter()
+                    .any(|step| matches!(step, StartupStep::Query("MD1"))),
+                "{id} startup missing MD1 query"
+            );
+        }
     }
 }

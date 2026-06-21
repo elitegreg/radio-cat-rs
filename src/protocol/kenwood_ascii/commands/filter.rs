@@ -127,36 +127,18 @@ fn encode_bandwidth(
 
     if is_yaesu(profile) {
         let mode = receiver_mode(state, receiver).unwrap_or(Mode::Usb);
-        if is_ft891_or_ft991(profile) {
+        let selection = if is_ft891_or_ft991(profile) {
             let selection = select_yaesu_891_991_bandwidth(mode, bandwidth_hz)?;
-            let target = yaesu_target(profile, receiver);
-            let mut frames = Vec::with_capacity(2);
-            frames.push(AsciiFrame::new(format!(
-                "NA{}{};",
-                target,
-                bool_digit(selection.narrow)
-            ))?);
-            frames.push(AsciiFrame::new(format!(
-                "SH{}{id:02};",
-                target,
-                id = selection.id
-            ))?);
-            return Ok(EncodedCommand::new(
-                frames,
-                ResponseMatcher::Prefix("SH"),
-                vec![bandwidth_patch(receiver, selection.value_hz)],
-                CommandPriority::Normal,
-            ));
-        }
-
-        let selection = select_yaesu_bandwidth(mode, bandwidth_hz);
-        let target = yaesu_target(profile, receiver);
+            TableSelection {
+                id: selection.id,
+                value_hz: selection.value_hz,
+            }
+        } else {
+            select_yaesu_bandwidth(mode, bandwidth_hz)
+        };
+        let frame = AsciiFrame::new(encode_yaesu_bandwidth_payload(profile, receiver, selection.id))?;
         return Ok(EncodedCommand::new(
-            vec![AsciiFrame::new(format!(
-                "SH{}{id:02};",
-                target,
-                id = selection.id
-            ))?],
+            vec![frame],
             ResponseMatcher::Prefix("SH"),
             vec![bandwidth_patch(receiver, selection.value_hz)],
             CommandPriority::Normal,
@@ -235,9 +217,7 @@ fn encode_shift(
     }
 
     if is_yaesu(profile) {
-        let target = yaesu_target(profile, receiver);
-        let (sign, abs) = signed_parts(shift_hz);
-        let frame = AsciiFrame::new(format!("IS{target}{sign}{abs:04};"))?;
+        let frame = AsciiFrame::new(encode_yaesu_shift_payload(profile, receiver, shift_hz))?;
         return Ok(EncodedCommand::new(
             vec![frame],
             ResponseMatcher::Prefix("IS"),
@@ -300,24 +280,7 @@ fn decode_is(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result<Vec<St
     }
 
     if is_yaesu(profile) {
-        let payload = frame.payload();
-        if payload.len() < 2 {
-            return Err(RadioError::Decode {
-                command: "IS",
-                message: format!("expected target + signed payload, got {payload:?}"),
-            });
-        }
-        let receiver = if profile.id() == "yaesu-ftdx101" {
-            decode_target(payload.as_bytes()[0])?
-        } else {
-            ReceiverPath::Main
-        };
-
-        let signed = if profile.id() == "yaesu-ftdx101" {
-            &payload[1..]
-        } else {
-            &payload[1..]
-        };
+        let (receiver, signed) = decode_yaesu_is_parts(profile, frame.payload())?;
         let shift = parse_signed("IS", signed)?;
         return Ok(vec![shift_patch(receiver, shift)]);
     }
@@ -410,21 +373,7 @@ fn decode_yaesu_sh(
     frame: &AsciiFrame,
     state: &RadioState,
 ) -> Result<Vec<StatePatch>> {
-    let payload = frame.payload();
-    if payload.len() < 3 {
-        return Err(RadioError::Decode {
-            command: "SH",
-            message: format!("expected target + id, got {payload:?}"),
-        });
-    }
-
-    let receiver = if profile.id() == "yaesu-ftdx101" {
-        decode_target(payload.as_bytes()[0])?
-    } else {
-        ReceiverPath::Main
-    };
-
-    let id = parse_u8("SH", &payload[payload.len() - 2..])?;
+    let (receiver, id) = decode_yaesu_sh_parts(profile, frame.payload())?;
     let mode = receiver_mode(state, receiver).unwrap_or(Mode::Usb);
 
     let value_hz = if is_ft891_or_ft991(profile) {
@@ -468,13 +417,10 @@ fn filter_state_queries(
             frames.push(AsciiFrame::new("IS0;")?);
             frames.push(AsciiFrame::new("IS1;")?);
         } else {
-            if is_ft891_or_ft991(profile) {
-                frames.push(AsciiFrame::new("NA0;")?);
-            }
             frames.push(AsciiFrame::new("SH0;")?);
             frames.push(AsciiFrame::new("IS0;")?);
         }
-        return Ok((frames, ResponseMatcher::OneOf(&["SH", "IS", "NA"])));
+        return Ok((frames, ResponseMatcher::OneOf(&["SH", "IS"])));
     }
 
     if supports_hi_lo(profile) {
@@ -740,11 +686,88 @@ fn signed_parts_space_positive(value: i16) -> (char, u16) {
     (sign, value.unsigned_abs())
 }
 
-fn bool_digit(value: bool) -> char {
-    if value {
-        '1'
-    } else {
-        '0'
+fn encode_yaesu_bandwidth_payload(
+    profile: &KenwoodAsciiProfile,
+    receiver: ReceiverPath,
+    id: u8,
+) -> String {
+    match profile.id() {
+        "yaesu-ftdx101" => format!("SH{}0{id:02};", yaesu_target(profile, receiver)),
+        "yaesu-ftdx10" | "yaesu-ft710" => format!("SH00{id:02};"),
+        "yaesu-ft891" => format!("SH01{id:02};"),
+        "yaesu-ft991" => format!("SH0{id:02};"),
+        _ => format!("SH{}0{id:02};", yaesu_target(profile, receiver)),
+    }
+}
+
+fn encode_yaesu_shift_payload(
+    profile: &KenwoodAsciiProfile,
+    receiver: ReceiverPath,
+    shift_hz: i16,
+) -> String {
+    let (sign, abs) = signed_parts(shift_hz);
+    match profile.id() {
+        "yaesu-ftdx101" => format!("IS{}0{sign}{abs:04};", yaesu_target(profile, receiver)),
+        "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft991" => format!("IS00{sign}{abs:04};"),
+        "yaesu-ft891" => format!("IS01{sign}{abs:04};"),
+        _ => format!("IS{}0{sign}{abs:04};", yaesu_target(profile, receiver)),
+    }
+}
+
+fn decode_yaesu_is_parts<'a>(
+    profile: &KenwoodAsciiProfile,
+    payload: &'a str,
+) -> Result<(ReceiverPath, &'a str)> {
+    match profile.id() {
+        "yaesu-ftdx101" => {
+            if payload.len() != 7 {
+                return Err(RadioError::Decode {
+                    command: "IS",
+                    message: format!("expected 7-char FTDX-101 IS payload, got {payload:?}"),
+                });
+            }
+            Ok((decode_target(payload.as_bytes()[0])?, &payload[2..]))
+        }
+        "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft891" | "yaesu-ft991" => {
+            if payload.len() != 7 {
+                return Err(RadioError::Decode {
+                    command: "IS",
+                    message: format!("expected 7-char Yaesu IS payload, got {payload:?}"),
+                });
+            }
+            Ok((ReceiverPath::Main, &payload[2..]))
+        }
+        _ => Err(RadioError::Decode {
+            command: "IS",
+            message: format!("unsupported Yaesu profile {}", profile.id()),
+        }),
+    }
+}
+
+fn decode_yaesu_sh_parts(profile: &KenwoodAsciiProfile, payload: &str) -> Result<(ReceiverPath, u8)> {
+    match profile.id() {
+        "yaesu-ftdx101" => {
+            if payload.len() != 4 {
+                return Err(RadioError::Decode {
+                    command: "SH",
+                    message: format!("expected 4-char FTDX-101 SH payload, got {payload:?}"),
+                });
+            }
+            Ok((decode_target(payload.as_bytes()[0])?, parse_u8("SH", &payload[2..])?))
+        }
+        "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft891" | "yaesu-ft991" => {
+            if payload.len() < 3 {
+                return Err(RadioError::Decode {
+                    command: "SH",
+                    message: format!("expected Yaesu SH payload, got {payload:?}"),
+                });
+            }
+            Ok((ReceiverPath::Main, parse_u8("SH", &payload[payload.len() - 2..])?))
+        }
+        _ => Err(RadioError::Decode {
+            command: "SH",
+            message: format!("unsupported Yaesu profile {}", profile.id()),
+        }),
     }
 }
 
@@ -1876,12 +1899,60 @@ mod tests {
     }
 
     #[test]
-    fn yaesu_bandwidth_uses_upward_table_rounding() {
-        let ftdx10 = profile_by_id("yaesu-ftdx10").unwrap();
+    fn yaesu_filter_commands_encode_with_model_specific_formats() {
         let mut state = RadioState::default();
         state.main_rx.mode = Some(Mode::Usb);
+        state.sub_rx = Some(crate::state::ReceiverState::default());
+        state.sub_rx.as_mut().unwrap().mode = Some(Mode::Usb);
 
-        let encoded = encode(
+        let ftdx101 = profile_by_id("yaesu-ftdx101").unwrap();
+        let bw = encode(
+            ftdx101,
+            &RadioCommand::SetReceiverFilterBandwidth {
+                receiver: ReceiverPath::Main,
+                bandwidth_hz: 2_305,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(bw.frames[0].as_str(), "SH0014;");
+        let bw_sub = encode(
+            ftdx101,
+            &RadioCommand::SetReceiverFilterBandwidth {
+                receiver: ReceiverPath::Sub,
+                bandwidth_hz: 2_305,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(bw_sub.frames[0].as_str(), "SH1014;");
+        let sh = encode(
+            ftdx101,
+            &RadioCommand::SetReceiverFilterShift {
+                receiver: ReceiverPath::Main,
+                shift_hz: -250,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sh.frames[0].as_str(), "IS00-0250;");
+        let sh_sub = encode(
+            ftdx101,
+            &RadioCommand::SetReceiverFilterShift {
+                receiver: ReceiverPath::Sub,
+                shift_hz: 250,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sh_sub.frames[0].as_str(), "IS10+0250;");
+
+        let ftdx10 = profile_by_id("yaesu-ftdx10").unwrap();
+        let bw = encode(
             ftdx10,
             &RadioCommand::SetReceiverFilterBandwidth {
                 receiver: ReceiverPath::Main,
@@ -1891,21 +1962,45 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+        assert_eq!(bw.frames[0].as_str(), "SH0014;");
+        let sh = encode(
+            ftdx10,
+            &RadioCommand::SetReceiverFilterShift {
+                receiver: ReceiverPath::Main,
+                shift_hz: 250,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sh.frames[0].as_str(), "IS00+0250;");
 
-        assert_eq!(encoded.frames[0].as_str(), "SH014;");
-        assert_eq!(
-            encoded.optimistic,
-            vec![StatePatch::MainRxFilterBandwidth(2_400)]
-        );
-    }
+        let ft710 = profile_by_id("yaesu-ft710").unwrap();
+        let bw = encode(
+            ft710,
+            &RadioCommand::SetReceiverFilterBandwidth {
+                receiver: ReceiverPath::Main,
+                bandwidth_hz: 2_305,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(bw.frames[0].as_str(), "SH0014;");
+        let sh = encode(
+            ft710,
+            &RadioCommand::SetReceiverFilterShift {
+                receiver: ReceiverPath::Main,
+                shift_hz: 250,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sh.frames[0].as_str(), "IS00+0250;");
 
-    #[test]
-    fn ft891_bandwidth_emits_na_and_sh() {
         let ft891 = profile_by_id("yaesu-ft891").unwrap();
-        let mut state = RadioState::default();
-        state.main_rx.mode = Some(Mode::Usb);
-
-        let encoded = encode(
+        let bw = encode(
             ft891,
             &RadioCommand::SetReceiverFilterBandwidth {
                 receiver: ReceiverPath::Main,
@@ -1915,10 +2010,42 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+        assert_eq!(bw.frames[0].as_str(), "SH0116;");
+        let sh = encode(
+            ft891,
+            &RadioCommand::SetReceiverFilterShift {
+                receiver: ReceiverPath::Main,
+                shift_hz: -250,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sh.frames[0].as_str(), "IS01-0250;");
 
-        assert_eq!(encoded.frames.len(), 2);
-        assert!(encoded.frames[0].as_str().starts_with("NA0"));
-        assert!(encoded.frames[1].as_str().starts_with("SH0"));
+        let ft991 = profile_by_id("yaesu-ft991").unwrap();
+        let bw = encode(
+            ft991,
+            &RadioCommand::SetReceiverFilterBandwidth {
+                receiver: ReceiverPath::Main,
+                bandwidth_hz: 2_600,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(bw.frames[0].as_str(), "SH016;");
+        let sh = encode(
+            ft991,
+            &RadioCommand::SetReceiverFilterShift {
+                receiver: ReceiverPath::Main,
+                shift_hz: 250,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sh.frames[0].as_str(), "IS00+0250;");
     }
 
     #[test]
@@ -1988,18 +2115,94 @@ mod tests {
         let q = encode_query(k3, "filter-state").unwrap().unwrap();
         assert!(q.frames.iter().any(|f| f.as_str() == "BW$;"));
         assert!(q.frames.iter().any(|f| f.as_str() == "IS$;"));
+
+        let ftdx101 = profile_by_id("yaesu-ftdx101").unwrap();
+        let q = encode_query(ftdx101, "filter-state").unwrap().unwrap();
+        assert_eq!(
+            q.frames.iter().map(|f| f.as_str()).collect::<Vec<_>>(),
+            vec!["SH0;", "SH1;", "IS0;", "IS1;"]
+        );
+
+        let ft891 = profile_by_id("yaesu-ft891").unwrap();
+        let q = encode_query(ft891, "filter-state").unwrap().unwrap();
+        assert_eq!(
+            q.frames.iter().map(|f| f.as_str()).collect::<Vec<_>>(),
+            vec!["SH0;", "IS0;"]
+        );
+
+        let ft991 = profile_by_id("yaesu-ft991").unwrap();
+        let q = encode_query(ft991, "filter-state").unwrap().unwrap();
+        assert_eq!(
+            q.frames.iter().map(|f| f.as_str()).collect::<Vec<_>>(),
+            vec!["SH0;", "IS0;"]
+        );
     }
 
     #[test]
     fn decode_yaesu_and_hilo_frames_to_normalized_patches() {
-        let yaesu = profile_by_id("yaesu-ftdx10").unwrap();
         let mut state = RadioState::default();
         state.main_rx.mode = Some(Mode::Usb);
+        state.main_rx.filter.bandwidth_hz = Some(2_400);
+        state.sub_rx = Some(crate::state::ReceiverState::default());
+        state.sub_rx.as_mut().unwrap().mode = Some(Mode::Usb);
 
-        let sh = decode(yaesu, &AsciiFrame::new("SH013;").unwrap(), &state)
+        let ftdx101 = profile_by_id("yaesu-ftdx101").unwrap();
+        let sh = decode(ftdx101, &AsciiFrame::new("SH0013;").unwrap(), &state)
             .unwrap()
             .unwrap();
         assert_eq!(sh.patches, vec![StatePatch::MainRxFilterBandwidth(2_300)]);
+        let sh_sub = decode(ftdx101, &AsciiFrame::new("SH1014;").unwrap(), &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(sh_sub.patches, vec![StatePatch::SubRxFilterBandwidth(2_400)]);
+        let is = decode(ftdx101, &AsciiFrame::new("IS00-0250;").unwrap(), &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(is.patches, vec![StatePatch::MainRxFilterShift(-250)]);
+        let is_sub = decode(ftdx101, &AsciiFrame::new("IS10+0250;").unwrap(), &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(is_sub.patches, vec![StatePatch::SubRxFilterShift(250)]);
+
+        let ftdx10 = profile_by_id("yaesu-ftdx10").unwrap();
+        let sh = decode(ftdx10, &AsciiFrame::new("SH0013;").unwrap(), &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(sh.patches, vec![StatePatch::MainRxFilterBandwidth(2_300)]);
+        let is = decode(ftdx10, &AsciiFrame::new("IS00+0250;").unwrap(), &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(is.patches, vec![StatePatch::MainRxFilterShift(250)]);
+
+        let ft710 = profile_by_id("yaesu-ft710").unwrap();
+        let sh = decode(ft710, &AsciiFrame::new("SH0013;").unwrap(), &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(sh.patches, vec![StatePatch::MainRxFilterBandwidth(2_300)]);
+        let is = decode(ft710, &AsciiFrame::new("IS00+0250;").unwrap(), &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(is.patches, vec![StatePatch::MainRxFilterShift(250)]);
+
+        let ft891 = profile_by_id("yaesu-ft891").unwrap();
+        let sh = decode(ft891, &AsciiFrame::new("SH0116;").unwrap(), &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(sh.patches, vec![StatePatch::MainRxFilterBandwidth(2_600)]);
+        let is = decode(ft891, &AsciiFrame::new("IS01-0250;").unwrap(), &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(is.patches, vec![StatePatch::MainRxFilterShift(-250)]);
+
+        let ft991 = profile_by_id("yaesu-ft991").unwrap();
+        let sh = decode(ft991, &AsciiFrame::new("SH016;").unwrap(), &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(sh.patches, vec![StatePatch::MainRxFilterBandwidth(2_600)]);
+        let is = decode(ft991, &AsciiFrame::new("IS00+0250;").unwrap(), &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(is.patches, vec![StatePatch::MainRxFilterShift(250)]);
 
         let ts590 = profile_by_id("kenwood-ts590").unwrap();
         let mut state = RadioState::default();
