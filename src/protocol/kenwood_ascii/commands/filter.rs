@@ -136,7 +136,11 @@ fn encode_bandwidth(
         } else {
             select_yaesu_bandwidth(mode, bandwidth_hz)
         };
-        let frame = AsciiFrame::new(encode_yaesu_bandwidth_payload(profile, receiver, selection.id))?;
+        let frame = AsciiFrame::new(encode_yaesu_bandwidth_payload(
+            profile,
+            receiver,
+            selection.id,
+        ))?;
         return Ok(EncodedCommand::new(
             vec![frame],
             ResponseMatcher::Prefix("SH"),
@@ -744,7 +748,10 @@ fn decode_yaesu_is_parts<'a>(
     }
 }
 
-fn decode_yaesu_sh_parts(profile: &KenwoodAsciiProfile, payload: &str) -> Result<(ReceiverPath, u8)> {
+fn decode_yaesu_sh_parts(
+    profile: &KenwoodAsciiProfile,
+    payload: &str,
+) -> Result<(ReceiverPath, u8)> {
     match profile.id() {
         "yaesu-ftdx101" => {
             if payload.len() != 4 {
@@ -753,7 +760,10 @@ fn decode_yaesu_sh_parts(profile: &KenwoodAsciiProfile, payload: &str) -> Result
                     message: format!("expected 4-char FTDX-101 SH payload, got {payload:?}"),
                 });
             }
-            Ok((decode_target(payload.as_bytes()[0])?, parse_u8("SH", &payload[2..])?))
+            Ok((
+                decode_target(payload.as_bytes()[0])?,
+                parse_u8("SH", &payload[2..])?,
+            ))
         }
         "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft891" | "yaesu-ft991" => {
             if payload.len() < 3 {
@@ -762,7 +772,10 @@ fn decode_yaesu_sh_parts(profile: &KenwoodAsciiProfile, payload: &str) -> Result
                     message: format!("expected Yaesu SH payload, got {payload:?}"),
                 });
             }
-            Ok((ReceiverPath::Main, parse_u8("SH", &payload[payload.len() - 2..])?))
+            Ok((
+                ReceiverPath::Main,
+                parse_u8("SH", &payload[payload.len() - 2..])?,
+            ))
         }
         _ => Err(RadioError::Decode {
             command: "SH",
@@ -2154,7 +2167,10 @@ mod tests {
         let sh_sub = decode(ftdx101, &AsciiFrame::new("SH1014;").unwrap(), &state)
             .unwrap()
             .unwrap();
-        assert_eq!(sh_sub.patches, vec![StatePatch::SubRxFilterBandwidth(2_400)]);
+        assert_eq!(
+            sh_sub.patches,
+            vec![StatePatch::SubRxFilterBandwidth(2_400)]
+        );
         let is = decode(ftdx101, &AsciiFrame::new("IS00-0250;").unwrap(), &state)
             .unwrap()
             .unwrap();

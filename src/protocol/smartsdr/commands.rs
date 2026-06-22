@@ -265,17 +265,19 @@ pub fn encode(
                 vec![StatePatch::TxPower(Power::from_watts(watts))],
             )))
         }
-        RadioCommand::SetPtt(enabled) => Ok(Some(EncodedCommand::new(
-            if *enabled {
-                vec![
-                    format!("slice s {} tx=1", profile.slice),
-                    "xmit 1".to_string(),
-                ]
-            } else {
-                vec!["xmit 0".to_string()]
-            },
-            Vec::new(),
-        ))),
+        RadioCommand::SetPtt(enabled) | RadioCommand::SetDataPtt(enabled) => {
+            Ok(Some(EncodedCommand::new(
+                if *enabled {
+                    vec![
+                        format!("slice s {} tx=1", profile.slice),
+                        "xmit 1".to_string(),
+                    ]
+                } else {
+                    vec!["xmit 0".to_string()]
+                },
+                Vec::new(),
+            )))
+        }
         RadioCommand::SetSplit(_) => Err(RadioError::UnsupportedCapability {
             capability: "tx.split",
         }),
@@ -945,7 +947,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(encoded.commands, vec!["transmit set rfpower=50"]);
-        assert_eq!(encoded.optimistic, vec![StatePatch::TxPower(Power::from_watts(50))]);
+        assert_eq!(
+            encoded.optimistic,
+            vec![StatePatch::TxPower(Power::from_watts(50))]
+        );
     }
 
     #[test]

@@ -10,8 +10,8 @@ use crate::{
         },
         kenwood_ascii::{
             self, AsciiFrame, CommandPriority, EncodedCommand,
-            FrameSplitter as KenwoodFrameSplitter, KenwoodAsciiProfile, ResponseMatcher,
-            StartupStep,
+            FrameSplitter as KenwoodFrameSplitter, KenwoodAsciiOptions, KenwoodAsciiProfile,
+            ResponseMatcher, StartupStep,
         },
         smartsdr::{self, LineSplitter as SmartSdrLineSplitter, SmartSdrProfile},
     },
@@ -67,7 +67,8 @@ pub(crate) fn native_protocol_for_driver(
     options: &str,
 ) -> Result<Option<Box<dyn NativeProtocol>>> {
     if let Some(profile) = kenwood_ascii::profile_by_id(driver_id) {
-        return Ok(Some(Box::new(KenwoodAsciiRuntime::new(profile))));
+        let options = KenwoodAsciiOptions::parse(options)?;
+        return Ok(Some(Box::new(KenwoodAsciiRuntime::new(profile, options))));
     }
 
     if let Some(profile) = icom_civ::profile_by_id(driver_id) {
@@ -87,13 +88,15 @@ pub(crate) fn native_protocol_for_driver(
 
 struct KenwoodAsciiRuntime {
     profile: &'static KenwoodAsciiProfile,
+    options: KenwoodAsciiOptions,
     frame_splitter: KenwoodFrameSplitter,
 }
 
 impl KenwoodAsciiRuntime {
-    fn new(profile: &'static KenwoodAsciiProfile) -> Self {
+    fn new(profile: &'static KenwoodAsciiProfile, options: KenwoodAsciiOptions) -> Self {
         Self {
             profile,
+            options,
             frame_splitter: KenwoodFrameSplitter::new(),
         }
     }
@@ -437,7 +440,9 @@ impl NativeProtocol for KenwoodAsciiRuntime {
             }
         }
 
-        let Some(encoded) = encode_kenwood_command(self.profile, &command, state_before)? else {
+        let Some(encoded) =
+            encode_kenwood_command(self.profile, self.options, &command, state_before)?
+        else {
             tracing::trace!(driver = %self.profile.id(), ?command, "command has no native transport encoding");
             return Ok(());
         };
@@ -1341,6 +1346,7 @@ impl NativeProtocol for SmartSdrRuntime {
 
 fn encode_kenwood_command(
     profile: &'static KenwoodAsciiProfile,
+    options: KenwoodAsciiOptions,
     command: &RadioCommand,
     current_state: &RadioState,
 ) -> Result<Option<EncodedCommand>> {
@@ -1362,7 +1368,7 @@ fn encode_kenwood_command(
     if let Some(encoded) = kenwood_ascii::rf::encode(profile, command)? {
         return Ok(Some(encoded));
     }
-    if let Some(encoded) = kenwood_ascii::tx::encode(profile, command)? {
+    if let Some(encoded) = kenwood_ascii::tx::encode(profile, options, command)? {
         return Ok(Some(encoded));
     }
     if let Some(encoded) = kenwood_ascii::keyer::encode(profile, command)? {
@@ -1481,7 +1487,7 @@ fn kenwood_timeout_recovery_queries(
             rf_query_for_receiver(profile, *receiver, RfRecoveryFeature::AutoNotch)
         }
         RadioCommand::SetTxPower(_) => vec!["PC"],
-        RadioCommand::SetPtt(_) => vec!["IF"],
+        RadioCommand::SetPtt(_) | RadioCommand::SetDataPtt(_) => vec!["IF"],
         RadioCommand::SetSplit(_) => split_queries(profile),
         RadioCommand::SetRitEnabled { receiver, .. } => vec![rit_enabled_query(profile, *receiver)],
         RadioCommand::SetXitEnabled(_) => vec!["XT"],
@@ -1731,7 +1737,7 @@ fn command_matches_state(command: &RadioCommand, state: &RadioState) -> bool {
             .as_ref()
             .and_then(|tx| tx.power)
             .is_some_and(|current| current == *power),
-        RadioCommand::SetPtt(transmitting) => state
+        RadioCommand::SetPtt(transmitting) | RadioCommand::SetDataPtt(transmitting) => state
             .tx
             .as_ref()
             .and_then(|tx| tx.transmitting)
@@ -1836,7 +1842,7 @@ fn icom_validation_queries(
             ReceiverPath::Sub => vec!["mode-sub"],
         },
         RadioCommand::SetTxPower(_) => vec!["tx-power"],
-        RadioCommand::SetPtt(_) => vec!["ptt"],
+        RadioCommand::SetPtt(_) | RadioCommand::SetDataPtt(_) => vec!["ptt"],
         RadioCommand::SetSplit(_) => vec!["split"],
         RadioCommand::SetRitEnabled { .. } => vec!["rit"],
         RadioCommand::SetXitEnabled(_) => {

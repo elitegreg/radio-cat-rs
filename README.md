@@ -54,6 +54,7 @@ async fn main() -> radio_cat_rs::Result<()> {
     radio.set_main_mode(Mode::Usb).await?;
     radio.set_tx_power(Power::from_watts(25)).await?;
     radio.set_ptt(true).await?;
+    radio.set_data_ptt(false).await?;
     radio.send_cw("CQ TEST").await?;
     radio.stop_cw().await?;
     radio.set_rit_xit_offset(RitXitOffsetHz::new(250).unwrap()).await?;
@@ -108,7 +109,7 @@ let radio = Radio::connect(RadioConfig::dummy()).await?;
 # }
 ```
 
-The `options` string is passed through to the selected driver unchanged. The core API does not parse it, so future drivers can use driver-specific formats while keeping one common construction path.
+The `options` string is driver-specific. For example, Kenwood TS-590/890/990/480/2000 profiles support `ptt_source=front|usb` for `set_ptt(...)` behavior; the default is `front`. `set_data_ptt(...)` is always data/USB PTT on those radios.
 
 `flexradio-smartsdr` is TCP-only. Use `with_tcp_transport(...)` or `with_tcp_socket(...)` when calling `Radio::connect`, for example:
 

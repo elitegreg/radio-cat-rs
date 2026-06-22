@@ -152,7 +152,9 @@ pub fn encode(
             )?))
         }
         RadioCommand::SetTxPower(power) => Ok(Some(set_tx_power(profile, options, *power)?)),
-        RadioCommand::SetPtt(enabled) => Ok(Some(set_ptt(options, *enabled)?)),
+        RadioCommand::SetPtt(enabled) | RadioCommand::SetDataPtt(enabled) => {
+            Ok(Some(set_ptt(options, *enabled)?))
+        }
         RadioCommand::SetSplit(enabled) => Ok(Some(set_split(options, *enabled)?)),
         RadioCommand::SetRitEnabled { receiver, enabled } => {
             require_main_receiver(*receiver, "rit")?;

@@ -49,6 +49,7 @@ pub enum RadioCommand {
     SetTxMode(Mode),
     SetTxPower(Power),
     SetPtt(bool),
+    SetDataPtt(bool),
     SetSplit(bool),
 
     SetRitEnabled {

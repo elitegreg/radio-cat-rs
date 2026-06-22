@@ -2,8 +2,7 @@ use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use radio_cat_rs::{
-    CatTransport, Frequency, LeveledSetting, Mode, Power, Radio, RadioConfig, RadioError,
-    Result,
+    CatTransport, Frequency, LeveledSetting, Mode, Power, Radio, RadioConfig, RadioError, Result,
 };
 use tokio::sync::Mutex;
 
@@ -247,7 +246,10 @@ async fn flexradio_command_error_does_not_stop_connection() {
     assert!(radio.set_tx_power(Power::from_watts(50)).await.is_err());
     let state = radio.latest_state();
     assert_eq!(state.connection, radio_cat_rs::ConnectionState::Ready);
-    assert_eq!(state.tx.as_ref().and_then(|tx| tx.power), Some(Power::from_watts(100)));
+    assert_eq!(
+        state.tx.as_ref().and_then(|tx| tx.power),
+        Some(Power::from_watts(100))
+    );
 
     transport
         .push_read(lines(["R5|0||", "S0|slice 0 RF_frequency=7.03"]))

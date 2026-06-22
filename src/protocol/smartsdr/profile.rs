@@ -53,10 +53,13 @@ impl SmartSdrOptions {
 
             match key.as_str() {
                 "slice" | "slice_index" => {
-                    parsed.slice = value.parse::<u8>().map_err(|error| RadioError::InvalidValue {
-                        field: "slice",
-                        message: error.to_string(),
-                    })?;
+                    parsed.slice =
+                        value
+                            .parse::<u8>()
+                            .map_err(|error| RadioError::InvalidValue {
+                                field: "slice",
+                                message: error.to_string(),
+                            })?;
                 }
                 _ => {
                     return Err(RadioError::InvalidValue {
@@ -95,7 +98,8 @@ pub const FLEXRADIO_SMARTSDR: SmartSdrProfile = SmartSdrProfile {
     descriptor: DriverDescriptor {
         id: "flexradio-smartsdr",
         display_name: "FlexRadio SmartSDR",
-        description: "FlexRadio SmartSDR TCP slice control (default slice 0; configurable via options).",
+        description:
+            "FlexRadio SmartSDR TCP slice control (default slice 0; configurable via options).",
     },
     slice: 0,
     capabilities: RadioCapabilities::new(

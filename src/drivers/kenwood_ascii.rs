@@ -5,8 +5,8 @@ use crate::{
     driver::{DriverCommandOutcome, DriverDescriptor, RadioDriver},
     error::{RadioError, Result},
     protocol::kenwood_ascii::{
-        filter, frequency, keyer, mode, profile_by_id, rf, rit_xit, split, tx, KenwoodAsciiProfile,
-        ReceiverKind,
+        filter, frequency, keyer, mode, profile_by_id, rf, rit_xit, split, tx, KenwoodAsciiOptions,
+        KenwoodAsciiProfile, ReceiverKind,
     },
     update::UpdateSource,
     ConnectionState, KeyerState, RadioCapabilities, RadioState, ReceiverState, RitXitState,
@@ -17,14 +17,18 @@ use crate::{
 pub struct KenwoodAsciiDriver {
     profile: &'static KenwoodAsciiProfile,
     options: String,
+    parsed_options: KenwoodAsciiOptions,
 }
 
 impl KenwoodAsciiDriver {
-    pub fn new(profile: &'static KenwoodAsciiProfile, options: impl Into<String>) -> Self {
-        Self {
+    pub fn new(profile: &'static KenwoodAsciiProfile, options: impl Into<String>) -> Result<Self> {
+        let options = options.into();
+        let parsed_options = KenwoodAsciiOptions::parse(&options)?;
+        Ok(Self {
             profile,
-            options: options.into(),
-        }
+            options,
+            parsed_options,
+        })
     }
 
     pub fn profile(&self) -> &'static KenwoodAsciiProfile {
@@ -35,8 +39,11 @@ impl KenwoodAsciiDriver {
         &self.options
     }
 
-    pub fn from_driver_id(id: &str, options: impl Into<String>) -> Option<Self> {
-        profile_by_id(id).map(|profile| Self::new(profile, options))
+    pub fn from_driver_id(id: &str, options: impl Into<String>) -> Result<Option<Self>> {
+        match profile_by_id(id) {
+            Some(profile) => Self::new(profile, options).map(Some),
+            None => Ok(None),
+        }
     }
 
     fn encode_command(
@@ -62,7 +69,7 @@ impl KenwoodAsciiDriver {
         if let Some(encoded) = rf::encode(self.profile, command)? {
             return Ok(Some(encoded));
         }
-        if let Some(encoded) = tx::encode(self.profile, command)? {
+        if let Some(encoded) = tx::encode(self.profile, self.parsed_options, command)? {
             return Ok(Some(encoded));
         }
         if let Some(encoded) = keyer::encode(self.profile, command)? {
@@ -160,16 +167,20 @@ mod tests {
 
     #[test]
     fn driver_can_be_resolved_by_profile_id() {
-        let driver = KenwoodAsciiDriver::from_driver_id("kenwood-ts590", "").unwrap();
+        let driver = KenwoodAsciiDriver::from_driver_id("kenwood-ts590", "")
+            .unwrap()
+            .unwrap();
         assert_eq!(driver.descriptor().id, "kenwood-ts590");
 
-        assert!(KenwoodAsciiDriver::from_driver_id("unknown", "").is_none());
+        assert!(KenwoodAsciiDriver::from_driver_id("unknown", "")
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
     async fn driver_routes_commands_through_profile_codecs() {
         let profile = profile_by_id("kenwood-ts590").unwrap();
-        let mut driver = KenwoodAsciiDriver::new(profile, "");
+        let mut driver = KenwoodAsciiDriver::new(profile, "").unwrap();
         let mut state = driver.initial_state();
         state.tx = Some(TransmitterState::default());
 
@@ -195,7 +206,7 @@ mod tests {
     #[tokio::test]
     async fn start_marks_driver_ready() {
         let profile = profile_by_id("yaesu-ftdx10").unwrap();
-        let mut driver = KenwoodAsciiDriver::new(profile, "");
+        let mut driver = KenwoodAsciiDriver::new(profile, "").unwrap();
         let patches = driver.start().await.unwrap();
 
         assert_eq!(patches.len(), 2);

@@ -5,11 +5,13 @@ use crate::{
 
 use super::{DecodedFrame, EncodedCommand, PowerCommandEncoding};
 use crate::protocol::kenwood_ascii::{
-    AsciiFrame, CommandPriority, KenwoodAsciiProfile, ResponseMatcher,
+    AsciiFrame, CommandPriority, KenwoodAsciiOptions, KenwoodAsciiProfile, KenwoodPttSource,
+    ResponseMatcher,
 };
 
 pub fn encode(
     profile: &KenwoodAsciiProfile,
+    options: KenwoodAsciiOptions,
     command: &RadioCommand,
 ) -> Result<Option<EncodedCommand>> {
     match command {
@@ -42,7 +44,17 @@ pub fn encode(
         }
         RadioCommand::SetPtt(transmitting) => {
             require_ptt(profile)?;
-            let frame = AsciiFrame::new(ptt_frame(profile, *transmitting))?;
+            let frame = AsciiFrame::new(ptt_frame(profile, options, *transmitting))?;
+            Ok(Some(EncodedCommand::new(
+                vec![frame],
+                ResponseMatcher::None,
+                vec![StatePatch::Transmitting(*transmitting)],
+                CommandPriority::Normal,
+            )))
+        }
+        RadioCommand::SetDataPtt(transmitting) => {
+            require_ptt(profile)?;
+            let frame = AsciiFrame::new(data_ptt_frame(profile, *transmitting))?;
             Ok(Some(EncodedCommand::new(
                 vec![frame],
                 ResponseMatcher::None,
@@ -231,19 +243,23 @@ fn encode_k4_power(power: Power) -> Result<PowerCommandEncoding> {
     }
 }
 
-fn ptt_frame(profile: &KenwoodAsciiProfile, transmitting: bool) -> &'static str {
+fn ptt_frame(
+    profile: &KenwoodAsciiProfile,
+    options: KenwoodAsciiOptions,
+    transmitting: bool,
+) -> &'static str {
     if is_yaesu(profile) {
         if transmitting {
             "TX1;"
         } else {
             "TX0;"
         }
-    } else if matches!(
-        profile.id(),
-        "kenwood-ts590" | "kenwood-ts890" | "kenwood-ts990" | "kenwood-ts480" | "kenwood-ts2000"
-    ) {
+    } else if is_split_ptt_kenwood(profile) {
         if transmitting {
-            "TX0;"
+            match options.ptt_source {
+                KenwoodPttSource::Front => "TX0;",
+                KenwoodPttSource::Usb => "TX1;",
+            }
         } else {
             "RX;"
         }
@@ -254,6 +270,25 @@ fn ptt_frame(profile: &KenwoodAsciiProfile, transmitting: bool) -> &'static str 
             "RX;"
         }
     }
+}
+
+fn data_ptt_frame(profile: &KenwoodAsciiProfile, transmitting: bool) -> &'static str {
+    if is_split_ptt_kenwood(profile) {
+        if transmitting {
+            "TX1;"
+        } else {
+            "RX;"
+        }
+    } else {
+        ptt_frame(profile, KenwoodAsciiOptions::defaults(), transmitting)
+    }
+}
+
+fn is_split_ptt_kenwood(profile: &KenwoodAsciiProfile) -> bool {
+    matches!(
+        profile.id(),
+        "kenwood-ts590" | "kenwood-ts890" | "kenwood-ts990" | "kenwood-ts480" | "kenwood-ts2000"
+    )
 }
 
 fn standard_power_range(id: &str) -> Option<(u16, u16)> {
@@ -285,9 +320,13 @@ mod tests {
     #[test]
     fn standard_power_encodes_as_zero_padded_watts() {
         let profile = profile_by_id("kenwood-ts590").unwrap();
-        let encoded = encode(profile, &RadioCommand::SetTxPower(Power::from_watts(25)))
-            .unwrap()
-            .unwrap();
+        let encoded = encode(
+            profile,
+            KenwoodAsciiOptions::defaults(),
+            &RadioCommand::SetTxPower(Power::from_watts(25)),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(encoded.frames[0].as_str(), "PC025;");
     }
 
@@ -296,6 +335,7 @@ mod tests {
         let profile = profile_by_id("elecraft-k4").unwrap();
         let low = encode(
             profile,
+            KenwoodAsciiOptions::defaults(),
             &RadioCommand::SetTxPower(Power::from_milliwatts(1000)),
         )
         .unwrap()
@@ -304,6 +344,7 @@ mod tests {
 
         let micro = encode(
             profile,
+            KenwoodAsciiOptions::defaults(),
             &RadioCommand::SetTxPower(Power::from_microwatts(500)),
         )
         .unwrap()
@@ -317,18 +358,26 @@ mod tests {
         let k3 = profile_by_id("elecraft-k3").unwrap();
 
         assert_eq!(
-            encode(ts590, &RadioCommand::SetPtt(true))
-                .unwrap()
-                .unwrap()
-                .frames[0]
+            encode(
+                ts590,
+                KenwoodAsciiOptions::defaults(),
+                &RadioCommand::SetPtt(true)
+            )
+            .unwrap()
+            .unwrap()
+            .frames[0]
                 .as_str(),
             "TX0;"
         );
         assert_eq!(
-            encode(k3, &RadioCommand::SetPtt(false))
-                .unwrap()
-                .unwrap()
-                .frames[0]
+            encode(
+                k3,
+                KenwoodAsciiOptions::defaults(),
+                &RadioCommand::SetPtt(false)
+            )
+            .unwrap()
+            .unwrap()
+            .frames[0]
                 .as_str(),
             "RX;"
         );
@@ -345,24 +394,61 @@ mod tests {
         ] {
             let profile = profile_by_id(id).unwrap();
             assert_eq!(
-                encode(profile, &RadioCommand::SetPtt(true))
-                    .unwrap()
-                    .unwrap()
-                    .frames[0]
+                encode(
+                    profile,
+                    KenwoodAsciiOptions::defaults(),
+                    &RadioCommand::SetPtt(true),
+                )
+                .unwrap()
+                .unwrap()
+                .frames[0]
                     .as_str(),
                 "TX1;",
                 "{id} should use TX1 for PTT on"
             );
             assert_eq!(
-                encode(profile, &RadioCommand::SetPtt(false))
-                    .unwrap()
-                    .unwrap()
-                    .frames[0]
+                encode(
+                    profile,
+                    KenwoodAsciiOptions::defaults(),
+                    &RadioCommand::SetPtt(false),
+                )
+                .unwrap()
+                .unwrap()
+                .frames[0]
                     .as_str(),
                 "TX0;",
                 "{id} should use TX0 for PTT off"
             );
         }
+    }
+
+    #[test]
+    fn set_data_ptt_and_ptt_source_behave_as_expected() {
+        let ts590 = profile_by_id("kenwood-ts590").unwrap();
+        let usb = KenwoodAsciiOptions {
+            ptt_source: KenwoodPttSource::Usb,
+        };
+
+        assert_eq!(
+            encode(ts590, usb, &RadioCommand::SetPtt(true))
+                .unwrap()
+                .unwrap()
+                .frames[0]
+                .as_str(),
+            "TX1;"
+        );
+        assert_eq!(
+            encode(
+                ts590,
+                KenwoodAsciiOptions::defaults(),
+                &RadioCommand::SetDataPtt(true),
+            )
+            .unwrap()
+            .unwrap()
+            .frames[0]
+                .as_str(),
+            "TX1;"
+        );
     }
 
     #[test]

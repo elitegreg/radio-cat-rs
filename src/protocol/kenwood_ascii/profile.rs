@@ -7,6 +7,7 @@ use crate::{
         TransmitterCapabilities,
     },
     driver::DriverDescriptor,
+    error::{RadioError, Result},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -57,6 +58,68 @@ pub struct KenwoodAsciiProfile {
 impl KenwoodAsciiProfile {
     pub const fn id(self) -> &'static str {
         self.descriptor.id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KenwoodPttSource {
+    Front,
+    Usb,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KenwoodAsciiOptions {
+    pub ptt_source: KenwoodPttSource,
+}
+
+impl KenwoodAsciiOptions {
+    pub const fn defaults() -> Self {
+        Self {
+            ptt_source: KenwoodPttSource::Front,
+        }
+    }
+
+    pub fn parse(options: &str) -> Result<Self> {
+        let mut parsed = Self::defaults();
+
+        for part in options.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+
+            let (key, value) = part
+                .split_once('=')
+                .ok_or_else(|| RadioError::InvalidValue {
+                    field: "options",
+                    message: format!("expected key=value option, got {part:?}"),
+                })?;
+            let key = key.trim().replace('-', "_").to_ascii_lowercase();
+            let value = value.trim();
+
+            match key.as_str() {
+                "ptt_source" | "ptt" => {
+                    parsed.ptt_source = match value.to_ascii_lowercase().as_str() {
+                        "front" => KenwoodPttSource::Front,
+                        "usb" | "data" => KenwoodPttSource::Usb,
+                        _ => {
+                            return Err(RadioError::InvalidValue {
+                                field: "ptt_source",
+                                message: format!("expected front or usb, got {value:?}"),
+                            })
+                        }
+                    };
+                }
+                _ => {
+                    return Err(RadioError::InvalidValue {
+                        field: "options",
+                        message: format!("unknown Kenwood ASCII option {key:?}"),
+                    });
+                }
+            }
+        }
+
+        Ok(parsed)
     }
 }
 
@@ -890,5 +953,19 @@ mod tests {
                 "{id} startup missing MD1 query"
             );
         }
+    }
+
+    #[test]
+    fn kenwood_options_default_to_front_and_parse_usb() {
+        assert_eq!(
+            KenwoodAsciiOptions::defaults().ptt_source,
+            KenwoodPttSource::Front
+        );
+        assert_eq!(
+            KenwoodAsciiOptions::parse("ptt_source=usb")
+                .unwrap()
+                .ptt_source,
+            KenwoodPttSource::Usb
+        );
     }
 }

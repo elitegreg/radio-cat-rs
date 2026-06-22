@@ -119,7 +119,9 @@ impl RadioDriver for DummyRadioDriver {
             RadioCommand::SetTxFrequency(frequency) => vec![StatePatch::TxFrequency(frequency)],
             RadioCommand::SetTxMode(mode) => vec![StatePatch::TxMode(mode)],
             RadioCommand::SetTxPower(power) => vec![StatePatch::TxPower(power)],
-            RadioCommand::SetPtt(transmitting) => vec![StatePatch::Transmitting(transmitting)],
+            RadioCommand::SetPtt(transmitting) | RadioCommand::SetDataPtt(transmitting) => {
+                vec![StatePatch::Transmitting(transmitting)]
+            }
             RadioCommand::SetSplit(split) => vec![StatePatch::Split(split)],
 
             RadioCommand::SetRitEnabled { receiver, enabled } => receiver_patch(

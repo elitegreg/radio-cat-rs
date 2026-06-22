@@ -189,7 +189,7 @@ impl Radio {
 
         let driver: Box<dyn crate::RadioDriver> = match driver_id.to_ascii_lowercase().as_str() {
             "dummy" => Box::new(DummyRadioDriver::with_options(config.options.clone())),
-            _ => match KenwoodAsciiDriver::from_driver_id(driver_id, config.options.clone()) {
+            _ => match KenwoodAsciiDriver::from_driver_id(driver_id, config.options.clone())? {
                 Some(driver) => Box::new(driver),
                 None => match IcomCivDriver::from_driver_id(driver_id, config.options.clone())? {
                     Some(driver) => Box::new(driver),
@@ -472,6 +472,10 @@ impl Radio {
 
     pub async fn set_ptt(&self, transmitting: bool) -> Result<()> {
         self.command(RadioCommand::SetPtt(transmitting)).await
+    }
+
+    pub async fn set_data_ptt(&self, transmitting: bool) -> Result<()> {
+        self.command(RadioCommand::SetDataPtt(transmitting)).await
     }
 
     pub async fn set_split(&self, split: bool) -> Result<()> {
