@@ -6,7 +6,7 @@ mod transaction;
 pub use crate::capabilities::ReceiverKind;
 pub use commands::{
     filter, frequency, info, keyer, mode, rf, rit_xit, split, tx, DecodedFrame, EncodedCommand,
-    FrequencyCommandTarget, PowerCommandEncoding,
+    FrequencyCommandTarget, PhysicalVfo, PowerCommandEncoding, VfoRouting,
 };
 pub use frame::{AsciiFrame, FrameSplitter, ProtocolErrorFrame};
 pub use profile::{

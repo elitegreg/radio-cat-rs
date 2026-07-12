@@ -198,8 +198,8 @@ pub enum StatePatch {
     SubRxNoiseBlanker(LeveledSetting),
     SubRxNoiseReduction(LeveledSetting),
     SubRxAutoNotch(bool),
-    /// Atomically exchanges normalized main/sub receiver and per-receiver RIT state.
-    SwapReceivers,
+    /// Exchanges normalized main/sub VFO frequencies and per-VFO RIT/XIT state.
+    SwapVfoFrequencies,
 
     TxPresent(bool),
     TxFrequency(Frequency),
@@ -381,7 +381,7 @@ impl StateReducer {
                     changes.add(ChangeFlags::SUB_RX_RF, StateField::SubRxAutoNotch);
                 }
             }
-            StatePatch::SwapReceivers => {
+            StatePatch::SwapVfoFrequencies => {
                 let sub = self.state.sub_rx.get_or_insert_with(ReceiverState::default);
                 std::mem::swap(&mut self.state.main_rx.frequency, &mut sub.frequency);
                 std::mem::swap(
@@ -679,7 +679,7 @@ mod tests {
         state.rit_xit.sub_rit_enabled = Some(false);
         let mut reducer = StateReducer::new(state);
 
-        let changes = reducer.apply_patch(StatePatch::SwapReceivers);
+        let changes = reducer.apply_patch(StatePatch::SwapVfoFrequencies);
 
         assert_eq!(
             reducer.state().main_rx.frequency,

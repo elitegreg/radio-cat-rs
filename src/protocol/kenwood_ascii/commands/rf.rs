@@ -6,7 +6,7 @@ use crate::{
     LeveledSetting, Result,
 };
 
-use super::{info::YaesuVfoRouting, DecodedFrame, EncodedCommand};
+use super::{DecodedFrame, EncodedCommand, VfoRouting};
 use crate::protocol::kenwood_ascii::{
     AsciiFrame, CommandPriority, KenwoodAsciiProfile, ResponseMatcher,
 };
@@ -15,13 +15,13 @@ pub fn encode(
     profile: &KenwoodAsciiProfile,
     command: &RadioCommand,
 ) -> Result<Option<EncodedCommand>> {
-    encode_with_routing(profile, command, YaesuVfoRouting::for_profile(profile))
+    encode_with_routing(profile, command, VfoRouting::for_profile(profile))
 }
 
 pub fn encode_with_routing(
     profile: &KenwoodAsciiProfile,
     command: &RadioCommand,
-    yaesu_routing: YaesuVfoRouting,
+    vfo_routing: VfoRouting,
 ) -> Result<Option<EncodedCommand>> {
     match command {
         RadioCommand::SetReceiverPreamp { receiver, setting } => {
@@ -33,7 +33,7 @@ pub fn encode_with_routing(
                 profile,
                 *receiver,
                 *setting,
-                yaesu_routing,
+                vfo_routing,
             )?))
         }
         RadioCommand::SetReceiverAttenuator { receiver, setting } => {
@@ -45,7 +45,7 @@ pub fn encode_with_routing(
                 profile,
                 *receiver,
                 *setting,
-                yaesu_routing,
+                vfo_routing,
             )?))
         }
         RadioCommand::SetReceiverNoiseBlanker { receiver, setting } => {
@@ -57,7 +57,7 @@ pub fn encode_with_routing(
                 profile,
                 *receiver,
                 *setting,
-                yaesu_routing,
+                vfo_routing,
             )?))
         }
         RadioCommand::SetReceiverNoiseReduction { receiver, setting } => {
@@ -69,7 +69,7 @@ pub fn encode_with_routing(
                 profile,
                 *receiver,
                 *setting,
-                yaesu_routing,
+                vfo_routing,
             )?))
         }
         RadioCommand::SetReceiverAutoNotch { receiver, enabled } => {
@@ -81,7 +81,7 @@ pub fn encode_with_routing(
                 profile,
                 *receiver,
                 *enabled,
-                yaesu_routing,
+                vfo_routing,
             )?))
         }
         _ => Ok(None),
@@ -119,20 +119,20 @@ pub fn encode_query(
 }
 
 pub fn decode(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result<Option<DecodedFrame>> {
-    decode_with_routing(profile, frame, YaesuVfoRouting::for_profile(profile))
+    decode_with_routing(profile, frame, VfoRouting::for_profile(profile))
 }
 
 pub fn decode_with_routing(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
-    yaesu_routing: YaesuVfoRouting,
+    vfo_routing: VfoRouting,
 ) -> Result<Option<DecodedFrame>> {
     let patches = match frame.command() {
-        "PA" | "PA$" | "PAX" => decode_preamp(profile, frame, yaesu_routing)?,
-        "RA" | "RA$" | "RAX" => decode_attenuator(profile, frame, yaesu_routing)?,
-        "NB" | "NB$" => decode_noise_blanker(profile, frame, yaesu_routing)?,
-        "NR" | "NR$" | "NRX" => decode_noise_reduction(profile, frame, yaesu_routing)?,
-        "NT" | "NTX" | "NA" | "NA$" | "BC" => decode_auto_notch(profile, frame, yaesu_routing)?,
+        "PA" | "PA$" | "PAX" => decode_preamp(profile, frame, vfo_routing)?,
+        "RA" | "RA$" | "RAX" => decode_attenuator(profile, frame, vfo_routing)?,
+        "NB" | "NB$" => decode_noise_blanker(profile, frame, vfo_routing)?,
+        "NR" | "NR$" | "NRX" => decode_noise_reduction(profile, frame, vfo_routing)?,
+        "NT" | "NTX" | "NA" | "NA$" | "BC" => decode_auto_notch(profile, frame, vfo_routing)?,
         _ => return Ok(None),
     };
 
@@ -143,7 +143,7 @@ fn encode_preamp(
     profile: &KenwoodAsciiProfile,
     receiver: ReceiverPath,
     setting: LeveledSetting,
-    yaesu_routing: YaesuVfoRouting,
+    vfo_routing: VfoRouting,
 ) -> Result<EncodedCommand> {
     let index = normalize_index(setting, 1)?;
 
@@ -162,10 +162,7 @@ fn encode_preamp(
         ),
         "yaesu-ftdx101" => (format!("PA{}{index};", target_digit(receiver)), 2),
         "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft891" | "yaesu-ft991" => (
-            format!(
-                "PA{}{index};",
-                yaesu_target(profile, receiver, yaesu_routing)
-            ),
+            format!("PA{}{index};", yaesu_target(profile, receiver, vfo_routing)),
             2,
         ),
         "kenwood-ts890" => (format!("PA{index};"), 2),
@@ -200,7 +197,7 @@ fn encode_attenuator(
     profile: &KenwoodAsciiProfile,
     receiver: ReceiverPath,
     setting: LeveledSetting,
-    yaesu_routing: YaesuVfoRouting,
+    vfo_routing: VfoRouting,
 ) -> Result<EncodedCommand> {
     let index = normalize_index(setting, 1)?;
 
@@ -231,10 +228,7 @@ fn encode_attenuator(
         "elecraft-k2" => format!("RA{index:02};"),
         "yaesu-ftdx101" => format!("RA{}{index};", target_digit(receiver)),
         "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft891" | "yaesu-ft991" => {
-            format!(
-                "RA{}{index};",
-                yaesu_target(profile, receiver, yaesu_routing)
-            )
+            format!("RA{}{index};", yaesu_target(profile, receiver, vfo_routing))
         }
         "kenwood-ts890" => format!("RA{index};"),
         "kenwood-ts590" | "kenwood-ts2000" | "kenwood-ts570" | "kenwood-ts870"
@@ -260,7 +254,7 @@ fn encode_noise_blanker(
     profile: &KenwoodAsciiProfile,
     receiver: ReceiverPath,
     setting: LeveledSetting,
-    yaesu_routing: YaesuVfoRouting,
+    vfo_routing: VfoRouting,
 ) -> Result<EncodedCommand> {
     let index = normalize_index(setting, 1)?;
 
@@ -339,7 +333,7 @@ fn encode_noise_blanker(
         "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft891" | "yaesu-ft991" => (
             vec![AsciiFrame::new(format!(
                 "NB{}{};",
-                yaesu_target(profile, receiver, yaesu_routing),
+                yaesu_target(profile, receiver, vfo_routing),
                 bool_digit(index > 0)
             ))?],
             ResponseMatcher::Prefix("NB"),
@@ -371,7 +365,7 @@ fn encode_noise_reduction(
     profile: &KenwoodAsciiProfile,
     receiver: ReceiverPath,
     setting: LeveledSetting,
-    yaesu_routing: YaesuVfoRouting,
+    vfo_routing: VfoRouting,
 ) -> Result<EncodedCommand> {
     let index = normalize_index(setting, 1)?;
 
@@ -397,7 +391,7 @@ fn encode_noise_reduction(
         "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft891" | "yaesu-ft991" => {
             format!(
                 "NR{}{};",
-                yaesu_target(profile, receiver, yaesu_routing),
+                yaesu_target(profile, receiver, vfo_routing),
                 bool_digit(index > 0)
             )
         }
@@ -430,7 +424,7 @@ fn encode_auto_notch(
     profile: &KenwoodAsciiProfile,
     receiver: ReceiverPath,
     enabled: bool,
-    yaesu_routing: YaesuVfoRouting,
+    vfo_routing: VfoRouting,
 ) -> Result<EncodedCommand> {
     let frame = match profile.id() {
         "kenwood-ts590" => format!("NT1{};", bool_digit(enabled)),
@@ -453,7 +447,7 @@ fn encode_auto_notch(
         "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft891" | "yaesu-ft991" => {
             format!(
                 "BC{}{};",
-                yaesu_target(profile, receiver, yaesu_routing),
+                yaesu_target(profile, receiver, vfo_routing),
                 bool_digit(enabled)
             )
         }
@@ -475,7 +469,7 @@ fn encode_auto_notch(
 fn decode_preamp(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
-    _yaesu_routing: YaesuVfoRouting,
+    _vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if frame.command() == "PA$" {
         let index = parse_u8("PA", frame.payload())?;
@@ -511,7 +505,7 @@ fn decode_preamp(
 fn decode_attenuator(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
-    _yaesu_routing: YaesuVfoRouting,
+    _vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if frame.command() == "RA$" {
         let index = parse_ra_or_nr_dollar(frame.payload())?;
@@ -551,7 +545,7 @@ fn decode_attenuator(
 fn decode_noise_blanker(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
-    _yaesu_routing: YaesuVfoRouting,
+    _vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if frame.command() == "NB$" {
         let enabled = parse_flag("NB", frame.payload())?;
@@ -633,7 +627,7 @@ fn decode_noise_blanker(
 fn decode_noise_reduction(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
-    _yaesu_routing: YaesuVfoRouting,
+    _vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if frame.command() == "NR$" {
         let index = parse_ra_or_nr_dollar(frame.payload())?;
@@ -692,7 +686,7 @@ fn decode_noise_reduction(
 fn decode_auto_notch(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
-    _yaesu_routing: YaesuVfoRouting,
+    _vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     let command = frame.command();
     let payload = frame.payload();
@@ -847,7 +841,7 @@ fn require_writable(capability: Capability, field: &'static str) -> Result<()> {
 fn yaesu_target(
     _profile: &KenwoodAsciiProfile,
     _receiver: ReceiverPath,
-    _routing: YaesuVfoRouting,
+    _routing: VfoRouting,
 ) -> char {
     '0'
 }

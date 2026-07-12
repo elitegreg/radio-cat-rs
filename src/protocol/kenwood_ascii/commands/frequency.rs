@@ -6,9 +6,8 @@ use crate::{
 };
 
 use super::{
-    info::YaesuVfoRouting,
     split::{current_tx_vfo, tx_vfo_from_state, RoutingVfo},
-    DecodedFrame, EncodedCommand, FrequencyCommandTarget,
+    DecodedFrame, EncodedCommand, FrequencyCommandTarget, VfoRouting,
 };
 use crate::protocol::kenwood_ascii::{
     AsciiFrame, CommandPriority, FrequencyFormat, KenwoodAsciiProfile, ResponseMatcher,
@@ -19,19 +18,14 @@ pub fn encode(
     command: &RadioCommand,
     state: &RadioState,
 ) -> Result<Option<EncodedCommand>> {
-    encode_with_routing(
-        profile,
-        command,
-        state,
-        YaesuVfoRouting::for_profile(profile),
-    )
+    encode_with_routing(profile, command, state, VfoRouting::for_profile(profile))
 }
 
 pub fn encode_with_routing(
     profile: &KenwoodAsciiProfile,
     command: &RadioCommand,
     state: &RadioState,
-    yaesu_routing: YaesuVfoRouting,
+    vfo_routing: VfoRouting,
 ) -> Result<Option<EncodedCommand>> {
     match command {
         RadioCommand::SetReceiverFrequency {
@@ -39,7 +33,7 @@ pub fn encode_with_routing(
             frequency,
         } => Ok(Some(encode_targeted_frequency(
             profile,
-            physical_target(profile, receiver_target(*receiver), yaesu_routing),
+            physical_target(profile, receiver_target(*receiver), vfo_routing),
             *frequency,
             frequency_optimistic_patch(profile, receiver_target(*receiver), *frequency, state),
         )?)),
@@ -48,7 +42,7 @@ pub fn encode_with_routing(
             let optimistic = frequency_optimistic_patch(profile, target, *frequency, state);
             Ok(Some(encode_targeted_frequency(
                 profile,
-                physical_target(profile, target, yaesu_routing),
+                physical_target(profile, target, vfo_routing),
                 *frequency,
                 optimistic,
             )?))
@@ -61,13 +55,13 @@ pub fn encode_query(
     profile: &KenwoodAsciiProfile,
     semantic: &str,
 ) -> Result<Option<EncodedCommand>> {
-    encode_query_with_routing(profile, semantic, YaesuVfoRouting::for_profile(profile))
+    encode_query_with_routing(profile, semantic, VfoRouting::for_profile(profile))
 }
 
 pub fn encode_query_with_routing(
     profile: &KenwoodAsciiProfile,
     semantic: &str,
-    yaesu_routing: YaesuVfoRouting,
+    vfo_routing: VfoRouting,
 ) -> Result<Option<EncodedCommand>> {
     let target = match semantic {
         "FA" => FrequencyCommandTarget::Main,
@@ -75,7 +69,7 @@ pub fn encode_query_with_routing(
         _ => return Ok(None),
     };
 
-    let command = command_for_target(physical_target(profile, target, yaesu_routing));
+    let command = command_for_target(physical_target(profile, target, vfo_routing));
     Ok(Some(EncodedCommand::new(
         vec![AsciiFrame::new(format!("{command};"))?],
         ResponseMatcher::Prefix(command),
@@ -89,14 +83,14 @@ pub fn decode(
     frame: &AsciiFrame,
     state: &RadioState,
 ) -> Result<Option<DecodedFrame>> {
-    decode_with_routing(profile, frame, state, YaesuVfoRouting::for_profile(profile))
+    decode_with_routing(profile, frame, state, VfoRouting::for_profile(profile))
 }
 
 pub fn decode_with_routing(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
     state: &RadioState,
-    yaesu_routing: YaesuVfoRouting,
+    vfo_routing: VfoRouting,
 ) -> Result<Option<DecodedFrame>> {
     let physical_target = match frame.command() {
         "FA" => FrequencyCommandTarget::Main,
@@ -104,7 +98,7 @@ pub fn decode_with_routing(
         _ => return Ok(None),
     };
 
-    let target = logical_target(profile, physical_target, yaesu_routing);
+    let target = logical_target(profile, physical_target, vfo_routing);
     let digits = frequency_digits(profile);
     let payload = frame.payload();
     if payload.len() != digits || !payload.chars().all(|ch| ch.is_ascii_digit()) {
@@ -178,16 +172,16 @@ fn frequency_decode_patches(
 fn physical_target(
     profile: &KenwoodAsciiProfile,
     target: FrequencyCommandTarget,
-    routing: YaesuVfoRouting,
+    routing: VfoRouting,
 ) -> FrequencyCommandTarget {
-    if uses_yaesu_vfo_mapping(profile) {
+    if uses_vfo_mapping(profile) {
         let receiver = match target {
             FrequencyCommandTarget::Main => ReceiverPath::Main,
             FrequencyCommandTarget::Sub => ReceiverPath::Sub,
         };
         match routing.vfo_for_receiver(receiver) {
-            super::info::YaesuVfo::A => FrequencyCommandTarget::Main,
-            super::info::YaesuVfo::B => FrequencyCommandTarget::Sub,
+            super::PhysicalVfo::A => FrequencyCommandTarget::Main,
+            super::PhysicalVfo::B => FrequencyCommandTarget::Sub,
         }
     } else {
         target
@@ -197,9 +191,9 @@ fn physical_target(
 fn logical_target(
     profile: &KenwoodAsciiProfile,
     target: FrequencyCommandTarget,
-    routing: YaesuVfoRouting,
+    routing: VfoRouting,
 ) -> FrequencyCommandTarget {
-    if uses_yaesu_vfo_mapping(profile) {
+    if uses_vfo_mapping(profile) {
         let byte = match target {
             FrequencyCommandTarget::Main => b'0',
             FrequencyCommandTarget::Sub => b'1',
@@ -213,10 +207,20 @@ fn logical_target(
     }
 }
 
-fn uses_yaesu_vfo_mapping(profile: &KenwoodAsciiProfile) -> bool {
+fn uses_vfo_mapping(profile: &KenwoodAsciiProfile) -> bool {
     matches!(
         profile.id(),
-        "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft891" | "yaesu-ft991"
+        "yaesu-ftdx10"
+            | "yaesu-ft710"
+            | "yaesu-ft891"
+            | "yaesu-ft991"
+            | "kenwood-ts590"
+            | "kenwood-ts890"
+            | "kenwood-ts2000"
+            | "kenwood-ts480"
+            | "kenwood-ts570"
+            | "kenwood-ts870"
+            | "elecraft-k2"
     )
 }
 
@@ -393,10 +397,10 @@ mod tests {
     }
 
     #[test]
-    fn switched_yaesu_routing_maps_fa_fb_to_normalized_receivers() {
+    fn switched_vfo_routing_maps_fa_fb_to_normalized_receivers() {
         let profile = profile_by_id("yaesu-ftdx10").unwrap();
         let state = RadioState::default();
-        let mut routing = YaesuVfoRouting::for_profile(profile);
+        let mut routing = VfoRouting::for_profile(profile);
         super::super::info::decode(
             profile,
             &AsciiFrame::new("VS1;").unwrap(),
@@ -465,10 +469,47 @@ mod tests {
     }
 
     #[test]
-    fn fixed_yaesu_routing_keeps_fa_main_and_fb_sub() {
+    fn fr_routing_maps_kenwood_fa_fb_and_frequency_setters() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let state = RadioState::default();
+        let mut routing = VfoRouting::for_profile(profile);
+        assert!(routing.select(crate::protocol::kenwood_ascii::PhysicalVfo::B));
+
+        let decoded = decode_with_routing(
+            profile,
+            &AsciiFrame::new("FB00007100000;").unwrap(),
+            &state,
+            routing,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(decoded
+            .patches
+            .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(7_100_000))));
+
+        let encoded = encode_with_routing(
+            profile,
+            &RadioCommand::SetReceiverFrequency {
+                receiver: ReceiverPath::Main,
+                frequency: Frequency::from_hz(7_125_000),
+            },
+            &state,
+            routing,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(encoded.frames[0].as_str(), "FB00007125000;");
+        assert_eq!(
+            encoded.optimistic[0],
+            StatePatch::MainRxFrequency(Frequency::from_hz(7_125_000))
+        );
+    }
+
+    #[test]
+    fn fixed_vfo_routing_keeps_fa_main_and_fb_sub() {
         for id in ["yaesu-ft891", "yaesu-ft991"] {
             let profile = profile_by_id(id).unwrap();
-            let routing = YaesuVfoRouting::for_profile(profile);
+            let routing = VfoRouting::for_profile(profile);
             assert_eq!(
                 encode_query_with_routing(profile, "FA", routing)
                     .unwrap()

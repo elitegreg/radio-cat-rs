@@ -3,7 +3,7 @@ use crate::{
     Result,
 };
 
-use super::{DecodedFrame, EncodedCommand};
+use super::{DecodedFrame, EncodedCommand, PhysicalVfo, VfoRouting};
 use crate::protocol::kenwood_ascii::{
     AsciiFrame, CommandPriority, KenwoodAsciiProfile, ResponseMatcher,
 };
@@ -60,8 +60,17 @@ pub fn decode(
     frame: &AsciiFrame,
     state: &RadioState,
 ) -> Result<Option<DecodedFrame>> {
+    decode_with_routing(profile, frame, state, &mut VfoRouting::for_profile(profile))
+}
+
+pub fn decode_with_routing(
+    profile: &KenwoodAsciiProfile,
+    frame: &AsciiFrame,
+    state: &RadioState,
+    routing: &mut VfoRouting,
+) -> Result<Option<DecodedFrame>> {
     let patches = match frame.command() {
-        "FR" if supports_fr(profile) => decode_fr(profile, frame.payload(), state)?,
+        "FR" if supports_fr(profile) => decode_fr(profile, frame.payload(), state, routing)?,
         "FT" if supports_ft(profile) || uses_yaesu_ft(profile) => {
             decode_ft(profile, frame.payload(), state)?
         }
@@ -192,24 +201,41 @@ fn decode_fr(
     profile: &KenwoodAsciiProfile,
     payload: &str,
     state: &RadioState,
+    routing: &mut VfoRouting,
 ) -> Result<Vec<StatePatch>> {
-    let rx_vfo = decode_vfo("FR", payload)?;
+    let physical_rx_vfo = decode_vfo("FR", payload)?;
+    let physical = match physical_rx_vfo {
+        RoutingVfo::Main => PhysicalVfo::A,
+        RoutingVfo::Sub => PhysicalVfo::B,
+    };
+    let changed = routing.select(physical);
+    let rx_vfo = RoutingVfo::Main;
+    let rx_vfo_in_old_state = if changed {
+        RoutingVfo::Sub
+    } else {
+        RoutingVfo::Main
+    };
 
     if profile.id() == "elecraft-k3" {
         return Ok(direct_split_patches(false, RoutingVfo::Main, state));
     }
 
     let current_split = state.tx.as_ref().and_then(|tx| tx.split);
-    let mut patches = Vec::new();
+    let mut patches = if changed {
+        vec![StatePatch::SwapVfoFrequencies]
+    } else {
+        Vec::new()
+    };
 
-    if let Some(tx_vfo) = routed_tx_vfo(state) {
-        patches.push(StatePatch::Split(tx_vfo != rx_vfo));
-    } else if current_split == Some(false) {
+    if current_split == Some(false) {
         patches.push(StatePatch::Split(false));
+    } else if let Some(tx_vfo) = routed_tx_vfo(state) {
+        let normalized_tx_vfo = if changed { tx_vfo.opposite() } else { tx_vfo };
+        patches.push(StatePatch::Split(normalized_tx_vfo != rx_vfo));
     }
 
     if current_split != Some(true) {
-        append_tx_from_vfo(&mut patches, rx_vfo, state);
+        append_tx_from_vfo(&mut patches, rx_vfo_in_old_state, state);
     }
 
     Ok(patches)
@@ -429,6 +455,32 @@ mod tests {
                 StatePatch::Split(true),
                 StatePatch::TxFrequency(Frequency::from_hz(14_074_000)),
                 StatePatch::TxMode(Mode::Usb),
+            ]
+        );
+    }
+
+    #[test]
+    fn fr_switch_routes_new_main_and_tx_to_selected_physical_vfo() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let state = routed_state(false, Frequency::from_hz(14_074_000));
+        let mut routing = VfoRouting::for_profile(profile);
+
+        let decoded = decode_with_routing(
+            profile,
+            &AsciiFrame::new("FR1;").unwrap(),
+            &state,
+            &mut routing,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            decoded.patches,
+            vec![
+                StatePatch::SwapVfoFrequencies,
+                StatePatch::Split(false),
+                StatePatch::TxFrequency(Frequency::from_hz(7_074_000)),
+                StatePatch::TxMode(Mode::Lsb),
             ]
         );
     }
