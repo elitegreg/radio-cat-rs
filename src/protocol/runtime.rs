@@ -1204,9 +1204,17 @@ struct SmartSdrRuntime {
     profile: SmartSdrProfile,
     line_splitter: SmartSdrLineSplitter,
     next_sequence: u32,
+    startup_phase: SmartSdrStartupPhase,
     version: Option<String>,
     handle: Option<String>,
     saw_slice_status: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SmartSdrStartupPhase {
+    Greeting,
+    Subscriptions,
+    Ready,
 }
 
 impl SmartSdrRuntime {
@@ -1215,10 +1223,31 @@ impl SmartSdrRuntime {
             profile,
             line_splitter: SmartSdrLineSplitter::new(),
             next_sequence: 1,
+            startup_phase: SmartSdrStartupPhase::Greeting,
             version: None,
             handle: None,
             saw_slice_status: false,
         }
+    }
+
+    fn greeting_complete(&self) -> bool {
+        self.version
+            .as_ref()
+            .is_some_and(|version| !version.is_empty())
+            && self
+                .handle
+                .as_ref()
+                .is_some_and(|handle| !handle.is_empty())
+    }
+
+    fn selected_slice_status(&self, message: &str) -> bool {
+        let Some(rest) = message.strip_prefix("slice ") else {
+            return false;
+        };
+        let Some((slice, _)) = rest.split_once(' ') else {
+            return false;
+        };
+        slice.parse::<u8>().ok() == Some(self.profile.slice)
     }
 
     async fn send_encoded(
@@ -1360,7 +1389,7 @@ impl SmartSdrRuntime {
                         self.handle = Some(handle);
                     }
                     smartsdr::IncomingLine::Status(message) => {
-                        if message.starts_with("slice ") {
+                        if self.selected_slice_status(&message) {
                             self.saw_slice_status = true;
                         }
                         match smartsdr::decode_status(&self.profile, &message, ctx.state()) {
@@ -1444,7 +1473,11 @@ impl SmartSdrRuntime {
                 return Ok(outcome);
             }
 
-            if expected_sequence.is_none() && saw_lines {
+            if expected_sequence.is_none()
+                && saw_lines
+                && (self.startup_phase != SmartSdrStartupPhase::Greeting
+                    || self.greeting_complete())
+            {
                 return Ok(SmartSdrWaitOutcome::Matched);
             }
         }
@@ -1502,6 +1535,15 @@ impl RadioSession for SmartSdrRuntime {
             )
             .await?;
 
+        if !self.greeting_complete() {
+            return Err(RadioError::Timeout {
+                command: "smartsdr-greeting",
+            });
+        }
+
+        self.saw_slice_status = false;
+        self.startup_phase = SmartSdrStartupPhase::Subscriptions;
+
         self.send_command_body(
             transport,
             &format!("sub slice {}", self.profile.slice),
@@ -1539,6 +1581,14 @@ impl RadioSession for SmartSdrRuntime {
                 ctx,
             )
             .await?;
+
+        if !self.saw_slice_status {
+            return Err(RadioError::Timeout {
+                command: "smartsdr-slice-status",
+            });
+        }
+
+        self.startup_phase = SmartSdrStartupPhase::Ready;
 
         ctx.publish_patches(
             vec![StatePatch::Connection(ConnectionState::Ready)],

@@ -62,7 +62,8 @@ impl CatTransport for SharedMockTransport {
 #[tokio::test]
 async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
     let transport = SharedMockTransport::default();
-    transport.push_read(lines(["V1.0.0.0", "HABC1234"])).await;
+    transport.push_read(b"V1.0.0.0\n".to_vec()).await;
+    transport.push_read(b"HABC1234\n".to_vec()).await;
     transport.push_read(lines(["R1|0||"])).await;
     transport.push_read(lines(["R2|0||"])).await;
     transport.push_read(lines(["R3|0||"])).await;
@@ -153,6 +154,50 @@ async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
             b"C9|xmit 1\n".to_vec(),
         ]
     );
+}
+
+#[tokio::test]
+async fn flexradio_startup_requires_the_configured_slice_status() {
+    let transport = SharedMockTransport::default();
+    transport.push_read(lines(["V1.0.0.0", "HABC1234"])).await;
+    transport.push_read(lines(["R1|0||"])).await;
+    transport.push_read(lines(["R2|0||"])).await;
+    transport.push_read(lines(["R3|0||"])).await;
+    transport
+        .push_read(lines(["S0|slice 1 RF_frequency=14.074 mode=DIGU"]))
+        .await;
+
+    let result =
+        Radio::connect_with_transport(RadioConfig::new("flexradio-smartsdr"), transport.clone())
+            .await;
+
+    let error = match result {
+        Ok(_) => panic!("startup unexpectedly succeeded"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        RadioError::Transport(_) | RadioError::Timeout { .. }
+    ));
+    assert_eq!(transport.written_len().await, 3);
+}
+
+#[tokio::test]
+async fn flexradio_startup_rejects_a_nonexistent_slice() {
+    let transport = SharedMockTransport::default();
+    transport.push_read(lines(["V1.0.0.0", "HABC1234"])).await;
+    transport
+        .push_read(lines(["R1|00000015|slice does not exist"]))
+        .await;
+
+    let result = Radio::connect_with_transport(
+        RadioConfig::new("flexradio-smartsdr").with_options("slice=7"),
+        transport.clone(),
+    )
+    .await;
+
+    assert!(matches!(result, Err(RadioError::Decode { .. })));
+    assert_eq!(transport.written_len().await, 1);
 }
 
 #[tokio::test]
