@@ -25,11 +25,13 @@ pub struct RadioTask {
     session: Option<Box<dyn RadioSession>>,
     reducer: StateReducer,
     command_rx: mpsc::Receiver<CommandEnvelope>,
+    shutdown_rx: watch::Receiver<bool>,
     state_tx: watch::Sender<SharedRadioState>,
     update_tx: broadcast::Sender<StateUpdate>,
     transport: Option<BoxedCatTransport>,
     next_poll_at: Option<Instant>,
     emulated_keyer_done_at: Option<Instant>,
+    started: bool,
 }
 
 impl RadioTask {
@@ -37,6 +39,7 @@ impl RadioTask {
         session: Box<dyn RadioSession>,
         initial_state: crate::RadioState,
         command_rx: mpsc::Receiver<CommandEnvelope>,
+        shutdown_rx: watch::Receiver<bool>,
         state_tx: watch::Sender<SharedRadioState>,
         update_tx: broadcast::Sender<StateUpdate>,
         transport: Option<BoxedCatTransport>,
@@ -45,40 +48,58 @@ impl RadioTask {
             session: Some(session),
             reducer: StateReducer::new(initial_state),
             command_rx,
+            shutdown_rx,
             state_tx,
             update_tx,
             transport,
             next_poll_at: None,
             emulated_keyer_done_at: None,
+            started: false,
+        }
+    }
+
+    /// Complete mandatory driver startup before accepting commands.
+    pub async fn start(&mut self) -> Result<()> {
+        if self.started {
+            return Ok(());
+        }
+
+        let driver = self.session().descriptor();
+        match self.run_session_startup().await {
+            Ok(()) => {
+                tracing::info!(driver = %driver.id, "session startup complete");
+                self.started = true;
+                Ok(())
+            }
+            Err(error) => {
+                tracing::error!(driver = %driver.id, ?error, "driver startup failed");
+                self.publish_terminal_error(&error);
+                Err(error)
+            }
         }
     }
 
     pub async fn run(mut self) -> Result<()> {
         let driver = self.session().descriptor();
-
         tracing::info!(driver = %driver.id, "radio task run loop starting");
-
-        match self.run_session_startup().await {
-            Ok(()) => {
-                tracing::info!(driver = %driver.id, "session startup complete");
-            }
-            Err(error) => {
-                tracing::error!(driver = %driver.id, ?error, "driver startup failed");
-                let message = error.to_string();
-                self.publish_patches(
-                    vec![StatePatch::Connection(crate::ConnectionState::Error {
-                        message,
-                    })],
-                    UpdateSource::Native,
-                );
-                return Err(error);
-            }
-        }
+        self.start().await?;
 
         tracing::info!(driver = %driver.id, "radio task command loop started");
         loop {
             self.finish_emulated_keyer_if_due();
-            match timeout(self.command_wait_timeout(), self.command_rx.recv()).await {
+            if *self.shutdown_rx.borrow() {
+                tracing::info!(driver = %driver.id, "radio task shutdown requested");
+                break;
+            }
+            let command_wait_timeout = self.command_wait_timeout();
+            tokio::select! {
+                changed = self.shutdown_rx.changed() => {
+                    if changed.is_err() || *self.shutdown_rx.borrow() {
+                        tracing::info!(driver = %driver.id, "radio task shutdown requested");
+                        break;
+                    }
+                }
+                received = timeout(command_wait_timeout, self.command_rx.recv()) => match received {
                 Ok(Some(envelope)) => {
                     tracing::debug!(driver = %driver.id, ?envelope.command, "radio task received command");
                     let result = self.handle_command(envelope.command).await;
@@ -95,12 +116,23 @@ impl RadioTask {
                         .process_session_incoming(Duration::from_millis(1), UpdateSource::Native)
                         .await
                     {
+                        if matches!(error, RadioError::Transport(_)) {
+                            tracing::error!(driver = %driver.id, ?error, "native incoming processing failed");
+                            self.publish_terminal_error(&error);
+                            return Err(error);
+                        }
                         tracing::warn!(driver = %driver.id, ?error, "native incoming processing failed");
                     }
 
                     if let Err(error) = self.run_poll_if_due().await {
+                        if matches!(error, RadioError::Transport(_)) {
+                            tracing::error!(driver = %driver.id, ?error, "native poll failed");
+                            self.publish_terminal_error(&error);
+                            return Err(error);
+                        }
                         tracing::warn!(driver = %driver.id, ?error, "native poll failed");
                     }
+                }
                 }
             }
         }
@@ -113,6 +145,19 @@ impl RadioTask {
 
         tracing::info!(driver = %driver.id, "radio task run loop exiting");
         Ok(())
+    }
+
+    fn publish_terminal_error(&mut self, error: &RadioError) {
+        self.publish_patches(
+            vec![StatePatch::Connection(ConnectionState::Error {
+                message: error.to_string(),
+            })],
+            UpdateSource::Native,
+        );
+        self.publish_patches(
+            vec![StatePatch::Connection(ConnectionState::Disconnected)],
+            UpdateSource::Native,
+        );
     }
 
     async fn handle_command(&mut self, command: RadioCommand) -> Result<()> {
@@ -482,18 +527,23 @@ mod tests {
         let session = TestSession::new(speed_wpm);
         let initial_state = session.initial_state();
         let (command_tx, command_rx) = mpsc::channel(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (state_tx, state_rx) = watch::channel(Arc::new(initial_state.clone()));
         let (update_tx, _) = broadcast::channel(8);
         let task = RadioTask::new(
             Box::new(session),
             initial_state,
             command_rx,
+            shutdown_rx,
             state_tx,
             update_tx,
             None,
         );
 
-        let handle = tokio::spawn(task.run());
+        let handle = tokio::spawn(async move {
+            let _shutdown_tx = shutdown_tx;
+            task.run().await
+        });
         (command_tx, state_rx, handle)
     }
 

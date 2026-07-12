@@ -145,8 +145,9 @@ impl KenwoodAsciiRuntime {
             };
 
             if count == 0 {
-                tracing::trace!(driver = %self.profile.id(), "transport read yielded EOF/empty");
-                return Ok(false);
+                return Err(RadioError::Transport(
+                    "connection closed by peer".to_string(),
+                ));
             }
 
             let mut matched_expected = false;
@@ -333,10 +334,7 @@ impl RadioSession for KenwoodAsciiRuntime {
         ctx: &mut dyn StateSink,
     ) -> Result<()> {
         ctx.publish_patches(
-            vec![
-                StatePatch::Connection(ConnectionState::Identifying),
-                StatePatch::Connection(ConnectionState::Ready),
-            ],
+            vec![StatePatch::Connection(ConnectionState::Identifying)],
             UpdateSource::Native,
         );
         let Some(transport) = transport else {
@@ -347,6 +345,7 @@ impl RadioSession for KenwoodAsciiRuntime {
             startup_steps = self.profile.startup.len(),
             "running kenwood-ascii startup sequence"
         );
+        let mut responsive = false;
 
         for step in self.profile.startup {
             match *step {
@@ -368,12 +367,10 @@ impl RadioSession for KenwoodAsciiRuntime {
                         )
                         .await
                     {
-                        tracing::warn!(
-                            driver = %self.profile.id(),
-                            step = step.label(),
-                            ?error,
-                            "startup auto-info step failed; continuing"
-                        );
+                        if matches!(error, RadioError::Transport(_)) {
+                            return Err(error);
+                        }
+                        tracing::warn!(driver = %self.profile.id(), step = step.label(), ?error, "startup auto-info step failed; continuing");
                     }
                 }
                 StartupStep::Query(semantic) => {
@@ -390,7 +387,7 @@ impl RadioSession for KenwoodAsciiRuntime {
                         expected = ?encoded.matcher,
                         "startup query step"
                     );
-                    if let Err(error) = self
+                    match self
                         .send_encoded(
                             transport,
                             encoded,
@@ -400,17 +397,27 @@ impl RadioSession for KenwoodAsciiRuntime {
                         )
                         .await
                     {
-                        tracing::warn!(
-                            driver = %self.profile.id(),
-                            semantic,
-                            ?error,
-                            "startup query failed; continuing"
-                        );
+                        Ok(_) => responsive = true,
+                        Err(error) if matches!(error, RadioError::Transport(_)) => {
+                            return Err(error)
+                        }
+                        Err(error) => {
+                            tracing::warn!(driver = %self.profile.id(), semantic, ?error, "startup query failed; continuing")
+                        }
                     }
                 }
             }
         }
 
+        if !responsive {
+            return Err(RadioError::Timeout {
+                command: "startup-response",
+            });
+        }
+        ctx.publish_patches(
+            vec![StatePatch::Connection(ConnectionState::Ready)],
+            UpdateSource::Native,
+        );
         Ok(())
     }
 
@@ -718,12 +725,9 @@ impl IcomCivRuntime {
             };
 
             if count == 0 {
-                tracing::trace!(driver = %self.profile.id(), "ICOM transport read yielded EOF/empty");
-                return Ok(if expected.is_none() && saw_frames {
-                    IcomWaitOutcome::Matched
-                } else {
-                    IcomWaitOutcome::Timeout
-                });
+                return Err(RadioError::Transport(
+                    "connection closed by peer".to_string(),
+                ));
             }
 
             let frames = match self.frame_splitter.push(&buf[..count]) {
@@ -885,10 +889,7 @@ impl RadioSession for IcomCivRuntime {
         ctx: &mut dyn StateSink,
     ) -> Result<()> {
         ctx.publish_patches(
-            vec![
-                StatePatch::Connection(ConnectionState::Identifying),
-                StatePatch::Connection(ConnectionState::Ready),
-            ],
+            vec![StatePatch::Connection(ConnectionState::Identifying)],
             UpdateSource::Native,
         );
         let Some(transport) = transport else {
@@ -899,6 +900,7 @@ impl RadioSession for IcomCivRuntime {
             startup_steps = self.profile.startup.len(),
             "running icom-civ startup sequence"
         );
+        let mut responsive = false;
 
         for step in self.profile.startup {
             match *step {
@@ -916,7 +918,8 @@ impl RadioSession for IcomCivRuntime {
                         expected = ?encoded.matcher,
                         "ICOM startup query step"
                     );
-                    if let Err(error) = self
+                    let state_before = ctx.state().clone();
+                    match self
                         .send_encoded(
                             transport,
                             encoded,
@@ -926,17 +929,28 @@ impl RadioSession for IcomCivRuntime {
                         )
                         .await
                     {
-                        tracing::warn!(
-                            driver = %self.profile.id(),
-                            semantic,
-                            ?error,
-                            "ICOM startup query failed; continuing"
-                        );
+                        Ok(_) => responsive = true,
+                        Err(error) if matches!(error, RadioError::Transport(_)) => {
+                            return Err(error)
+                        }
+                        Err(error) => {
+                            tracing::warn!(driver = %self.profile.id(), semantic, ?error, "ICOM startup query failed; continuing")
+                        }
                     }
+                    responsive |= ctx.state() != &state_before;
                 }
             }
         }
 
+        if !responsive {
+            return Err(RadioError::Timeout {
+                command: "startup-response",
+            });
+        }
+        ctx.publish_patches(
+            vec![StatePatch::Connection(ConnectionState::Ready)],
+            UpdateSource::Native,
+        );
         Ok(())
     }
 
@@ -1226,11 +1240,9 @@ impl SmartSdrRuntime {
             };
 
             if count == 0 {
-                return Ok(if expected_sequence.is_none() && saw_lines {
-                    SmartSdrWaitOutcome::Matched
-                } else {
-                    SmartSdrWaitOutcome::Timeout
-                });
+                return Err(RadioError::Transport(
+                    "connection closed by peer".to_string(),
+                ));
             }
 
             let lines = self.line_splitter.push(&buf[..count])?;

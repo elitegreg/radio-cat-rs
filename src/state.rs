@@ -30,7 +30,6 @@ pub enum ConnectionState {
     Identifying,
     Ready,
     Error { message: String },
-    Reconnecting,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

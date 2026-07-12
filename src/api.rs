@@ -82,6 +82,7 @@ impl RadioConfig {
 #[derive(Clone)]
 pub struct Radio {
     command_tx: mpsc::Sender<CommandEnvelope>,
+    shutdown_tx: watch::Sender<bool>,
     state_rx: watch::Receiver<SharedRadioState>,
     update_tx: broadcast::Sender<StateUpdate>,
     capabilities: Arc<RadioCapabilities>,
@@ -97,25 +98,7 @@ impl Radio {
         );
 
         let (radio, task) = Self::build(config).await?;
-        let descriptor = radio.driver_descriptor();
-        let task_driver = descriptor;
-
-        tokio::spawn(async move {
-            tracing::info!(driver = %task_driver.id, "radio task spawned");
-            if let Err(error) = task.run().await {
-                tracing::error!(driver = %task_driver.id, ?error, "radio task stopped with error");
-            } else {
-                tracing::info!(driver = %task_driver.id, "radio task stopped");
-            }
-        });
-
-        tracing::info!(
-            driver = %descriptor.id,
-            display_name = %descriptor.display_name,
-            "radio connected"
-        );
-
-        Ok(radio)
+        Self::start(radio, task).await
     }
 
     pub async fn build(config: RadioConfig) -> Result<(Self, RadioTask)> {
@@ -141,8 +124,14 @@ impl Radio {
         );
 
         let (radio, task) = Self::build_with_transport(config, transport).await?;
+        Self::start(radio, task).await
+    }
+
+    async fn start(radio: Self, mut task: RadioTask) -> Result<Self> {
         let descriptor = radio.driver_descriptor();
         let task_driver = descriptor;
+
+        task.start().await?;
 
         tokio::spawn(async move {
             tracing::info!(driver = %task_driver.id, "radio task spawned");
@@ -194,6 +183,7 @@ impl Radio {
         let initial_snapshot = Arc::new(initial_state.clone());
 
         let (command_tx, command_rx) = mpsc::channel(config.command_channel_capacity.max(1));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (state_tx, state_rx) = watch::channel(initial_snapshot);
         let (update_tx, _) = broadcast::channel(config.update_channel_capacity.max(1));
 
@@ -205,6 +195,7 @@ impl Radio {
 
         let radio = Self {
             command_tx,
+            shutdown_tx,
             state_rx,
             update_tx: update_tx.clone(),
             capabilities,
@@ -215,6 +206,7 @@ impl Radio {
             session,
             initial_state,
             command_rx,
+            shutdown_rx,
             state_tx,
             update_tx,
             transport,
@@ -233,6 +225,11 @@ impl Radio {
 
     pub fn latest_state(&self) -> SharedRadioState {
         self.state_rx.borrow().clone()
+    }
+
+    /// Request a clean shutdown of this radio task.
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
     }
 
     pub fn capabilities(&self) -> &RadioCapabilities {

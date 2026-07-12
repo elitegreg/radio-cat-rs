@@ -50,7 +50,9 @@ impl CatTransport for SharedMockTransport {
 
     async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
         let Some(mut chunk) = self.inner.lock().await.read_chunks.pop_front() else {
-            return Ok(0);
+            return Err(RadioError::Timeout {
+                command: "mock-transport-read",
+            });
         };
 
         let count = chunk.len().min(buf.len());
@@ -230,6 +232,9 @@ async fn ic705_actor_handles_startup_async_errors_and_command_ack() {
 #[tokio::test]
 async fn civ_negative_ack_leaves_accepted_state_unchanged() {
     let transport = SharedMockTransport::default();
+    transport
+        .push_read(response([0x25, 0x00, 0x00, 0x40, 0x07, 0x14, 0x00]))
+        .await;
     let radio = Radio::connect_with_transport(
         RadioConfig::new("icom-ic705").with_options("poll_interval=5"),
         transport.clone(),
@@ -266,6 +271,9 @@ async fn civ_negative_ack_leaves_accepted_state_unchanged() {
 #[tokio::test]
 async fn write_failure_leaves_accepted_state_unchanged() {
     let transport = SharedMockTransport::default();
+    transport
+        .push_read(response([0x25, 0x00, 0x00, 0x40, 0x07, 0x14, 0x00]))
+        .await;
     let radio = Radio::connect_with_transport(
         RadioConfig::new("icom-ic705").with_options("poll_interval=5"),
         transport.clone(),
