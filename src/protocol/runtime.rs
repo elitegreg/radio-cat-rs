@@ -90,6 +90,7 @@ struct KenwoodAsciiRuntime {
     profile: &'static KenwoodAsciiProfile,
     options: KenwoodAsciiOptions,
     frame_splitter: KenwoodFrameSplitter,
+    yaesu_main_vfo: kenwood_ascii::info::YaesuMainVfo,
 }
 
 impl KenwoodAsciiRuntime {
@@ -98,6 +99,7 @@ impl KenwoodAsciiRuntime {
             profile,
             options,
             frame_splitter: KenwoodFrameSplitter::new(),
+            yaesu_main_vfo: kenwood_ascii::info::YaesuMainVfo::default(),
         }
     }
 
@@ -214,7 +216,12 @@ impl KenwoodAsciiRuntime {
                     }
                 }
 
-                match decode_kenwood_frame(self.profile, &frame, ctx.state()) {
+                match decode_kenwood_frame(
+                    self.profile,
+                    &frame,
+                    ctx.state(),
+                    &mut self.yaesu_main_vfo,
+                ) {
                     Ok(Some(decoded)) => {
                         let source = decoded.source_hint.unwrap_or(default_source);
                         tracing::debug!(
@@ -1417,8 +1424,9 @@ fn decode_kenwood_frame(
     profile: &'static KenwoodAsciiProfile,
     frame: &AsciiFrame,
     state: &RadioState,
+    yaesu_main_vfo: &mut kenwood_ascii::info::YaesuMainVfo,
 ) -> Result<Option<kenwood_ascii::DecodedFrame>> {
-    if let Some(decoded) = kenwood_ascii::info::decode(profile, frame, state)? {
+    if let Some(decoded) = kenwood_ascii::info::decode(profile, frame, state, yaesu_main_vfo)? {
         return Ok(Some(decoded));
     }
     if let Some(decoded) = kenwood_ascii::frequency::decode(profile, frame, state)? {

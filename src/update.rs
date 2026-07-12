@@ -113,9 +113,11 @@ pub enum StateField {
     MainRitEnabled,
     SubRitEnabled,
     XitEnabled,
+    SubXitEnabled,
     RitXitOffset,
     XitOffset,
     SubRitOffset,
+    SubXitOffset,
 
     KeyerPresent,
     KeyerSpeed,
@@ -196,6 +198,8 @@ pub enum StatePatch {
     SubRxNoiseBlanker(LeveledSetting),
     SubRxNoiseReduction(LeveledSetting),
     SubRxAutoNotch(bool),
+    /// Atomically exchanges normalized main/sub receiver and per-receiver RIT state.
+    SwapReceivers,
 
     TxPresent(bool),
     TxFrequency(Frequency),
@@ -207,10 +211,12 @@ pub enum StatePatch {
     MainRitEnabled(bool),
     SubRitEnabled(bool),
     XitEnabled(bool),
+    SubXitEnabled(bool),
     RitOffset(RitXitOffsetHz),
     RitXitOffset(RitXitOffsetHz),
     XitOffset(RitXitOffsetHz),
     SubRitOffset(RitXitOffsetHz),
+    SubXitOffset(RitXitOffsetHz),
 
     KeyerPresent(bool),
     KeyerSpeed(u8),
@@ -375,6 +381,28 @@ impl StateReducer {
                     changes.add(ChangeFlags::SUB_RX_RF, StateField::SubRxAutoNotch);
                 }
             }
+            StatePatch::SwapReceivers => {
+                let sub = self.state.sub_rx.get_or_insert_with(ReceiverState::default);
+                std::mem::swap(&mut self.state.main_rx, sub);
+                std::mem::swap(
+                    &mut self.state.rit_xit.main_rit_enabled,
+                    &mut self.state.rit_xit.sub_rit_enabled,
+                );
+                std::mem::swap(
+                    &mut self.state.rit_xit.xit_enabled,
+                    &mut self.state.rit_xit.sub_xit_enabled,
+                );
+                std::mem::swap(
+                    &mut self.state.rit_xit.offset_hz,
+                    &mut self.state.rit_xit.sub_offset_hz,
+                );
+                std::mem::swap(
+                    &mut self.state.rit_xit.xit_offset_hz,
+                    &mut self.state.rit_xit.sub_xit_offset_hz,
+                );
+                changes.add(ChangeFlags::RECEIVER, StateField::SubRxPresent);
+                changes.add(ChangeFlags::RIT_XIT, StateField::MainRitEnabled);
+            }
 
             StatePatch::TxPresent(present) => match (present, self.state.tx.is_some()) {
                 (true, false) => {
@@ -433,6 +461,11 @@ impl StateReducer {
                     changes.add(ChangeFlags::RIT_XIT, StateField::XitEnabled);
                 }
             }
+            StatePatch::SubXitEnabled(value) => {
+                if set_option(&mut self.state.rit_xit.sub_xit_enabled, value) {
+                    changes.add(ChangeFlags::RIT_XIT, StateField::SubXitEnabled);
+                }
+            }
             StatePatch::RitOffset(value) => {
                 if set_option(&mut self.state.rit_xit.offset_hz, value) {
                     changes.add(ChangeFlags::RIT_XIT, StateField::RitXitOffset);
@@ -454,6 +487,11 @@ impl StateReducer {
             StatePatch::SubRitOffset(value) => {
                 if set_option(&mut self.state.rit_xit.sub_offset_hz, value) {
                     changes.add(ChangeFlags::RIT_XIT, StateField::SubRitOffset);
+                }
+            }
+            StatePatch::SubXitOffset(value) => {
+                if set_option(&mut self.state.rit_xit.sub_xit_offset_hz, value) {
+                    changes.add(ChangeFlags::RIT_XIT, StateField::SubXitOffset);
                 }
             }
 
@@ -573,6 +611,32 @@ mod tests {
             changes.fields.as_slice(),
             &[StateField::SubRxPresent, StateField::SubRxMode]
         );
+    }
+
+    #[test]
+    fn receiver_swap_moves_receiver_and_rit_xit_state_atomically() {
+        let mut state = RadioState::default();
+        state.main_rx.frequency = Some(Frequency::from_hz(14_074_000));
+        state.sub_rx = Some(ReceiverState {
+            frequency: Some(Frequency::from_hz(7_074_000)),
+            ..ReceiverState::default()
+        });
+        state.rit_xit.main_rit_enabled = Some(true);
+        state.rit_xit.sub_rit_enabled = Some(false);
+        let mut reducer = StateReducer::new(state);
+
+        reducer.apply_patch(StatePatch::SwapReceivers);
+
+        assert_eq!(
+            reducer.state().main_rx.frequency,
+            Some(Frequency::from_hz(7_074_000))
+        );
+        assert_eq!(
+            reducer.state().sub_rx.as_ref().unwrap().frequency,
+            Some(Frequency::from_hz(14_074_000))
+        );
+        assert_eq!(reducer.state().rit_xit.main_rit_enabled, Some(false));
+        assert_eq!(reducer.state().rit_xit.sub_rit_enabled, Some(true));
     }
 
     #[test]

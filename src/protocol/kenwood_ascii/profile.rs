@@ -430,7 +430,9 @@ const YAESU_FTDX101_STARTUP: &[StartupStep] = &[
 
 const YAESU_FTDX10_FT710_STARTUP: &[StartupStep] = &[
     StartupStep::AutoInfo("AI1;"),
+    StartupStep::Query("VS"),
     StartupStep::Query("IF"),
+    StartupStep::Query("OI"),
     StartupStep::Query("FA"),
     StartupStep::Query("FB"),
     StartupStep::Query("FT"),
@@ -452,6 +454,7 @@ const YAESU_FTDX10_FT710_STARTUP: &[StartupStep] = &[
 const YAESU_FT891_STARTUP: &[StartupStep] = &[
     StartupStep::AutoInfo("AI1;"),
     StartupStep::Query("IF"),
+    StartupStep::Query("OI"),
     StartupStep::Query("FA"),
     StartupStep::Query("FB"),
     StartupStep::Query("ST"),
@@ -473,6 +476,7 @@ const YAESU_FT891_STARTUP: &[StartupStep] = &[
 const YAESU_FT991_STARTUP: &[StartupStep] = &[
     StartupStep::AutoInfo("AI1;"),
     StartupStep::Query("IF"),
+    StartupStep::Query("OI"),
     StartupStep::Query("FA"),
     StartupStep::Query("FB"),
     StartupStep::Query("FT"),
@@ -952,6 +956,24 @@ mod tests {
                     .any(|step| matches!(step, StartupStep::Query("MD1"))),
                 "{id} startup missing MD1 query"
             );
+        }
+    }
+
+    #[test]
+    fn requested_yaesu_profiles_query_oi_and_switchable_models_query_vs() {
+        for id in ["yaesu-ftdx10", "yaesu-ft710", "yaesu-ft891", "yaesu-ft991"] {
+            let profile = profile_by_id(id).unwrap();
+            assert!(profile
+                .startup
+                .iter()
+                .any(|step| matches!(step, StartupStep::Query("OI"))));
+        }
+        for id in ["yaesu-ftdx10", "yaesu-ft710"] {
+            let profile = profile_by_id(id).unwrap();
+            assert!(profile
+                .startup
+                .iter()
+                .any(|step| matches!(step, StartupStep::Query("VS"))));
         }
     }
 

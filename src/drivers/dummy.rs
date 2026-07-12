@@ -210,9 +210,13 @@ fn dummy_state(connection: ConnectionState) -> RadioState {
             main_rit_enabled: Some(false),
             sub_rit_enabled: Some(false),
             xit_enabled: Some(false),
+            sub_xit_enabled: Some(false),
             offset_hz: Some(RitXitOffsetHz::new(0).expect("zero is a valid RIT/XIT offset")),
             xit_offset_hz: Some(RitXitOffsetHz::new(0).expect("zero is a valid RIT/XIT offset")),
             sub_offset_hz: Some(RitXitOffsetHz::new(0).expect("zero is a valid RIT/XIT offset")),
+            sub_xit_offset_hz: Some(
+                RitXitOffsetHz::new(0).expect("zero is a valid RIT/XIT offset"),
+            ),
         },
         keyer: Some(crate::KeyerState {
             speed_wpm: Some(20),

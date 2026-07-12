@@ -258,7 +258,8 @@ fn decode_frame(
     frame: &AsciiFrame,
     state: &RadioState,
 ) -> Result<Option<radio_cat_rs::protocol::kenwood_ascii::DecodedFrame>> {
-    if let Some(decoded) = info::decode(profile, frame, state)? {
+    let mut yaesu_main_vfo = info::YaesuMainVfo::default();
+    if let Some(decoded) = info::decode(profile, frame, state, &mut yaesu_main_vfo)? {
         return Ok(Some(decoded));
     }
     if let Some(decoded) = frequency::decode(profile, frame, state)? {

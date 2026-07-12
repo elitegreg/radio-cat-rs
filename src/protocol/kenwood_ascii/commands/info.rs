@@ -12,36 +12,74 @@ pub fn encode_query(
     profile: &KenwoodAsciiProfile,
     semantic: &str,
 ) -> Result<Option<EncodedCommand>> {
-    if semantic != "IF" || !supports_generic_if(profile) {
-        return Ok(None);
-    }
+    let command = match semantic {
+        "IF" if supports_generic_if(profile) => "IF",
+        "OI" if supports_yaesu_oi(profile) => "OI",
+        "VS" if supports_yaesu_vs(profile) => "VS",
+        _ => return Ok(None),
+    };
 
     Ok(Some(EncodedCommand::new(
-        vec![AsciiFrame::new("IF;")?],
-        ResponseMatcher::Prefix("IF"),
+        vec![AsciiFrame::new(format!("{command};"))?],
+        ResponseMatcher::Prefix(command),
         Vec::new(),
         CommandPriority::Normal,
     )))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum YaesuMainVfo {
+    #[default]
+    A,
+    B,
 }
 
 pub fn decode(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
     state: &RadioState,
+    yaesu_main_vfo: &mut YaesuMainVfo,
 ) -> Result<Option<DecodedFrame>> {
-    if frame.command() != "IF" {
-        return Ok(None);
-    }
-
-    if !supports_generic_if(profile) {
-        return Ok(None);
+    if frame.command() == "VS" && supports_yaesu_vs(profile) {
+        let selected = match frame.payload() {
+            "0" => YaesuMainVfo::A,
+            "1" => YaesuMainVfo::B,
+            payload => {
+                return Err(RadioError::Decode {
+                    command: "VS",
+                    message: format!("expected 0/1 VFO selector, got {payload:?}"),
+                })
+            }
+        };
+        let patches = if selected != *yaesu_main_vfo {
+            *yaesu_main_vfo = selected;
+            vec![StatePatch::SwapReceivers]
+        } else {
+            Vec::new()
+        };
+        return Ok(Some(DecodedFrame::new(patches)));
     }
 
     let payload = frame.payload();
-    let patches = if is_yaesu(profile) {
-        decode_yaesu_if(profile, payload, state)?
-    } else {
-        decode_kenwood_if(profile, payload, state)?
+    let patches = match frame.command() {
+        "IF" if supports_generic_if(profile) && is_yaesu(profile) => decode_yaesu_info(
+            profile,
+            "IF",
+            payload,
+            state,
+            YaesuMainVfo::A,
+            *yaesu_main_vfo,
+        )?,
+        "OI" if supports_yaesu_oi(profile) => decode_yaesu_info(
+            profile,
+            "OI",
+            payload,
+            state,
+            YaesuMainVfo::B,
+            *yaesu_main_vfo,
+        )?,
+        "IF" if supports_generic_if(profile) => decode_kenwood_if(profile, payload, state)?,
+        _ => return Ok(None),
     };
 
     Ok(Some(DecodedFrame::new(patches)))
@@ -115,45 +153,60 @@ fn decode_kenwood_if(
     Ok(patches)
 }
 
-fn decode_yaesu_if(
+fn decode_yaesu_info(
     profile: &KenwoodAsciiProfile,
+    command: &'static str,
     payload: &str,
     state: &RadioState,
+    physical_vfo: YaesuMainVfo,
+    main_vfo: YaesuMainVfo,
 ) -> Result<Vec<StatePatch>> {
     if payload.len() != 25 {
         return Err(RadioError::Decode {
-            command: "IF",
+            command,
             message: format!(
-                "expected 25-character Yaesu IF payload, got {}",
+                "expected 25-character Yaesu {command} payload, got {}",
                 payload.len()
             ),
         });
     }
 
-    let frequency = parse_frequency("IF", &payload[3..12])?;
-    let offset = parse_signed_offset("IF", &payload[12..17])?;
-    let rit_enabled = parse_bool_digit("IF", payload.as_bytes()[17])?;
-    let xit_enabled = parse_bool_digit("IF", payload.as_bytes()[18])?;
+    let frequency = parse_frequency(command, &payload[3..12])?;
+    let offset = parse_signed_offset(command, &payload[12..17])?;
+    let rit_enabled = parse_bool_digit(command, payload.as_bytes()[17])?;
+    let xit_enabled = parse_bool_digit(command, payload.as_bytes()[18])?;
     let mode = decode_yaesu_if_mode(profile, payload.as_bytes()[19] as char)?;
     let split = decode_yaesu_split(payload.as_bytes()[24] as char)?;
 
-    let mut patches = vec![
-        StatePatch::RitXitOffset(offset),
-        StatePatch::MainRitEnabled(rit_enabled),
-        StatePatch::XitEnabled(xit_enabled),
-        StatePatch::Split(split),
-    ];
-
-    patches.push(StatePatch::MainRxFrequency(frequency));
-    patches.push(StatePatch::MainRxMode(mode));
+    let is_main = physical_vfo == main_vfo;
+    let mut patches = vec![StatePatch::Split(split)];
+    if is_main {
+        patches.extend([
+            StatePatch::RitXitOffset(offset),
+            StatePatch::MainRitEnabled(rit_enabled),
+            StatePatch::XitEnabled(xit_enabled),
+            StatePatch::MainRxFrequency(frequency),
+            StatePatch::MainRxMode(mode),
+        ]);
+    } else {
+        patches.extend([
+            StatePatch::SubRitOffset(offset),
+            StatePatch::SubXitOffset(offset),
+            StatePatch::SubRitEnabled(rit_enabled),
+            StatePatch::SubXitEnabled(xit_enabled),
+            StatePatch::SubRxPresent(true),
+            StatePatch::SubRxFrequency(frequency),
+            StatePatch::SubRxMode(mode),
+        ]);
+    }
     if matches!(profile.receiver_kind, ReceiverKind::DualRx) {
         patches.push(StatePatch::SubRxPresent(true));
     }
 
-    if !split {
+    if is_main && !split {
         patches.push(StatePatch::TxFrequency(frequency));
         patches.push(StatePatch::TxMode(mode));
-    } else if state.tx.as_ref().and_then(|tx| tx.frequency).is_none() {
+    } else if is_main && state.tx.as_ref().and_then(|tx| tx.frequency).is_none() {
         patches.push(StatePatch::TxFrequency(
             state
                 .sub_rx
@@ -164,6 +217,17 @@ fn decode_yaesu_if(
     }
 
     Ok(patches)
+}
+
+fn supports_yaesu_oi(profile: &KenwoodAsciiProfile) -> bool {
+    matches!(
+        profile.id(),
+        "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft891" | "yaesu-ft991"
+    )
+}
+
+fn supports_yaesu_vs(profile: &KenwoodAsciiProfile) -> bool {
+    matches!(profile.id(), "yaesu-ftdx10" | "yaesu-ft710")
 }
 
 fn supports_generic_if(profile: &KenwoodAsciiProfile) -> bool {
@@ -240,6 +304,16 @@ mod tests {
     use super::*;
     use crate::{protocol::kenwood_ascii::profile_by_id, Mode, TransmitterState};
 
+    fn decode_with_default_routing(
+        profile: &KenwoodAsciiProfile,
+        frame: &AsciiFrame,
+        state: &RadioState,
+    ) -> DecodedFrame {
+        decode(profile, frame, state, &mut YaesuMainVfo::default())
+            .unwrap()
+            .unwrap()
+    }
+
     #[test]
     fn encodes_if_query_only_for_profiles_with_generic_if() {
         let ts590 = profile_by_id("kenwood-ts590").unwrap();
@@ -273,7 +347,7 @@ mod tests {
         ))
         .unwrap();
 
-        let decoded = decode(profile, &frame, &state).unwrap().unwrap();
+        let decoded = decode_with_default_routing(profile, &frame, &state);
         assert_eq!(
             decoded.patches,
             vec![
@@ -313,7 +387,7 @@ mod tests {
         ))
         .unwrap();
 
-        let decoded = decode(profile, &frame, &state).unwrap().unwrap();
+        let decoded = decode_with_default_routing(profile, &frame, &state);
         assert_eq!(
             decoded.patches[0],
             StatePatch::RitXitOffset(RitXitOffsetHz::new(-251).unwrap())
@@ -346,19 +420,77 @@ mod tests {
         ))
         .unwrap();
 
-        let decoded = decode(profile, &frame, &state).unwrap().unwrap();
+        let decoded = decode_with_default_routing(profile, &frame, &state);
         assert_eq!(
             decoded.patches,
             vec![
+                StatePatch::Split(true),
                 StatePatch::RitXitOffset(RitXitOffsetHz::new(500).unwrap()),
                 StatePatch::MainRitEnabled(true),
                 StatePatch::XitEnabled(false),
-                StatePatch::Split(true),
                 StatePatch::MainRxFrequency(Frequency::from_hz(14_074_000)),
                 StatePatch::MainRxMode(Mode::Usb),
                 StatePatch::TxFrequency(Frequency::from_hz(14_074_000)),
             ]
         );
+    }
+
+    #[test]
+    fn yaesu_oi_and_vs_queries_are_read_only_and_profile_specific() {
+        let ftdx10 = profile_by_id("yaesu-ftdx10").unwrap();
+        let ft891 = profile_by_id("yaesu-ft891").unwrap();
+        assert_eq!(
+            encode_query(ftdx10, "OI").unwrap().unwrap().frames[0].as_str(),
+            "OI;"
+        );
+        assert_eq!(
+            encode_query(ftdx10, "VS").unwrap().unwrap().frames[0].as_str(),
+            "VS;"
+        );
+        assert!(encode_query(ft891, "VS").unwrap().is_none());
+    }
+
+    #[test]
+    fn vs_routes_if_and_oi_between_main_and_sub_without_duplicate_swaps() {
+        let profile = profile_by_id("yaesu-ftdx10").unwrap();
+        let state = RadioState::default();
+        let mut routing = YaesuMainVfo::default();
+
+        let vs = AsciiFrame::new("VS1;").unwrap();
+        let first = decode(profile, &vs, &state, &mut routing).unwrap().unwrap();
+        assert_eq!(first.patches, vec![StatePatch::SwapReceivers]);
+        let duplicate = decode(profile, &vs, &state, &mut routing).unwrap().unwrap();
+        assert!(duplicate.patches.is_empty());
+
+        let oi = AsciiFrame::new("OI000007074000-025110300001;").unwrap();
+        let decoded = decode(profile, &oi, &state, &mut routing).unwrap().unwrap();
+        assert!(decoded
+            .patches
+            .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(7_074_000))));
+        assert!(decoded.patches.contains(&StatePatch::MainRxMode(Mode::Cw)));
+        assert!(decoded.patches.contains(&StatePatch::RitXitOffset(
+            RitXitOffsetHz::new(-251).unwrap()
+        )));
+    }
+
+    #[test]
+    fn fixed_yaesu_routing_maps_oi_to_sub_vfo() {
+        let profile = profile_by_id("yaesu-ft991").unwrap();
+        let state = RadioState::default();
+        let oi = AsciiFrame::new("OI000007074000+012310E00000;").unwrap();
+        let decoded = decode_with_default_routing(profile, &oi, &state);
+
+        assert!(decoded
+            .patches
+            .contains(&StatePatch::SubRxFrequency(Frequency::from_hz(7_074_000))));
+        assert!(decoded.patches.contains(&StatePatch::SubRxMode(Mode::Psk)));
+        assert!(decoded
+            .patches
+            .contains(&StatePatch::SubRitOffset(RitXitOffsetHz::new(123).unwrap())));
+        assert!(!decoded
+            .patches
+            .iter()
+            .any(|patch| matches!(patch, StatePatch::TxFrequency(_))));
     }
 
     #[test]
@@ -379,7 +511,7 @@ mod tests {
         ))
         .unwrap();
 
-        let decoded = decode(profile, &frame, &state).unwrap().unwrap();
+        let decoded = decode_with_default_routing(profile, &frame, &state);
         assert!(decoded.patches.contains(&StatePatch::MainRxMode(Mode::Psk)));
     }
 }
