@@ -383,7 +383,7 @@ impl StateReducer {
             }
             StatePatch::SwapReceivers => {
                 let sub = self.state.sub_rx.get_or_insert_with(ReceiverState::default);
-                std::mem::swap(&mut self.state.main_rx, sub);
+                std::mem::swap(&mut self.state.main_rx.frequency, &mut sub.frequency);
                 std::mem::swap(
                     &mut self.state.rit_xit.main_rit_enabled,
                     &mut self.state.rit_xit.sub_rit_enabled,
@@ -400,8 +400,37 @@ impl StateReducer {
                     &mut self.state.rit_xit.xit_offset_hz,
                     &mut self.state.rit_xit.sub_xit_offset_hz,
                 );
-                changes.add(ChangeFlags::RECEIVER, StateField::SubRxPresent);
-                changes.add(ChangeFlags::RIT_XIT, StateField::MainRitEnabled);
+                for (flag, field) in [
+                    (ChangeFlags::MAIN_RX_FREQ, StateField::MainRxFrequency),
+                    (ChangeFlags::SUB_RX, StateField::SubRxPresent),
+                    (ChangeFlags::SUB_RX_FREQ, StateField::SubRxFrequency),
+                    (ChangeFlags::RIT_XIT, StateField::MainRitEnabled),
+                    (ChangeFlags::RIT_XIT, StateField::SubRitEnabled),
+                    (ChangeFlags::RIT_XIT, StateField::XitEnabled),
+                    (ChangeFlags::RIT_XIT, StateField::SubXitEnabled),
+                    (ChangeFlags::RIT_XIT, StateField::RitXitOffset),
+                    (ChangeFlags::RIT_XIT, StateField::XitOffset),
+                    (ChangeFlags::RIT_XIT, StateField::SubRitOffset),
+                    (ChangeFlags::RIT_XIT, StateField::SubXitOffset),
+                ] {
+                    changes.add(flag, field);
+                }
+
+                if let Some(tx) = self.state.tx.as_mut() {
+                    let source = if tx.split == Some(true) {
+                        self.state.sub_rx.as_ref().unwrap_or(&self.state.main_rx)
+                    } else {
+                        &self.state.main_rx
+                    };
+                    if tx.frequency != source.frequency {
+                        tx.frequency = source.frequency;
+                        changes.add(ChangeFlags::TX_FREQ, StateField::TxFrequency);
+                    }
+                    if tx.mode != source.mode {
+                        tx.mode = source.mode;
+                        changes.add(ChangeFlags::TX_MODE, StateField::TxMode);
+                    }
+                }
             }
 
             StatePatch::TxPresent(present) => match (present, self.state.tx.is_some()) {
@@ -617,15 +646,40 @@ mod tests {
     fn receiver_swap_moves_receiver_and_rit_xit_state_atomically() {
         let mut state = RadioState::default();
         state.main_rx.frequency = Some(Frequency::from_hz(14_074_000));
+        state.main_rx.mode = Some(Mode::Usb);
+        state.main_rx.filter.bandwidth_hz = Some(2_400);
+        state.main_rx.filter.shift_hz = Some(100);
+        state.main_rx.rf.preamp = Some(LeveledSetting::enabled(1));
+        state.main_rx.rf.attenuator = Some(LeveledSetting::disabled());
+        state.main_rx.rf.noise_blanker = Some(LeveledSetting::enabled(1));
+        state.main_rx.rf.noise_reduction = Some(LeveledSetting::disabled());
+        state.main_rx.rf.auto_notch = Some(false);
         state.sub_rx = Some(ReceiverState {
             frequency: Some(Frequency::from_hz(7_074_000)),
-            ..ReceiverState::default()
+            mode: Some(Mode::Cw),
+            filter: crate::state::ReceiverFilterState {
+                bandwidth_hz: Some(500),
+                shift_hz: Some(-50),
+            },
+            rf: crate::state::ReceiverRfState {
+                preamp: Some(LeveledSetting::disabled()),
+                attenuator: Some(LeveledSetting::enabled(1)),
+                noise_blanker: Some(LeveledSetting::disabled()),
+                noise_reduction: Some(LeveledSetting::enabled(1)),
+                auto_notch: Some(true),
+            },
+        });
+        state.tx = Some(TransmitterState {
+            frequency: state.main_rx.frequency,
+            mode: state.main_rx.mode,
+            split: Some(false),
+            ..TransmitterState::default()
         });
         state.rit_xit.main_rit_enabled = Some(true);
         state.rit_xit.sub_rit_enabled = Some(false);
         let mut reducer = StateReducer::new(state);
 
-        reducer.apply_patch(StatePatch::SwapReceivers);
+        let changes = reducer.apply_patch(StatePatch::SwapReceivers);
 
         assert_eq!(
             reducer.state().main_rx.frequency,
@@ -635,8 +689,34 @@ mod tests {
             reducer.state().sub_rx.as_ref().unwrap().frequency,
             Some(Frequency::from_hz(14_074_000))
         );
+        assert_eq!(reducer.state().main_rx.mode, Some(Mode::Usb));
+        assert_eq!(reducer.state().main_rx.filter.bandwidth_hz, Some(2_400));
+        assert_eq!(reducer.state().main_rx.filter.shift_hz, Some(100));
+        assert_eq!(
+            reducer.state().main_rx.rf.attenuator,
+            Some(LeveledSetting::disabled())
+        );
+        assert_eq!(
+            reducer.state().main_rx.rf.noise_reduction,
+            Some(LeveledSetting::disabled())
+        );
+        assert_eq!(reducer.state().main_rx.rf.auto_notch, Some(false));
         assert_eq!(reducer.state().rit_xit.main_rit_enabled, Some(false));
         assert_eq!(reducer.state().rit_xit.sub_rit_enabled, Some(true));
+        assert_eq!(
+            reducer.state().tx.as_ref().unwrap().frequency,
+            reducer.state().main_rx.frequency
+        );
+        assert_eq!(
+            reducer.state().tx.as_ref().unwrap().mode,
+            reducer.state().main_rx.mode
+        );
+        assert!(!changes.flags.contains(ChangeFlags::MAIN_RX_MODE));
+        assert!(!changes.flags.intersects(ChangeFlags::FILTER));
+        assert!(!changes.flags.contains(ChangeFlags::MAIN_RX_RF));
+        assert!(!changes.flags.contains(ChangeFlags::SUB_RX_RF));
+        assert!(!changes.flags.contains(ChangeFlags::TX_MODE));
+        assert!(!changes.fields.contains(&StateField::MainRxMode));
     }
 
     #[test]

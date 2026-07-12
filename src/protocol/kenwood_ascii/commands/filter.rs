@@ -5,7 +5,7 @@ use crate::{
     Mode, RadioState, Result,
 };
 
-use super::{DecodedFrame, EncodedCommand};
+use super::{info::YaesuVfoRouting, DecodedFrame, EncodedCommand};
 use crate::protocol::kenwood_ascii::{
     AsciiFrame, CommandPriority, KenwoodAsciiProfile, ResponseMatcher,
 };
@@ -14,6 +14,20 @@ pub fn encode(
     profile: &KenwoodAsciiProfile,
     command: &RadioCommand,
     state: &RadioState,
+) -> Result<Option<EncodedCommand>> {
+    encode_with_routing(
+        profile,
+        command,
+        state,
+        YaesuVfoRouting::for_profile(profile),
+    )
+}
+
+pub fn encode_with_routing(
+    profile: &KenwoodAsciiProfile,
+    command: &RadioCommand,
+    state: &RadioState,
+    yaesu_routing: YaesuVfoRouting,
 ) -> Result<Option<EncodedCommand>> {
     match command {
         RadioCommand::SetReceiverFilterBandwidth {
@@ -26,11 +40,18 @@ pub fn encode(
                 *receiver,
                 *bandwidth_hz,
                 state,
+                yaesu_routing,
             )?))
         }
         RadioCommand::SetReceiverFilterShift { receiver, shift_hz } => {
             require_filter_capability(profile, *receiver, false)?;
-            Ok(Some(encode_shift(profile, *receiver, *shift_hz, state)?))
+            Ok(Some(encode_shift(
+                profile,
+                *receiver,
+                *shift_hz,
+                state,
+                yaesu_routing,
+            )?))
         }
         _ => Ok(None),
     }
@@ -70,11 +91,25 @@ pub fn decode(
     frame: &AsciiFrame,
     state: &RadioState,
 ) -> Result<Option<DecodedFrame>> {
+    decode_with_routing(
+        profile,
+        frame,
+        state,
+        &mut YaesuVfoRouting::for_profile(profile),
+    )
+}
+
+pub fn decode_with_routing(
+    profile: &KenwoodAsciiProfile,
+    frame: &AsciiFrame,
+    state: &RadioState,
+    yaesu_routing: &mut YaesuVfoRouting,
+) -> Result<Option<DecodedFrame>> {
     let patches = match frame.command() {
         "FW" => decode_fw(frame)?,
         "BW" | "BW$" => decode_bw(frame)?,
-        "IS" | "IS$" => decode_is(profile, frame)?,
-        "SH" => decode_sh(profile, frame, state)?,
+        "IS" | "IS$" => decode_is(profile, frame, *yaesu_routing)?,
+        "SH" => decode_sh(profile, frame, state, yaesu_routing)?,
         "SL" => decode_sl(profile, frame, state)?,
         "NA" if is_ft891_or_ft991(profile) => Vec::new(),
         _ => return Ok(None),
@@ -88,6 +123,7 @@ fn encode_bandwidth(
     receiver: ReceiverPath,
     bandwidth_hz: u16,
     state: &RadioState,
+    yaesu_routing: YaesuVfoRouting,
 ) -> Result<EncodedCommand> {
     if is_unsupported_filter_profile(profile) {
         return Err(RadioError::UnsupportedCapability {
@@ -140,6 +176,7 @@ fn encode_bandwidth(
             profile,
             receiver,
             selection.id,
+            yaesu_routing,
         ))?;
         return Ok(EncodedCommand::new(
             vec![frame],
@@ -180,6 +217,7 @@ fn encode_shift(
     receiver: ReceiverPath,
     shift_hz: i16,
     state: &RadioState,
+    yaesu_routing: YaesuVfoRouting,
 ) -> Result<EncodedCommand> {
     if is_shift_unsupported_profile(profile) {
         return Err(RadioError::UnsupportedCapability {
@@ -221,7 +259,12 @@ fn encode_shift(
     }
 
     if is_yaesu(profile) {
-        let frame = AsciiFrame::new(encode_yaesu_shift_payload(profile, receiver, shift_hz))?;
+        let frame = AsciiFrame::new(encode_yaesu_shift_payload(
+            profile,
+            receiver,
+            shift_hz,
+            yaesu_routing,
+        ))?;
         return Ok(EncodedCommand::new(
             vec![frame],
             ResponseMatcher::Prefix("IS"),
@@ -274,7 +317,11 @@ fn decode_bw(frame: &AsciiFrame) -> Result<Vec<StatePatch>> {
     Ok(vec![bandwidth_patch(receiver, raw.saturating_mul(10))])
 }
 
-fn decode_is(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result<Vec<StatePatch>> {
+fn decode_is(
+    profile: &KenwoodAsciiProfile,
+    frame: &AsciiFrame,
+    yaesu_routing: YaesuVfoRouting,
+) -> Result<Vec<StatePatch>> {
     if frame.command() == "IS$" {
         let mut shift = parse_signed(frame.command_static_hint(), frame.payload())?;
         if profile.id() == "elecraft-k4" {
@@ -284,7 +331,7 @@ fn decode_is(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result<Vec<St
     }
 
     if is_yaesu(profile) {
-        let (receiver, signed) = decode_yaesu_is_parts(profile, frame.payload())?;
+        let (receiver, signed) = decode_yaesu_is_parts(profile, frame.payload(), yaesu_routing)?;
         let shift = parse_signed("IS", signed)?;
         return Ok(vec![shift_patch(receiver, shift)]);
     }
@@ -300,9 +347,10 @@ fn decode_sh(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
     state: &RadioState,
+    yaesu_routing: &mut YaesuVfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if is_yaesu(profile) {
-        return decode_yaesu_sh(profile, frame, state);
+        return decode_yaesu_sh(profile, frame, state, yaesu_routing);
     }
 
     if !supports_hi_lo(profile) {
@@ -376,8 +424,12 @@ fn decode_yaesu_sh(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
     state: &RadioState,
+    yaesu_routing: &mut YaesuVfoRouting,
 ) -> Result<Vec<StatePatch>> {
-    let (receiver, id) = decode_yaesu_sh_parts(profile, frame.payload())?;
+    let (receiver, id) = decode_yaesu_sh_parts(profile, frame.payload(), *yaesu_routing)?;
+    if matches!(profile.id(), "yaesu-ftdx10" | "yaesu-ft710") {
+        yaesu_routing.set_main_bandwidth_id(id);
+    }
     let mode = receiver_mode(state, receiver).unwrap_or(Mode::Usb);
 
     let value_hz = if is_ft891_or_ft991(profile) {
@@ -694,6 +746,7 @@ fn encode_yaesu_bandwidth_payload(
     profile: &KenwoodAsciiProfile,
     receiver: ReceiverPath,
     id: u8,
+    _yaesu_routing: YaesuVfoRouting,
 ) -> String {
     match profile.id() {
         "yaesu-ftdx101" => format!("SH{}0{id:02};", yaesu_target(profile, receiver)),
@@ -708,11 +761,13 @@ fn encode_yaesu_shift_payload(
     profile: &KenwoodAsciiProfile,
     receiver: ReceiverPath,
     shift_hz: i16,
+    _yaesu_routing: YaesuVfoRouting,
 ) -> String {
     let (sign, abs) = signed_parts(shift_hz);
     match profile.id() {
         "yaesu-ftdx101" => format!("IS{}0{sign}{abs:04};", yaesu_target(profile, receiver)),
-        "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft991" => format!("IS00{sign}{abs:04};"),
+        "yaesu-ftdx10" | "yaesu-ft710" => format!("IS00{sign}{abs:04};"),
+        "yaesu-ft991" => format!("IS00{sign}{abs:04};"),
         "yaesu-ft891" => format!("IS01{sign}{abs:04};"),
         _ => format!("IS{}0{sign}{abs:04};", yaesu_target(profile, receiver)),
     }
@@ -721,6 +776,7 @@ fn encode_yaesu_shift_payload(
 fn decode_yaesu_is_parts<'a>(
     profile: &KenwoodAsciiProfile,
     payload: &'a str,
+    yaesu_routing: YaesuVfoRouting,
 ) -> Result<(ReceiverPath, &'a str)> {
     match profile.id() {
         "yaesu-ftdx101" => {
@@ -739,6 +795,7 @@ fn decode_yaesu_is_parts<'a>(
                     message: format!("expected 7-char Yaesu IS payload, got {payload:?}"),
                 });
             }
+            let _ = yaesu_routing;
             Ok((ReceiverPath::Main, &payload[2..]))
         }
         _ => Err(RadioError::Decode {
@@ -751,6 +808,7 @@ fn decode_yaesu_is_parts<'a>(
 fn decode_yaesu_sh_parts(
     profile: &KenwoodAsciiProfile,
     payload: &str,
+    yaesu_routing: YaesuVfoRouting,
 ) -> Result<(ReceiverPath, u8)> {
     match profile.id() {
         "yaesu-ftdx101" => {
@@ -772,6 +830,7 @@ fn decode_yaesu_sh_parts(
                     message: format!("expected Yaesu SH payload, got {payload:?}"),
                 });
             }
+            let _ = yaesu_routing;
             Ok((
                 ReceiverPath::Main,
                 parse_u8("SH", &payload[payload.len() - 2..])?,
@@ -896,7 +955,7 @@ fn is_ft891_or_ft991(profile: &KenwoodAsciiProfile) -> bool {
     matches!(profile.id(), "yaesu-ft891" | "yaesu-ft991")
 }
 
-fn decode_yaesu_bandwidth(mode: Mode, id: u8) -> u16 {
+pub(crate) fn decode_yaesu_bandwidth(mode: Mode, id: u8) -> u16 {
     let family = yaesu_family(mode);
     let entries = yaesu_table_entries(family);
     if id == 0 {

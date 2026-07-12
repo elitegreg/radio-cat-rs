@@ -90,7 +90,7 @@ struct KenwoodAsciiRuntime {
     profile: &'static KenwoodAsciiProfile,
     options: KenwoodAsciiOptions,
     frame_splitter: KenwoodFrameSplitter,
-    yaesu_main_vfo: kenwood_ascii::info::YaesuMainVfo,
+    yaesu_routing: kenwood_ascii::info::YaesuVfoRouting,
 }
 
 impl KenwoodAsciiRuntime {
@@ -99,7 +99,7 @@ impl KenwoodAsciiRuntime {
             profile,
             options,
             frame_splitter: KenwoodFrameSplitter::new(),
-            yaesu_main_vfo: kenwood_ascii::info::YaesuMainVfo::default(),
+            yaesu_routing: kenwood_ascii::info::YaesuVfoRouting::for_profile(profile),
         }
     }
 
@@ -220,7 +220,7 @@ impl KenwoodAsciiRuntime {
                     self.profile,
                     &frame,
                     ctx.state(),
-                    &mut self.yaesu_main_vfo,
+                    &mut self.yaesu_routing,
                 ) {
                     Ok(Some(decoded)) => {
                         let source = decoded.source_hint.unwrap_or(default_source);
@@ -269,19 +269,21 @@ impl KenwoodAsciiRuntime {
         ctx: &mut dyn ProtocolContext,
     ) {
         for semantic in kenwood_timeout_recovery_queries(self.profile, command, state_before) {
-            let Some(encoded) = (match encode_kenwood_query(self.profile, semantic) {
-                Ok(encoded) => encoded,
-                Err(error) => {
-                    tracing::warn!(
-                        driver = %self.profile.id(),
-                        ?command,
-                        semantic,
-                        ?error,
-                        "failed to encode Kenwood timeout recovery query"
-                    );
-                    continue;
-                }
-            }) else {
+            let Some(encoded) =
+                (match encode_kenwood_query(self.profile, semantic, self.yaesu_routing) {
+                    Ok(encoded) => encoded,
+                    Err(error) => {
+                        tracing::warn!(
+                            driver = %self.profile.id(),
+                            ?command,
+                            semantic,
+                            ?error,
+                            "failed to encode Kenwood timeout recovery query"
+                        );
+                        continue;
+                    }
+                })
+            else {
                 continue;
             };
 
@@ -357,7 +359,9 @@ impl NativeProtocol for KenwoodAsciiRuntime {
                     }
                 }
                 StartupStep::Query(semantic) => {
-                    let Some(encoded) = encode_kenwood_query(self.profile, semantic)? else {
+                    let Some(encoded) =
+                        encode_kenwood_query(self.profile, semantic, self.yaesu_routing)?
+                    else {
                         tracing::trace!(driver = %self.profile.id(), semantic, "startup semantic skipped (no query frame)");
                         continue;
                     };
@@ -401,19 +405,21 @@ impl NativeProtocol for KenwoodAsciiRuntime {
     ) -> Result<()> {
         if command_matches_state(&command, state_before) {
             for semantic in kenwood_validation_queries(self.profile, &command, state_before) {
-                let Some(encoded) = (match encode_kenwood_query(self.profile, semantic) {
-                    Ok(encoded) => encoded,
-                    Err(error) => {
-                        tracing::warn!(
-                            driver = %self.profile.id(),
-                            ?command,
-                            semantic,
-                            ?error,
-                            "failed to encode Kenwood validation query"
-                        );
-                        continue;
-                    }
-                }) else {
+                let Some(encoded) =
+                    (match encode_kenwood_query(self.profile, semantic, self.yaesu_routing) {
+                        Ok(encoded) => encoded,
+                        Err(error) => {
+                            tracing::warn!(
+                                driver = %self.profile.id(),
+                                ?command,
+                                semantic,
+                                ?error,
+                                "failed to encode Kenwood validation query"
+                            );
+                            continue;
+                        }
+                    })
+                else {
                     continue;
                 };
 
@@ -447,8 +453,13 @@ impl NativeProtocol for KenwoodAsciiRuntime {
             }
         }
 
-        let Some(encoded) =
-            encode_kenwood_command(self.profile, self.options, &command, state_before)?
+        let Some(encoded) = encode_kenwood_command(
+            self.profile,
+            self.options,
+            &command,
+            state_before,
+            self.yaesu_routing,
+        )?
         else {
             tracing::trace!(driver = %self.profile.id(), ?command, "command has no native transport encoding");
             return Ok(());
@@ -507,7 +518,9 @@ impl NativeProtocol for KenwoodAsciiRuntime {
         if let Some(plan) = self.profile.poll {
             tracing::debug!(driver = %self.profile.id(), query_count = plan.queries.len(), "running poll plan");
             for semantic in plan.queries {
-                let Some(encoded) = encode_kenwood_query(self.profile, semantic)? else {
+                let Some(encoded) =
+                    encode_kenwood_query(self.profile, semantic, self.yaesu_routing)?
+                else {
                     continue;
                 };
 
@@ -1356,11 +1369,19 @@ fn encode_kenwood_command(
     options: KenwoodAsciiOptions,
     command: &RadioCommand,
     current_state: &RadioState,
+    yaesu_routing: kenwood_ascii::info::YaesuVfoRouting,
 ) -> Result<Option<EncodedCommand>> {
-    if let Some(encoded) = kenwood_ascii::frequency::encode(profile, command, current_state)? {
+    if let Some(encoded) = kenwood_ascii::frequency::encode_with_routing(
+        profile,
+        command,
+        current_state,
+        yaesu_routing,
+    )? {
         return Ok(Some(encoded));
     }
-    if let Some(encoded) = kenwood_ascii::mode::encode(profile, command, current_state)? {
+    if let Some(encoded) =
+        kenwood_ascii::mode::encode_with_routing(profile, command, current_state, yaesu_routing)?
+    {
         return Ok(Some(encoded));
     }
     if let Some(encoded) = kenwood_ascii::split::encode(profile, command, current_state)? {
@@ -1369,10 +1390,13 @@ fn encode_kenwood_command(
     if let Some(encoded) = kenwood_ascii::rit_xit::encode(profile, command, current_state)? {
         return Ok(Some(encoded));
     }
-    if let Some(encoded) = kenwood_ascii::filter::encode(profile, command, current_state)? {
+    if let Some(encoded) =
+        kenwood_ascii::filter::encode_with_routing(profile, command, current_state, yaesu_routing)?
+    {
         return Ok(Some(encoded));
     }
-    if let Some(encoded) = kenwood_ascii::rf::encode(profile, command)? {
+    if let Some(encoded) = kenwood_ascii::rf::encode_with_routing(profile, command, yaesu_routing)?
+    {
         return Ok(Some(encoded));
     }
     if let Some(encoded) = kenwood_ascii::tx::encode(profile, options, command)? {
@@ -1388,8 +1412,11 @@ fn encode_kenwood_command(
 fn encode_kenwood_query(
     profile: &'static KenwoodAsciiProfile,
     semantic: &'static str,
+    yaesu_routing: kenwood_ascii::info::YaesuVfoRouting,
 ) -> Result<Option<EncodedCommand>> {
-    if let Some(encoded) = kenwood_ascii::frequency::encode_query(profile, semantic)? {
+    if let Some(encoded) =
+        kenwood_ascii::frequency::encode_query_with_routing(profile, semantic, yaesu_routing)?
+    {
         return Ok(Some(encoded));
     }
     if let Some(encoded) = kenwood_ascii::info::encode_query(profile, semantic)? {
@@ -1424,15 +1451,19 @@ fn decode_kenwood_frame(
     profile: &'static KenwoodAsciiProfile,
     frame: &AsciiFrame,
     state: &RadioState,
-    yaesu_main_vfo: &mut kenwood_ascii::info::YaesuMainVfo,
+    yaesu_routing: &mut kenwood_ascii::info::YaesuVfoRouting,
 ) -> Result<Option<kenwood_ascii::DecodedFrame>> {
-    if let Some(decoded) = kenwood_ascii::info::decode(profile, frame, state, yaesu_main_vfo)? {
+    if let Some(decoded) = kenwood_ascii::info::decode(profile, frame, state, yaesu_routing)? {
         return Ok(Some(decoded));
     }
-    if let Some(decoded) = kenwood_ascii::frequency::decode(profile, frame, state)? {
+    if let Some(decoded) =
+        kenwood_ascii::frequency::decode_with_routing(profile, frame, state, *yaesu_routing)?
+    {
         return Ok(Some(decoded));
     }
-    if let Some(decoded) = kenwood_ascii::mode::decode(profile, frame, state)? {
+    if let Some(decoded) =
+        kenwood_ascii::mode::decode_with_routing(profile, frame, state, *yaesu_routing)?
+    {
         return Ok(Some(decoded));
     }
     if let Some(decoded) = kenwood_ascii::split::decode(profile, frame, state)? {
@@ -1441,10 +1472,12 @@ fn decode_kenwood_frame(
     if let Some(decoded) = kenwood_ascii::rit_xit::decode(profile, frame)? {
         return Ok(Some(decoded));
     }
-    if let Some(decoded) = kenwood_ascii::filter::decode(profile, frame, state)? {
+    if let Some(decoded) =
+        kenwood_ascii::filter::decode_with_routing(profile, frame, state, yaesu_routing)?
+    {
         return Ok(Some(decoded));
     }
-    if let Some(decoded) = kenwood_ascii::rf::decode(profile, frame)? {
+    if let Some(decoded) = kenwood_ascii::rf::decode_with_routing(profile, frame, *yaesu_routing)? {
         return Ok(Some(decoded));
     }
     if let Some(decoded) = kenwood_ascii::tx::decode(profile, frame)? {
@@ -1886,5 +1919,43 @@ fn tx_receiver_for_validation(state: &RadioState) -> ReceiverPath {
         ReceiverPath::Sub
     } else {
         ReceiverPath::Main
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{protocol::kenwood_ascii::profile_by_id, Mode, StateReducer};
+
+    #[test]
+    fn ftdx10_auto_info_sequence_routes_md_as_main_and_sub() {
+        let profile = profile_by_id("yaesu-ftdx10").unwrap();
+        let mut routing = kenwood_ascii::info::YaesuVfoRouting::for_profile(profile);
+        let mut reducer = StateReducer::new(RadioState::default());
+        let initial_vs = AsciiFrame::new("VS1;").unwrap();
+        let decoded = decode_kenwood_frame(profile, &initial_vs, reducer.state(), &mut routing)
+            .unwrap()
+            .unwrap();
+        reducer.apply_patches(decoded.patches);
+
+        for (sequence, expected_main, expected_sub) in [
+            (["MD03;", "MD11;", "SH0007;", "VS0;"], Mode::Cw, Mode::Lsb),
+            (["MD01;", "MD13;", "SH0018;", "VS1;"], Mode::Lsb, Mode::Cw),
+        ] {
+            for text in sequence {
+                let frame = AsciiFrame::new(text).unwrap();
+                if let Some(decoded) =
+                    decode_kenwood_frame(profile, &frame, reducer.state(), &mut routing).unwrap()
+                {
+                    reducer.apply_patches(decoded.patches);
+                }
+            }
+
+            assert_eq!(reducer.state().main_rx.mode, Some(expected_main));
+            assert_eq!(
+                reducer.state().sub_rx.as_ref().and_then(|rx| rx.mode),
+                Some(expected_sub)
+            );
+        }
     }
 }

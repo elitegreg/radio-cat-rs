@@ -28,22 +28,87 @@ pub fn encode_query(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum YaesuMainVfo {
+pub enum YaesuVfo {
     #[default]
     A,
     B,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct YaesuVfoRouting {
+    main_vfo: YaesuVfo,
+    switchable: bool,
+    main_bandwidth_id: Option<u8>,
+}
+
+impl YaesuVfoRouting {
+    pub fn for_profile(profile: &KenwoodAsciiProfile) -> Self {
+        Self {
+            main_vfo: YaesuVfo::A,
+            switchable: supports_yaesu_vs(profile),
+            main_bandwidth_id: None,
+        }
+    }
+
+    pub fn receiver_for_vfo(self, vfo: YaesuVfo) -> crate::command::ReceiverPath {
+        if vfo == self.main_vfo {
+            crate::command::ReceiverPath::Main
+        } else {
+            crate::command::ReceiverPath::Sub
+        }
+    }
+
+    pub fn vfo_for_receiver(self, receiver: crate::command::ReceiverPath) -> YaesuVfo {
+        match (self.main_vfo, receiver) {
+            (YaesuVfo::A, crate::command::ReceiverPath::Main)
+            | (YaesuVfo::B, crate::command::ReceiverPath::Sub) => YaesuVfo::A,
+            _ => YaesuVfo::B,
+        }
+    }
+
+    pub fn target_for_receiver(self, receiver: crate::command::ReceiverPath) -> char {
+        match self.vfo_for_receiver(receiver) {
+            YaesuVfo::A => '0',
+            YaesuVfo::B => '1',
+        }
+    }
+
+    pub fn set_main_bandwidth_id(&mut self, id: u8) {
+        self.main_bandwidth_id = Some(id);
+    }
+
+    pub fn receiver_for_target(self, target: u8) -> Result<crate::command::ReceiverPath> {
+        match target {
+            b'0' => Ok(self.receiver_for_vfo(YaesuVfo::A)),
+            b'1' => Ok(self.receiver_for_vfo(YaesuVfo::B)),
+            other => Err(RadioError::Decode {
+                command: "Yaesu target",
+                message: format!("expected VFO target 0/1, got {:?}", other as char),
+            }),
+        }
+    }
+}
+
+impl Default for YaesuVfoRouting {
+    fn default() -> Self {
+        Self {
+            main_vfo: YaesuVfo::A,
+            switchable: false,
+            main_bandwidth_id: None,
+        }
+    }
 }
 
 pub fn decode(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
     state: &RadioState,
-    yaesu_main_vfo: &mut YaesuMainVfo,
+    yaesu_routing: &mut YaesuVfoRouting,
 ) -> Result<Option<DecodedFrame>> {
     if frame.command() == "VS" && supports_yaesu_vs(profile) {
         let selected = match frame.payload() {
-            "0" => YaesuMainVfo::A,
-            "1" => YaesuMainVfo::B,
+            "0" => YaesuVfo::A,
+            "1" => YaesuVfo::B,
             payload => {
                 return Err(RadioError::Decode {
                     command: "VS",
@@ -51,9 +116,15 @@ pub fn decode(
                 })
             }
         };
-        let patches = if selected != *yaesu_main_vfo {
-            *yaesu_main_vfo = selected;
-            vec![StatePatch::SwapReceivers]
+        let patches = if yaesu_routing.switchable && selected != yaesu_routing.main_vfo {
+            yaesu_routing.main_vfo = selected;
+            let mut patches = vec![StatePatch::SwapReceivers];
+            if let (Some(id), Some(mode)) = (yaesu_routing.main_bandwidth_id, state.main_rx.mode) {
+                patches.push(StatePatch::MainRxFilterBandwidth(
+                    super::filter::decode_yaesu_bandwidth(mode, id),
+                ));
+            }
+            patches
         } else {
             Vec::new()
         };
@@ -62,22 +133,12 @@ pub fn decode(
 
     let payload = frame.payload();
     let patches = match frame.command() {
-        "IF" if supports_generic_if(profile) && is_yaesu(profile) => decode_yaesu_info(
-            profile,
-            "IF",
-            payload,
-            state,
-            YaesuMainVfo::A,
-            *yaesu_main_vfo,
-        )?,
-        "OI" if supports_yaesu_oi(profile) => decode_yaesu_info(
-            profile,
-            "OI",
-            payload,
-            state,
-            YaesuMainVfo::B,
-            *yaesu_main_vfo,
-        )?,
+        "IF" if supports_generic_if(profile) && is_yaesu(profile) => {
+            decode_yaesu_info(profile, "IF", payload, state, YaesuVfo::A, *yaesu_routing)?
+        }
+        "OI" if supports_yaesu_oi(profile) => {
+            decode_yaesu_info(profile, "OI", payload, state, YaesuVfo::B, *yaesu_routing)?
+        }
         "IF" if supports_generic_if(profile) => decode_kenwood_if(profile, payload, state)?,
         _ => return Ok(None),
     };
@@ -158,8 +219,8 @@ fn decode_yaesu_info(
     command: &'static str,
     payload: &str,
     state: &RadioState,
-    physical_vfo: YaesuMainVfo,
-    main_vfo: YaesuMainVfo,
+    physical_vfo: YaesuVfo,
+    routing: YaesuVfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if payload.len() != 25 {
         return Err(RadioError::Decode {
@@ -178,7 +239,10 @@ fn decode_yaesu_info(
     let mode = decode_yaesu_if_mode(profile, payload.as_bytes()[19] as char)?;
     let split = decode_yaesu_split(payload.as_bytes()[24] as char)?;
 
-    let is_main = physical_vfo == main_vfo;
+    let is_main = matches!(
+        routing.receiver_for_vfo(physical_vfo),
+        crate::command::ReceiverPath::Main
+    );
     let mut patches = vec![StatePatch::Split(split)];
     if is_main {
         patches.extend([
@@ -309,9 +373,14 @@ mod tests {
         frame: &AsciiFrame,
         state: &RadioState,
     ) -> DecodedFrame {
-        decode(profile, frame, state, &mut YaesuMainVfo::default())
-            .unwrap()
-            .unwrap()
+        decode(
+            profile,
+            frame,
+            state,
+            &mut YaesuVfoRouting::for_profile(profile),
+        )
+        .unwrap()
+        .unwrap()
     }
 
     #[test]
@@ -454,7 +523,7 @@ mod tests {
     fn vs_routes_if_and_oi_between_main_and_sub_without_duplicate_swaps() {
         let profile = profile_by_id("yaesu-ftdx10").unwrap();
         let state = RadioState::default();
-        let mut routing = YaesuMainVfo::default();
+        let mut routing = YaesuVfoRouting::for_profile(profile);
 
         let vs = AsciiFrame::new("VS1;").unwrap();
         let first = decode(profile, &vs, &state, &mut routing).unwrap().unwrap();
@@ -471,6 +540,50 @@ mod tests {
         assert!(decoded.patches.contains(&StatePatch::RitXitOffset(
             RitXitOffsetHz::new(-251).unwrap()
         )));
+    }
+
+    #[test]
+    fn vs_reinterprets_cached_main_bandwidth_id_for_incoming_mode() {
+        let profile = profile_by_id("yaesu-ftdx10").unwrap();
+        let mut state = RadioState::default();
+        state.main_rx.mode = Some(Mode::Usb);
+        state.sub_rx = Some(crate::ReceiverState {
+            mode: Some(Mode::Cw),
+            ..crate::ReceiverState::default()
+        });
+        let mut routing = YaesuVfoRouting::for_profile(profile);
+
+        crate::protocol::kenwood_ascii::filter::decode_with_routing(
+            profile,
+            &AsciiFrame::new("SH0013;").unwrap(),
+            &state,
+            &mut routing,
+        )
+        .unwrap()
+        .unwrap();
+
+        state.main_rx.mode = Some(Mode::Cw);
+        let usb_bandwidth =
+            crate::protocol::kenwood_ascii::filter::decode_yaesu_bandwidth(Mode::Usb, 13);
+        let cw_bandwidth =
+            crate::protocol::kenwood_ascii::filter::decode_yaesu_bandwidth(Mode::Cw, 13);
+        assert_ne!(usb_bandwidth, cw_bandwidth);
+
+        let decoded = decode(
+            profile,
+            &AsciiFrame::new("VS1;").unwrap(),
+            &state,
+            &mut routing,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            decoded.patches,
+            vec![
+                StatePatch::SwapReceivers,
+                StatePatch::MainRxFilterBandwidth(cw_bandwidth),
+            ]
+        );
     }
 
     #[test]

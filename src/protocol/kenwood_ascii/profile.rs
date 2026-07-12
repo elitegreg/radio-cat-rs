@@ -152,6 +152,8 @@ const BW_ONLY_RX: ReceiverCapabilities =
     ReceiverCapabilities::new(RW, RW, RW, UNSUPPORTED, NB_ONLY_RF);
 const NO_FILTER_NO_RF_RX: ReceiverCapabilities =
     ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, NO_RF);
+const VFO_ONLY_RX: ReceiverCapabilities =
+    ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, NO_RF);
 
 const FULL_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, RW, RW, RW);
 const IF232_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, UNSUPPORTED, RW, RW);
@@ -516,10 +518,21 @@ const fn dual_capabilities(
     rit_xit: RitXitCapabilities,
     keyer: Option<KeyerCapabilities>,
 ) -> RadioCapabilities {
+    asymmetric_dual_capabilities(receiver_kind, rx, rx, tx, rit_xit, keyer)
+}
+
+const fn asymmetric_dual_capabilities(
+    receiver_kind: ReceiverKind,
+    main_rx: ReceiverCapabilities,
+    sub_rx: ReceiverCapabilities,
+    tx: TransmitterCapabilities,
+    rit_xit: RitXitCapabilities,
+    keyer: Option<KeyerCapabilities>,
+) -> RadioCapabilities {
     RadioCapabilities::new(
         receiver_kind,
-        rx,
-        Some(rx),
+        main_rx,
+        Some(sub_rx),
         Some(tx),
         rit_xit,
         keyer,
@@ -780,9 +793,10 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Yaesu,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        capabilities: dual_capabilities(
+        capabilities: asymmetric_dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
+            VFO_ONLY_RX,
             FULL_TX,
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
@@ -800,9 +814,10 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Yaesu,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        capabilities: dual_capabilities(
+        capabilities: asymmetric_dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
+            VFO_ONLY_RX,
             FULL_TX,
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
