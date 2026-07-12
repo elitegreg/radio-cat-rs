@@ -2286,6 +2286,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn kenwood_session_poll_intervals_match_declared_update_strategy() {
+        for profile in crate::protocol::kenwood_ascii::SUPPORTED_PROFILES {
+            let session = kenwood_session(profile, "").unwrap();
+            if profile.id() == "kenwood-if232" {
+                assert_eq!(session.poll_interval(), Some(Duration::from_secs(2)));
+            } else {
+                assert_eq!(
+                    session.poll_interval(),
+                    None,
+                    "{} unexpectedly polls",
+                    profile.id()
+                );
+            }
+        }
+    }
+
     #[derive(Default)]
     struct TestTransport {
         reads: VecDeque<Vec<u8>>,

@@ -181,6 +181,7 @@ const FULL_KEYER: KeyerCapabilities = KeyerCapabilities::new(RW, EMULATED, WO, W
 const YAESU_KEYER: KeyerCapabilities =
     KeyerCapabilities::new(RW, UNSUPPORTED, UNSUPPORTED, UNSUPPORTED);
 
+const NATIVE: StateUpdateCapability = StateUpdateCapability::Native;
 const HYBRID: StateUpdateCapability = StateUpdateCapability::Hybrid;
 
 const IF232_POLL: Duration = Duration::from_secs(2);
@@ -519,7 +520,7 @@ const fn dual_capabilities(
     rit_xit: RitXitCapabilities,
     keyer: Option<KeyerCapabilities>,
 ) -> RadioCapabilities {
-    asymmetric_dual_capabilities(receiver_kind, rx, rx, tx, rit_xit, keyer)
+    asymmetric_dual_capabilities_with_update(receiver_kind, rx, rx, tx, rit_xit, keyer, NATIVE)
 }
 
 const fn asymmetric_dual_capabilities(
@@ -530,6 +531,26 @@ const fn asymmetric_dual_capabilities(
     rit_xit: RitXitCapabilities,
     keyer: Option<KeyerCapabilities>,
 ) -> RadioCapabilities {
+    asymmetric_dual_capabilities_with_update(
+        receiver_kind,
+        main_rx,
+        sub_rx,
+        tx,
+        rit_xit,
+        keyer,
+        NATIVE,
+    )
+}
+
+const fn asymmetric_dual_capabilities_with_update(
+    receiver_kind: ReceiverKind,
+    main_rx: ReceiverCapabilities,
+    sub_rx: ReceiverCapabilities,
+    tx: TransmitterCapabilities,
+    rit_xit: RitXitCapabilities,
+    keyer: Option<KeyerCapabilities>,
+    state_updates: StateUpdateCapability,
+) -> RadioCapabilities {
     RadioCapabilities::new(
         receiver_kind,
         main_rx,
@@ -537,7 +558,7 @@ const fn asymmetric_dual_capabilities(
         Some(tx),
         rit_xit,
         keyer,
-        HYBRID,
+        state_updates,
     )
 }
 
@@ -558,7 +579,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS590_STARTUP,
         poll: None,
     },
@@ -578,7 +599,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS890_STARTUP,
         poll: None,
     },
@@ -598,7 +619,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS990_STARTUP,
         poll: None,
     },
@@ -618,7 +639,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS2000_STARTUP,
         poll: None,
     },
@@ -638,7 +659,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS480_STARTUP,
         poll: None,
     },
@@ -658,7 +679,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS570_TS870_STARTUP,
         poll: None,
     },
@@ -678,7 +699,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS570_TS870_STARTUP,
         poll: None,
     },
@@ -691,12 +712,14 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Kenwood,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        capabilities: dual_capabilities(
+        capabilities: asymmetric_dual_capabilities_with_update(
             ReceiverKind::DualVfo,
+            NO_FILTER_NO_RF_RX,
             NO_FILTER_NO_RF_RX,
             IF232_TX,
             MAIN_RIT_XIT,
             None,
+            HYBRID,
         ),
         update_strategy: HYBRID,
         startup: IF232_STARTUP,
@@ -721,7 +744,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             K4_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: ELECRAFT_K4_STARTUP,
         poll: None,
     },
@@ -741,7 +764,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: ELECRAFT_K3_STARTUP,
         poll: None,
     },
@@ -761,7 +784,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             K2_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: ELECRAFT_K2_STARTUP,
         poll: None,
     },
@@ -781,7 +804,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: YAESU_FTDX101_STARTUP,
         poll: None,
     },
@@ -802,7 +825,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: YAESU_FTDX10_FT710_STARTUP,
         poll: None,
     },
@@ -823,7 +846,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: YAESU_FTDX10_FT710_STARTUP,
         poll: None,
     },
@@ -843,7 +866,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: YAESU_FT891_STARTUP,
         poll: None,
     },
@@ -863,7 +886,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: YAESU_FT991_STARTUP,
         poll: None,
     },
@@ -958,7 +981,20 @@ mod tests {
         assert_eq!(ts990.receiver_kind, ReceiverKind::DualRx);
 
         let if232 = profile_by_id("kenwood-if232").unwrap();
+        assert_eq!(if232.update_strategy, StateUpdateCapability::Hybrid);
         assert_eq!(if232.poll.unwrap().interval, IF232_POLL);
+
+        for profile in SUPPORTED_PROFILES
+            .iter()
+            .filter(|profile| profile.id() != "kenwood-if232")
+        {
+            assert_eq!(profile.update_strategy, StateUpdateCapability::Native);
+            assert!(
+                profile.poll.is_none(),
+                "{} unexpectedly polls",
+                profile.id()
+            );
+        }
     }
 
     #[test]
