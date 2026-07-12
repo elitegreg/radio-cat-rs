@@ -987,8 +987,10 @@ mod tests {
     #[test]
     fn ts990_om_decodes_data_variants_to_normalized_modes() {
         let profile = profile_by_id("kenwood-ts990").unwrap();
-        let mut state = RadioState::default();
-        state.tx = Some(TransmitterState::default());
+        let state = RadioState {
+            tx: Some(TransmitterState::default()),
+            ..RadioState::default()
+        };
         let decoded = decode(profile, &AsciiFrame::new("OM0D;").unwrap(), &state)
             .unwrap()
             .unwrap();
@@ -1036,11 +1038,13 @@ mod tests {
     #[test]
     fn yaesu_mode_targets_and_ft991_special_case_work() {
         let ftdx101 = profile_by_id("yaesu-ftdx101").unwrap();
-        let mut split_state = RadioState::default();
-        split_state.tx = Some(TransmitterState {
-            split: Some(true),
-            ..TransmitterState::default()
-        });
+        let split_state = RadioState {
+            tx: Some(TransmitterState {
+                split: Some(true),
+                ..TransmitterState::default()
+            }),
+            ..RadioState::default()
+        };
         let mut routing = VfoRouting::for_profile(ftdx101);
         routing.set_tx_vfo(super::super::PhysicalVfo::B);
         let encoded = encode_with_routing(

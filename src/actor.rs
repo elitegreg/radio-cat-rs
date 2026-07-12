@@ -653,12 +653,14 @@ mod tests {
                 Capability::WriteOnly,
             ));
 
-            let mut initial_state = RadioState::default();
-            initial_state.connection = ConnectionState::Connecting;
-            initial_state.keyer = Some(KeyerState {
-                speed_wpm,
-                sending: None,
-            });
+            let initial_state = RadioState {
+                connection: ConnectionState::Connecting,
+                keyer: Some(KeyerState {
+                    speed_wpm,
+                    sending: None,
+                }),
+                ..RadioState::default()
+            };
 
             Self {
                 initial_state,

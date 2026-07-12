@@ -185,12 +185,12 @@ fn encode_preamp(
         });
     }
 
-    Ok(simple_setting_command(
+    simple_setting_command(
         frame,
         "PA",
         receiver,
         setting_patch(receiver, Feature::Preamp, index),
-    )?)
+    )
 }
 
 fn encode_attenuator(
@@ -242,12 +242,12 @@ fn encode_attenuator(
         }
     };
 
-    Ok(simple_setting_command(
+    simple_setting_command(
         frame,
         "RA",
         receiver,
         setting_patch(receiver, Feature::Attenuator, index),
-    )?)
+    )
 }
 
 fn encode_noise_blanker(
@@ -427,12 +427,12 @@ fn encode_noise_reduction(
         }
     };
 
-    Ok(simple_setting_command(
+    simple_setting_command(
         frame,
         "NR",
         receiver,
         setting_patch(receiver, Feature::NoiseReduction, index),
-    )?)
+    )
 }
 
 fn encode_auto_notch(
@@ -618,19 +618,15 @@ fn decode_noise_blanker(
         return Ok(vec![setting_patch(receiver, Feature::NoiseBlanker, index)]);
     }
 
-    if profile.id().starts_with("yaesu-") {
-        if payload.len() == 2 {
-            let receiver = if profile.id() == "yaesu-ftdx101" {
-                decode_target("NB", payload.as_bytes()[0])?
-            } else if matches!(profile.id(), "yaesu-ftdx10" | "yaesu-ft710") {
-                ReceiverPath::Main
-            } else {
-                ReceiverPath::Main
-            };
-            let enabled = parse_flag("NB", &payload[1..2])?;
-            let index = if enabled { 1 } else { 0 };
-            return Ok(vec![setting_patch(receiver, Feature::NoiseBlanker, index)]);
-        }
+    if profile.id().starts_with("yaesu-") && payload.len() == 2 {
+        let receiver = if profile.id() == "yaesu-ftdx101" {
+            decode_target("NB", payload.as_bytes()[0])?
+        } else {
+            ReceiverPath::Main
+        };
+        let enabled = parse_flag("NB", &payload[1..2])?;
+        let index = if enabled { 1 } else { 0 };
+        return Ok(vec![setting_patch(receiver, Feature::NoiseBlanker, index)]);
     }
 
     let index = parse_u8("NB", payload)?;
@@ -668,8 +664,6 @@ fn decode_noise_reduction(
     if profile.id().starts_with("yaesu-") && frame.payload().len() == 2 {
         let receiver = if profile.id() == "yaesu-ftdx101" {
             decode_target("NR", frame.payload().as_bytes()[0])?
-        } else if matches!(profile.id(), "yaesu-ftdx10" | "yaesu-ft710") {
-            ReceiverPath::Main
         } else {
             ReceiverPath::Main
         };
@@ -730,8 +724,6 @@ fn decode_auto_notch(
             }
             let receiver = if profile.id() == "yaesu-ftdx101" {
                 decode_target("BC", payload.as_bytes()[0])?
-            } else if matches!(profile.id(), "yaesu-ftdx10" | "yaesu-ft710") {
-                ReceiverPath::Main
             } else {
                 ReceiverPath::Main
             };

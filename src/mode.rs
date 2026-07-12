@@ -64,11 +64,7 @@ impl FromStr for Mode {
     type Err = ParseModeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let normalized = s
-            .trim()
-            .to_ascii_lowercase()
-            .replace('_', "-")
-            .replace(' ', "-");
+        let normalized = s.trim().to_ascii_lowercase().replace(['_', ' '], "-");
 
         match normalized.as_str() {
             "lsb" => Ok(Self::Lsb),

@@ -60,10 +60,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn parse_driver_id() -> Result<Option<String>, CliError> {
-    let mut args = env::args().skip(1);
+    let args = env::args().skip(1);
 
     let mut driver_id: Option<String> = None;
-    while let Some(arg) = args.next() {
+    for arg in args {
         match arg.as_str() {
             "-h" | "--help" => {
                 print_usage();

@@ -183,7 +183,7 @@ fn encode_power_value(profile: &KenwoodAsciiProfile, power: Power) -> Result<Pow
     }
 
     let microwatts = power.as_microwatts();
-    let watts = ((microwatts + 999_999) / 1_000_000) as u16;
+    let watts = microwatts.div_ceil(1_000_000) as u16;
     let (min_watts, max_watts) =
         standard_power_range(profile.id()).ok_or(RadioError::UnsupportedCapability {
             capability: "tx.power",
@@ -263,12 +263,10 @@ fn ptt_frame(
         } else {
             "RX;"
         }
+    } else if transmitting {
+        "TX;"
     } else {
-        if transmitting {
-            "TX;"
-        } else {
-            "RX;"
-        }
+        "RX;"
     }
 }
 

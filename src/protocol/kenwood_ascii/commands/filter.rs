@@ -365,7 +365,7 @@ fn decode_sh(
         table.neutral_center_hz,
         Some(high),
         None,
-        &table.low_values,
+        table.low_values,
     );
 
     Ok(vec![
@@ -401,7 +401,7 @@ fn decode_sl(
         table.neutral_center_hz,
         None,
         Some(low),
-        &table.high_values,
+        table.high_values,
     );
 
     Ok(vec![

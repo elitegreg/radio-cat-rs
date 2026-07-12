@@ -402,11 +402,13 @@ mod tests {
         assert_eq!(xit.frames[0].as_str(), "XT1;");
 
         let k4 = profile_by_id("elecraft-k4").unwrap();
-        let mut split_state = RadioState::default();
-        split_state.tx = Some(crate::TransmitterState {
-            split: Some(true),
-            ..crate::TransmitterState::default()
-        });
+        let split_state = RadioState {
+            tx: Some(crate::TransmitterState {
+                split: Some(true),
+                ..crate::TransmitterState::default()
+            }),
+            ..RadioState::default()
+        };
 
         let targeted = encode(
             k4,
@@ -566,11 +568,13 @@ mod tests {
         assert_eq!(encoded.frames[0].as_str(), "RO-0321;");
 
         let k4 = profile_by_id("elecraft-k4").unwrap();
-        let mut split_state = RadioState::default();
-        split_state.tx = Some(crate::TransmitterState {
-            split: Some(true),
-            ..crate::TransmitterState::default()
-        });
+        let split_state = RadioState {
+            tx: Some(crate::TransmitterState {
+                split: Some(true),
+                ..crate::TransmitterState::default()
+            }),
+            ..RadioState::default()
+        };
 
         let encoded = encode(
             k4,

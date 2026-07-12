@@ -624,6 +624,14 @@ struct IcomCivRuntime {
     poll_index: usize,
 }
 
+struct IcomWaitRequest<'a> {
+    default_source: UpdateSource,
+    expected: Option<&'a IcomResponseMatcher>,
+    echo: Option<&'a [u8]>,
+    receiver_hint: Option<ReceiverPath>,
+    ctx: &'a mut dyn StateSink,
+}
+
 impl IcomCivRuntime {
     fn new(profile: &'static IcomCivProfile, options: IcomCivOptions) -> Self {
         Self {
@@ -680,11 +688,13 @@ impl IcomCivRuntime {
                     .process_incoming_with_expected(
                         transport,
                         wait_timeout,
-                        default_source,
-                        Some(&matcher),
-                        Some(frame.as_bytes()),
-                        response_receiver,
-                        ctx,
+                        IcomWaitRequest {
+                            default_source,
+                            expected: Some(&matcher),
+                            echo: Some(frame.as_bytes()),
+                            receiver_hint: response_receiver,
+                            ctx,
+                        },
                     )
                     .await?
                 {
@@ -714,12 +724,15 @@ impl IcomCivRuntime {
         &mut self,
         transport: &mut dyn CatTransport,
         wait_timeout: Duration,
-        default_source: UpdateSource,
-        expected: Option<&IcomResponseMatcher>,
-        echo: Option<&[u8]>,
-        receiver_hint: Option<crate::ReceiverPath>,
-        ctx: &mut dyn StateSink,
+        request: IcomWaitRequest<'_>,
     ) -> Result<IcomWaitOutcome> {
+        let IcomWaitRequest {
+            default_source,
+            expected,
+            echo,
+            receiver_hint,
+            ctx,
+        } = request;
         let deadline = Instant::now() + wait_timeout;
         let mut saw_frames = false;
 
@@ -1142,11 +1155,13 @@ impl RadioSession for IcomCivRuntime {
             self.process_incoming_with_expected(
                 transport,
                 wait_timeout,
-                default_source,
-                None,
-                None,
-                None,
-                ctx,
+                IcomWaitRequest {
+                    default_source,
+                    expected: None,
+                    echo: None,
+                    receiver_hint: None,
+                    ctx,
+                },
             )
             .await?,
             IcomWaitOutcome::Matched
