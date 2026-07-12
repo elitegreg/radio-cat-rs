@@ -731,6 +731,12 @@ fn decode_auto_notch(
         }
         "NT" => {
             let enabled = if profile.id() == "kenwood-ts590" {
+                if payload.len() != 1 {
+                    return Err(RadioError::Decode {
+                        command: "NT",
+                        message: format!("expected NT payload len 1, got {}", payload.len()),
+                    });
+                }
                 parse_u8("NT", &payload[0..1])? > 0
             } else {
                 parse_flag("NT", payload)?
@@ -1069,6 +1075,17 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(an.frames[0].as_str(), "BC01;");
+    }
+
+    #[test]
+    fn malformed_auto_notch_frames_return_errors_without_panicking() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        for frame in ["NT;", "NT ;"] {
+            let frame = AsciiFrame::new(frame).unwrap();
+            let result = std::panic::catch_unwind(|| decode(profile, &frame));
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_err());
+        }
     }
 
     #[test]

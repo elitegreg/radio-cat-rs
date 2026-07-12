@@ -603,16 +603,14 @@ fn parse_poll_interval(value: &str) -> Result<Duration> {
         });
     }
 
-    let interval = Duration::from_secs_f64(seconds);
-    if !(IcomCivOptions::MIN_POLL_INTERVAL..=IcomCivOptions::MAX_POLL_INTERVAL).contains(&interval)
-    {
+    if !(0.05..=5.0).contains(&seconds) {
         return Err(RadioError::InvalidValue {
             field: "poll_interval",
             message: "expected value from 0.05 through 5 seconds".to_string(),
         });
     }
 
-    Ok(interval)
+    Ok(Duration::from_secs_f64(seconds))
 }
 
 #[cfg(test)]
@@ -650,6 +648,18 @@ mod tests {
         let profile = profile_by_id("icom-ic705").unwrap();
         assert!(IcomCivOptions::parse(profile, "poll_interval=0.01").is_err());
         assert!(IcomCivOptions::parse(profile, "poll_interval=6").is_err());
+    }
+
+    #[test]
+    fn options_reject_invalid_poll_intervals_without_panicking() {
+        let profile = profile_by_id("icom-ic705").unwrap();
+        for value in ["-1", "1e100", "NaN", "inf"] {
+            let result = std::panic::catch_unwind(|| {
+                IcomCivOptions::parse(profile, &format!("poll_interval={value}"))
+            });
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_err());
+        }
     }
 
     #[test]

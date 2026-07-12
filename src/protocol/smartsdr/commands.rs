@@ -722,7 +722,7 @@ fn parse_frequency_mhz(value: &str) -> Result<Frequency> {
         command: "RF_frequency",
         message: error.to_string(),
     })?;
-    Ok(Frequency::from_decimal_mhz(mhz))
+    Frequency::from_decimal_mhz(mhz)
 }
 
 fn parse_filter_edge(value: &str) -> Result<i16> {
