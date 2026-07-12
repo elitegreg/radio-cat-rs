@@ -763,11 +763,26 @@ impl IcomCivRuntime {
             };
 
             for frame in frames {
-                saw_frames = true;
                 if echo.is_some_and(|sent| frame.is_echo_of(sent)) {
                     tracing::trace!(driver = %self.profile.id(), rx_bytes = ?frame.as_bytes(), "discarding ICOM self-echo frame");
                     continue;
                 }
+
+                if frame.to() != self.options.controller_address
+                    || frame.from() != self.options.radio_address
+                    || frame.to() == icom_civ::BROADCAST_ADDRESS
+                    || frame.from() == icom_civ::BROADCAST_ADDRESS
+                {
+                    tracing::trace!(
+                        driver = %self.profile.id(),
+                        rx_bytes = ?frame.as_bytes(),
+                        expected_to = self.options.controller_address,
+                        expected_from = self.options.radio_address,
+                        "discarding ICOM frame with unexpected address"
+                    );
+                    continue;
+                }
+                saw_frames = true;
 
                 if let Some(status) = icom_civ::ProtocolStatus::parse(&frame) {
                     tracing::debug!(
@@ -800,7 +815,11 @@ impl IcomCivRuntime {
 
                 let mut matched_expected = false;
                 if let Some(expected) = expected {
-                    if expected.matches(&frame) {
+                    if expected.matches_from(
+                        &frame,
+                        self.options.controller_address,
+                        self.options.radio_address,
+                    ) {
                         tracing::debug!(
                             driver = %self.profile.id(),
                             rx_bytes = ?frame.as_bytes(),

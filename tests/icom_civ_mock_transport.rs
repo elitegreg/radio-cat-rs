@@ -269,6 +269,56 @@ async fn civ_negative_ack_leaves_accepted_state_unchanged() {
 }
 
 #[tokio::test]
+async fn civ_ignores_wrong_address_response_and_ack() {
+    let transport = SharedMockTransport::default();
+    transport
+        .push_read(response([0x25, 0x00, 0x00, 0x40, 0x07, 0x14, 0x00]))
+        .await;
+    let radio = Radio::connect_with_transport(
+        RadioConfig::new("icom-ic705").with_options("poll_interval=5"),
+        transport.clone(),
+    )
+    .await
+    .unwrap();
+    wait_for(Duration::from_secs(2), || {
+        let transport = transport.clone();
+        async move { transport.written_len().await > 0 }
+    })
+    .await
+    .unwrap();
+
+    let before = radio.latest_state().main_rx.frequency;
+    transport
+        .push_read(
+            CivFrame::new(0xe0, 0xb2, [0x25, 0x00, 0x00, 0x00, 0x03, 0x07, 0x00])
+                .unwrap()
+                .as_bytes()
+                .to_vec(),
+        )
+        .await;
+    transport
+        .push_read(
+            CivFrame::new(0xe0, 0xb2, [0xfb])
+                .unwrap()
+                .as_bytes()
+                .to_vec(),
+        )
+        .await;
+    transport.push_read(response([0xfb])).await;
+
+    radio
+        .set_main_frequency(Frequency::from_hz(7_030_000))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        radio.latest_state().main_rx.frequency,
+        Some(Frequency::from_hz(7_030_000))
+    );
+    assert_ne!(radio.latest_state().main_rx.frequency, before);
+}
+
+#[tokio::test]
 async fn write_failure_leaves_accepted_state_unchanged() {
     let transport = SharedMockTransport::default();
     transport

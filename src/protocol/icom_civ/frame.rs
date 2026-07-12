@@ -1,5 +1,9 @@
 use crate::{error::RadioError, Result};
 
+/// CI-V's reserved broadcast address. Broadcast frames are never transaction
+/// responses because they do not identify this controller/radio pair.
+pub const BROADCAST_ADDRESS: u8 = 0x00;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CivFrame {
     bytes: Vec<u8>,
@@ -126,6 +130,15 @@ impl ResponseMatcher {
         }
     }
 
+    /// Match a response payload and its CI-V endpoint pair.
+    pub fn matches_from(&self, frame: &CivFrame, controller: u8, radio: u8) -> bool {
+        frame.to() == controller
+            && frame.from() == radio
+            && frame.to() != BROADCAST_ADDRESS
+            && frame.from() != BROADCAST_ADDRESS
+            && self.matches(frame)
+    }
+
     pub fn expects_response(&self) -> bool {
         !matches!(self, Self::None)
     }
@@ -226,5 +239,16 @@ mod tests {
 
         let response = CivFrame::new(0xe0, 0xa4, [0x26, 0x01, 0x01, 0x00, 0x03]).unwrap();
         assert!(ResponseMatcher::PayloadPrefix(vec![0x26, 0x01]).matches(&response));
+        assert!(ResponseMatcher::Ack.matches_from(&ack, 0xe0, 0xa4));
+        assert!(!ResponseMatcher::Ack.matches_from(
+            &CivFrame::new(0xe0, 0xb2, [0xfb]).unwrap(),
+            0xe0,
+            0xa4
+        ));
+        assert!(!ResponseMatcher::Ack.matches_from(
+            &CivFrame::new(0x00, 0xa4, [0xfb]).unwrap(),
+            0xe0,
+            0xa4
+        ));
     }
 }
