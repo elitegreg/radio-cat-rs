@@ -16,7 +16,7 @@ use super::{AsciiFrame, CommandPriority, ResponseMatcher};
 pub struct EncodedCommand {
     pub frames: Vec<AsciiFrame>,
     pub matcher: ResponseMatcher,
-    pub optimistic: Vec<StatePatch>,
+    pub completion_patches: Vec<StatePatch>,
     pub priority: CommandPriority,
 }
 
@@ -24,13 +24,13 @@ impl EncodedCommand {
     pub fn new(
         frames: Vec<AsciiFrame>,
         matcher: ResponseMatcher,
-        optimistic: Vec<StatePatch>,
+        completion_patches: Vec<StatePatch>,
         priority: CommandPriority,
     ) -> Self {
         Self {
             frames,
             matcher,
-            optimistic,
+            completion_patches,
             priority,
         }
     }

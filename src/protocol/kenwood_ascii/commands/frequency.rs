@@ -346,7 +346,7 @@ mod tests {
 
         assert_eq!(encoded.frames[0].as_str(), "FB00007074000;");
         assert_eq!(
-            encoded.optimistic,
+            encoded.completion_patches,
             vec![
                 StatePatch::SubRxFrequency(Frequency::from_hz(7_074_000)),
                 StatePatch::TxFrequency(Frequency::from_hz(7_074_000)),
@@ -446,7 +446,7 @@ mod tests {
         .unwrap();
         assert_eq!(main_set.frames[0].as_str(), "FB014100000;");
         assert_eq!(
-            main_set.optimistic[0],
+            main_set.completion_patches[0],
             StatePatch::MainRxFrequency(Frequency::from_hz(14_100_000))
         );
 
@@ -500,7 +500,7 @@ mod tests {
         .unwrap();
         assert_eq!(encoded.frames[0].as_str(), "FB00007125000;");
         assert_eq!(
-            encoded.optimistic[0],
+            encoded.completion_patches[0],
             StatePatch::MainRxFrequency(Frequency::from_hz(7_125_000))
         );
     }

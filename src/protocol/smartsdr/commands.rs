@@ -10,14 +10,14 @@ use super::SmartSdrProfile;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedCommand {
     pub commands: Vec<String>,
-    pub optimistic: Vec<StatePatch>,
+    pub completion_patches: Vec<StatePatch>,
 }
 
 impl EncodedCommand {
-    pub fn new(commands: Vec<String>, optimistic: Vec<StatePatch>) -> Self {
+    pub fn new(commands: Vec<String>, completion_patches: Vec<StatePatch>) -> Self {
         Self {
             commands,
-            optimistic,
+            completion_patches,
         }
     }
 }
@@ -905,7 +905,7 @@ mod tests {
 
         assert_eq!(encoded.commands, vec!["filt 0 100 2900"]);
         assert_eq!(
-            encoded.optimistic,
+            encoded.completion_patches,
             vec![
                 StatePatch::MainRxFilterBandwidth(2_800),
                 StatePatch::MainRxFilterShift(1_500),
@@ -933,7 +933,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(encoded.commands, vec!["cwx wpm 32"]);
-        assert_eq!(encoded.optimistic, vec![StatePatch::KeyerSpeed(32)]);
+        assert_eq!(encoded.completion_patches, vec![StatePatch::KeyerSpeed(32)]);
     }
 
     #[test]
@@ -948,7 +948,7 @@ mod tests {
 
         assert_eq!(encoded.commands, vec!["transmit set rfpower=50"]);
         assert_eq!(
-            encoded.optimistic,
+            encoded.completion_patches,
             vec![StatePatch::TxPower(Power::from_watts(50))]
         );
     }

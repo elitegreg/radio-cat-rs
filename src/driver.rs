@@ -14,6 +14,18 @@ pub struct DriverDescriptor {
     pub description: &'static str,
 }
 
+/// The furthest protocol stage reached by a successful command.
+///
+/// `Written` means the command was sent without a protocol acknowledgement,
+/// `Accepted` means the radio acknowledged it, and `Observed` means a decoded
+/// radio response established the resulting state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandCompletion {
+    Written,
+    Accepted,
+    Observed,
+}
+
 pub(crate) trait StateSink: Send {
     fn state(&self) -> &RadioState;
     fn publish_patches(&mut self, patches: Vec<StatePatch>, source: UpdateSource);
@@ -42,7 +54,7 @@ pub(crate) trait RadioSession: Send {
         command: RadioCommand,
         state_before: &RadioState,
         sink: &mut dyn StateSink,
-    ) -> Result<()>;
+    ) -> Result<CommandCompletion>;
 
     async fn process_incoming(
         &mut self,

@@ -12,7 +12,7 @@ pub struct EncodedCommand {
     pub frames: Vec<CivFrame>,
     pub matcher: ResponseMatcher,
     pub response_receiver: Option<ReceiverPath>,
-    pub optimistic: Vec<StatePatch>,
+    pub completion_patches: Vec<StatePatch>,
 }
 
 impl EncodedCommand {
@@ -20,13 +20,13 @@ impl EncodedCommand {
         frames: Vec<CivFrame>,
         matcher: ResponseMatcher,
         response_receiver: Option<ReceiverPath>,
-        optimistic: Vec<StatePatch>,
+        completion_patches: Vec<StatePatch>,
     ) -> Self {
         Self {
             frames,
             matcher,
             response_receiver,
-            optimistic,
+            completion_patches,
         }
     }
 }
@@ -1388,7 +1388,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(xit.frames, both.frames);
-        assert_eq!(xit.optimistic, both.optimistic);
+        assert_eq!(xit.completion_patches, both.completion_patches);
     }
 
     #[test]

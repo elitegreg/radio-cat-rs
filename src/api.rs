@@ -251,6 +251,10 @@ impl Radio {
         drivers::supported_drivers()
     }
 
+    /// Submit a command and wait until its protocol session reaches its
+    /// supported completion stage: written, acknowledged, or decoded state.
+    /// A successful call never publishes a predicted state before that stage;
+    /// use state updates to observe the resulting accepted radio state.
     pub async fn command(&self, command: RadioCommand) -> Result<()> {
         tracing::debug!(driver = %self.driver.id, ?command, "queueing radio command");
         let result = send_command(&self.command_tx, command).await;
@@ -670,7 +674,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transportless_native_session_validates_and_applies_optimistic_state() {
+    async fn transportless_native_session_validates_and_applies_local_state() {
         let radio = Radio::connect(RadioConfig::new("ELECRAFT-K2"))
             .await
             .unwrap();

@@ -16,6 +16,7 @@ struct SharedMockTransport {
 struct MockInner {
     written_frames: Vec<Vec<u8>>,
     read_chunks: VecDeque<Vec<u8>>,
+    fail_writes: bool,
 }
 
 impl SharedMockTransport {
@@ -30,12 +31,20 @@ impl SharedMockTransport {
     async fn written_len(&self) -> usize {
         self.inner.lock().await.written_frames.len()
     }
+
+    async fn set_fail_writes(&self, fail_writes: bool) {
+        self.inner.lock().await.fail_writes = fail_writes;
+    }
 }
 
 #[async_trait]
 impl CatTransport for SharedMockTransport {
     async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
-        self.inner.lock().await.written_frames.push(bytes.to_vec());
+        let mut inner = self.inner.lock().await;
+        if inner.fail_writes {
+            return Err(RadioError::Transport("injected write failure".to_string()));
+        }
+        inner.written_frames.push(bytes.to_vec());
         Ok(())
     }
 
@@ -216,6 +225,71 @@ async fn ic705_actor_handles_startup_async_errors_and_command_ack() {
         .await
         .iter()
         .any(|frame| frame == &set_frequency));
+}
+
+#[tokio::test]
+async fn civ_negative_ack_leaves_accepted_state_unchanged() {
+    let transport = SharedMockTransport::default();
+    let radio = Radio::connect_with_transport(
+        RadioConfig::new("icom-ic705").with_options("poll_interval=5"),
+        transport.clone(),
+    )
+    .await
+    .unwrap();
+
+    wait_for(Duration::from_secs(2), || {
+        let transport = transport.clone();
+        async move { transport.written_len().await > 0 }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let before = radio.latest_state().main_rx.frequency;
+    transport.push_read(response([0xfa])).await;
+
+    let error = radio
+        .set_main_frequency(Frequency::from_hz(7_030_000))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        RadioError::CommandRejected {
+            protocol: "icom-civ",
+            reason: "negative acknowledgement",
+        }
+    ));
+    assert_eq!(radio.latest_state().main_rx.frequency, before);
+}
+
+#[tokio::test]
+async fn write_failure_leaves_accepted_state_unchanged() {
+    let transport = SharedMockTransport::default();
+    let radio = Radio::connect_with_transport(
+        RadioConfig::new("icom-ic705").with_options("poll_interval=5"),
+        transport.clone(),
+    )
+    .await
+    .unwrap();
+
+    wait_for(Duration::from_secs(2), || {
+        let transport = transport.clone();
+        async move { transport.written_len().await > 0 }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let before = radio.latest_state().main_rx.frequency;
+    transport.set_fail_writes(true).await;
+    let error = radio
+        .set_main_frequency(Frequency::from_hz(7_030_000))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, RadioError::Transport(_)));
+    assert_eq!(radio.latest_state().main_rx.frequency, before);
 }
 
 fn command<const N: usize>(payload: [u8; N]) -> Vec<u8> {

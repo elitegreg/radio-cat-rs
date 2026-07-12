@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use tokio::time::{timeout, Duration, Instant};
 
 use crate::{
-    driver::{DriverDescriptor, RadioSession, StateSink},
+    driver::{CommandCompletion, DriverDescriptor, RadioSession, StateSink},
     error::{RadioError, Result},
     protocol::{
         icom_civ::{
@@ -79,7 +79,12 @@ impl KenwoodAsciiRuntime {
         default_source: UpdateSource,
         wait_timeout: Duration,
         ctx: &mut dyn StateSink,
-    ) -> Result<()> {
+    ) -> Result<CommandCompletion> {
+        let completion = if matcher_expects_response(&encoded.matcher) {
+            CommandCompletion::Observed
+        } else {
+            CommandCompletion::Written
+        };
         let frame_count = encoded.frames.len();
         for (index, frame) in encoded.frames.into_iter().enumerate() {
             let is_last = index + 1 == frame_count;
@@ -112,7 +117,7 @@ impl KenwoodAsciiRuntime {
             }
         }
 
-        Ok(())
+        Ok(completion)
     }
 
     async fn process_incoming_with_expected(
@@ -168,7 +173,17 @@ impl KenwoodAsciiRuntime {
                         "received CAT protocol error frame"
                     );
                     if expected.is_some() {
-                        return Ok(false);
+                        let reason = match protocol_error {
+                            kenwood_ascii::ProtocolErrorFrame::Syntax { .. } => "syntax error",
+                            kenwood_ascii::ProtocolErrorFrame::Busy => "radio busy",
+                            kenwood_ascii::ProtocolErrorFrame::Communication => {
+                                "communication failure"
+                            }
+                        };
+                        return Err(RadioError::CommandRejected {
+                            protocol: "kenwood-ascii",
+                            reason,
+                        });
                     }
                     continue;
                 }
@@ -405,9 +420,9 @@ impl RadioSession for KenwoodAsciiRuntime {
         command: RadioCommand,
         state_before: &RadioState,
         ctx: &mut dyn StateSink,
-    ) -> Result<()> {
+    ) -> Result<CommandCompletion> {
         if matches!(command, RadioCommand::Refresh) {
-            return Ok(());
+            return Ok(CommandCompletion::Observed);
         }
 
         let Some(encoded) = encode_kenwood_command(
@@ -423,10 +438,9 @@ impl RadioSession for KenwoodAsciiRuntime {
             });
         };
 
-        ctx.publish_patches(encoded.optimistic.clone(), UpdateSource::Optimistic);
-
         let Some(transport) = transport else {
-            return Ok(());
+            ctx.publish_patches(encoded.completion_patches, UpdateSource::CommandResponse);
+            return Ok(CommandCompletion::Accepted);
         };
 
         if command_matches_state(&command, state_before) {
@@ -475,7 +489,7 @@ impl RadioSession for KenwoodAsciiRuntime {
                     ?command,
                     "validated current state; skipping Kenwood setter"
                 );
-                return Ok(());
+                return Ok(CommandCompletion::Observed);
             }
         }
 
@@ -487,6 +501,8 @@ impl RadioSession for KenwoodAsciiRuntime {
             "dispatching command over transport"
         );
 
+        let completion_patches = encoded.completion_patches.clone();
+
         match self
             .send_encoded(
                 transport,
@@ -497,7 +513,12 @@ impl RadioSession for KenwoodAsciiRuntime {
             )
             .await
         {
-            Ok(()) => Ok(()),
+            Ok(completion) => {
+                if completion == CommandCompletion::Written {
+                    ctx.publish_patches(completion_patches, UpdateSource::CommandResponse);
+                }
+                Ok(completion)
+            }
             Err(error @ RadioError::Timeout { .. }) => {
                 tracing::warn!(
                     driver = %self.profile.id(),
@@ -507,7 +528,7 @@ impl RadioSession for KenwoodAsciiRuntime {
                 );
                 self.recover_timeout(transport, &command, state_before, ctx)
                     .await;
-                Ok(())
+                Err(error)
             }
             Err(error) => Err(error),
         }
@@ -599,13 +620,21 @@ impl IcomCivRuntime {
         default_source: UpdateSource,
         wait_timeout: Duration,
         ctx: &mut dyn StateSink,
-    ) -> Result<()> {
+    ) -> Result<CommandCompletion> {
         let icom_civ::EncodedCommand {
             frames,
             matcher,
             response_receiver,
             ..
         } = encoded;
+
+        let completion = match &matcher {
+            IcomResponseMatcher::None => CommandCompletion::Written,
+            IcomResponseMatcher::Ack => CommandCompletion::Accepted,
+            IcomResponseMatcher::PayloadPrefix(_) | IcomResponseMatcher::OneOf(_) => {
+                CommandCompletion::Observed
+            }
+        };
 
         for frame in frames {
             tracing::debug!(
@@ -637,7 +666,10 @@ impl IcomCivRuntime {
                         });
                     }
                     IcomWaitOutcome::Rejected => {
-                        return Err(RadioError::protocol_syntax(Some("icom-civ")));
+                        return Err(RadioError::CommandRejected {
+                            protocol: "icom-civ",
+                            reason: "negative acknowledgement",
+                        });
                     }
                     IcomWaitOutcome::Collision => {
                         return Err(RadioError::ProtocolCommunication);
@@ -646,7 +678,7 @@ impl IcomCivRuntime {
             }
         }
 
-        Ok(())
+        Ok(completion)
     }
 
     async fn process_incoming_with_expected(
@@ -914,9 +946,9 @@ impl RadioSession for IcomCivRuntime {
         command: RadioCommand,
         state_before: &RadioState,
         ctx: &mut dyn StateSink,
-    ) -> Result<()> {
+    ) -> Result<CommandCompletion> {
         if matches!(command, RadioCommand::Refresh) {
-            return Ok(());
+            return Ok(CommandCompletion::Observed);
         }
 
         let Some(encoded) = icom_civ::encode(self.profile, self.options, &command, state_before)?
@@ -926,10 +958,9 @@ impl RadioSession for IcomCivRuntime {
             });
         };
 
-        ctx.publish_patches(encoded.optimistic.clone(), UpdateSource::Optimistic);
-
         let Some(transport) = transport else {
-            return Ok(());
+            ctx.publish_patches(encoded.completion_patches, UpdateSource::CommandResponse);
+            return Ok(CommandCompletion::Accepted);
         };
 
         if command_matches_state(&command, state_before) {
@@ -978,7 +1009,7 @@ impl RadioSession for IcomCivRuntime {
                     ?command,
                     "validated current state; skipping ICOM setter"
                 );
-                return Ok(());
+                return Ok(CommandCompletion::Observed);
             }
         }
 
@@ -990,14 +1021,24 @@ impl RadioSession for IcomCivRuntime {
             "dispatching ICOM command over transport"
         );
 
-        self.send_encoded(
-            transport,
-            encoded,
-            UpdateSource::CommandResponse,
-            COMMAND_RESPONSE_TIMEOUT,
-            ctx,
-        )
-        .await
+        let completion_patches = encoded.completion_patches.clone();
+
+        let completion = self
+            .send_encoded(
+                transport,
+                encoded,
+                UpdateSource::CommandResponse,
+                COMMAND_RESPONSE_TIMEOUT,
+                ctx,
+            )
+            .await?;
+        if matches!(
+            completion,
+            CommandCompletion::Written | CommandCompletion::Accepted
+        ) {
+            ctx.publish_patches(completion_patches, UpdateSource::CommandResponse);
+        }
+        Ok(completion)
     }
 
     async fn process_incoming(
@@ -1088,10 +1129,10 @@ impl SmartSdrRuntime {
         default_source: UpdateSource,
         wait_timeout: Duration,
         ctx: &mut dyn StateSink,
-    ) -> Result<()> {
+    ) -> Result<CommandCompletion> {
         let smartsdr::EncodedCommand {
             commands,
-            optimistic,
+            completion_patches,
         } = encoded;
 
         for command in commands {
@@ -1099,11 +1140,11 @@ impl SmartSdrRuntime {
                 .await?;
         }
 
-        if !optimistic.is_empty() {
-            ctx.publish_patches(optimistic, default_source);
+        if !completion_patches.is_empty() {
+            ctx.publish_patches(completion_patches, default_source);
         }
 
-        Ok(())
+        Ok(CommandCompletion::Accepted)
     }
 
     async fn send_command_body(
@@ -1408,9 +1449,9 @@ impl RadioSession for SmartSdrRuntime {
         command: RadioCommand,
         state_before: &RadioState,
         ctx: &mut dyn StateSink,
-    ) -> Result<()> {
+    ) -> Result<CommandCompletion> {
         if matches!(command, RadioCommand::Refresh) {
-            return Ok(());
+            return Ok(CommandCompletion::Observed);
         }
 
         let Some(encoded) = smartsdr::encode(&self.profile, &command, state_before)? else {
@@ -1432,7 +1473,7 @@ impl RadioSession for SmartSdrRuntime {
                 ?command,
                 "validated current state; skipping SmartSDR setter"
             );
-            return Ok(());
+            return Ok(CommandCompletion::Observed);
         }
 
         self.send_encoded(
@@ -2037,7 +2078,61 @@ fn tx_receiver_for_validation(state: &RadioState) -> ReceiverPath {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{protocol::kenwood_ascii::profile_by_id, Mode, StateReducer};
+    use async_trait::async_trait;
+    use std::collections::VecDeque;
+
+    use crate::{
+        protocol::kenwood_ascii::profile_by_id, CatTransport, Frequency, Mode, StateReducer,
+    };
+
+    struct TestSink {
+        reducer: StateReducer,
+        updates: Vec<(Vec<StatePatch>, UpdateSource)>,
+    }
+
+    impl TestSink {
+        fn new(state: RadioState) -> Self {
+            Self {
+                reducer: StateReducer::new(state),
+                updates: Vec::new(),
+            }
+        }
+    }
+
+    impl StateSink for TestSink {
+        fn state(&self) -> &RadioState {
+            self.reducer.state()
+        }
+
+        fn publish_patches(&mut self, patches: Vec<StatePatch>, source: UpdateSource) {
+            self.reducer.apply_patches(patches.clone());
+            self.updates.push((patches, source));
+        }
+    }
+
+    #[derive(Default)]
+    struct TestTransport {
+        reads: VecDeque<Vec<u8>>,
+    }
+
+    #[async_trait]
+    impl CatTransport for TestTransport {
+        async fn write_all(&mut self, _bytes: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
+            let Some(chunk) = self.reads.pop_front() else {
+                return Ok(0);
+            };
+            buf[..chunk.len()].copy_from_slice(&chunk);
+            Ok(chunk.len())
+        }
+
+        async fn flush(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn ftdx10_auto_info_sequence_routes_md_as_main_and_sub() {
@@ -2069,5 +2164,65 @@ mod tests {
                 Some(expected_sub)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn kenwood_rejection_leaves_accepted_state_unchanged() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut runtime =
+            KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
+        let mut transport = TestTransport {
+            reads: VecDeque::from([b"?;".to_vec()]),
+        };
+        let mut sink = TestSink::new(RadioState::default());
+        let command = RadioCommand::SetReceiverFrequency {
+            receiver: ReceiverPath::Main,
+            frequency: Frequency::from_hz(7_030_000),
+        };
+        let state_before = sink.state().clone();
+
+        let error = runtime
+            .execute(Some(&mut transport), command, &state_before, &mut sink)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RadioError::CommandRejected {
+                protocol: "kenwood-ascii",
+                reason: "syntax error",
+            }
+        ));
+        assert_eq!(sink.state().main_rx.frequency, None);
+        assert!(sink.updates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn kenwood_observed_response_wins_over_requested_value() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut runtime =
+            KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
+        let mut transport = TestTransport {
+            reads: VecDeque::from([b"FA00007031000;".to_vec()]),
+        };
+        let mut sink = TestSink::new(RadioState::default());
+        let command = RadioCommand::SetReceiverFrequency {
+            receiver: ReceiverPath::Main,
+            frequency: Frequency::from_hz(7_030_000),
+        };
+        let state_before = sink.state().clone();
+
+        let completion = runtime
+            .execute(Some(&mut transport), command, &state_before, &mut sink)
+            .await
+            .unwrap();
+
+        assert_eq!(completion, CommandCompletion::Observed);
+        assert_eq!(
+            sink.state().main_rx.frequency,
+            Some(Frequency::from_hz(7_031_000))
+        );
+        assert_eq!(sink.updates.len(), 1);
+        assert_eq!(sink.updates[0].1, UpdateSource::CommandResponse);
     }
 }

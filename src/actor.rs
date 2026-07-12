@@ -6,7 +6,7 @@ use tokio::{
 };
 
 use crate::{
-    driver::{RadioSession, StateSink},
+    driver::{CommandCompletion, RadioSession, StateSink},
     error::{RadioError, Result},
     keyer_emulation,
     transport::BoxedCatTransport,
@@ -119,7 +119,8 @@ impl RadioTask {
         let command_for_emulation = command.clone();
         let state_before = self.reducer.state().clone();
 
-        self.execute_session_command(command, &state_before).await?;
+        let completion = self.execute_session_command(command, &state_before).await?;
+        tracing::debug!(?completion, "radio task command completed");
         self.apply_emulated_keyer_command(&command_for_emulation);
 
         Ok(())
@@ -230,7 +231,7 @@ impl RadioTask {
         &mut self,
         command: RadioCommand,
         state_before: &RadioState,
-    ) -> Result<()> {
+    ) -> Result<CommandCompletion> {
         let mut session = self.session.take().expect("session is present");
         let mut transport = self.transport.take();
         let result = match transport.as_mut() {
@@ -448,8 +449,8 @@ mod tests {
             _command: RadioCommand,
             _current_state: &RadioState,
             _sink: &mut dyn StateSink,
-        ) -> Result<()> {
-            Ok(())
+        ) -> Result<CommandCompletion> {
+            Ok(CommandCompletion::Accepted)
         }
 
         async fn process_incoming(

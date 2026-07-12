@@ -133,7 +133,6 @@ pub enum UpdateSource {
     Poll,
     CommandResponse,
     ManualRefresh,
-    Optimistic,
     Emulated,
 }
 

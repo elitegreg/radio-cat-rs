@@ -10,6 +10,12 @@ pub enum RadioError {
     #[error("unsupported capability: {capability}")]
     UnsupportedCapability { capability: &'static str },
 
+    #[error("radio rejected command via {protocol}: {reason}")]
+    CommandRejected {
+        protocol: &'static str,
+        reason: &'static str,
+    },
+
     #[error("invalid value for {field}: {message}")]
     InvalidValue {
         field: &'static str,

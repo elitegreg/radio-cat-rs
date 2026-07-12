@@ -997,10 +997,10 @@ mod tests {
         .unwrap();
         assert_eq!(encoded.frames[0].as_str(), "MD1C;");
         assert!(encoded
-            .optimistic
+            .completion_patches
             .contains(&StatePatch::SubRxMode(Mode::DataUsb)));
         assert!(encoded
-            .optimistic
+            .completion_patches
             .contains(&StatePatch::TxMode(Mode::DataUsb)));
 
         let ft991 = profile_by_id("yaesu-ft991").unwrap();

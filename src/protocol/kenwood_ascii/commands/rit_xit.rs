@@ -475,7 +475,7 @@ mod tests {
 
         assert_eq!(rit.frames, xit.frames);
         assert_eq!(rit.frames, both.frames);
-        assert_eq!(rit.optimistic, both.optimistic);
+        assert_eq!(rit.completion_patches, both.completion_patches);
     }
 
     #[test]

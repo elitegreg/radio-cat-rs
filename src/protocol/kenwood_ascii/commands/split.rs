@@ -450,7 +450,7 @@ mod tests {
 
         assert_eq!(encoded.frames[0].as_str(), "FT0;");
         assert_eq!(
-            encoded.optimistic,
+            encoded.completion_patches,
             vec![
                 StatePatch::Split(true),
                 StatePatch::TxFrequency(Frequency::from_hz(14_074_000)),

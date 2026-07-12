@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::{
     command::{RadioCommand, ReceiverPath},
-    driver::{DriverDescriptor, RadioSession, StateSink},
+    driver::{CommandCompletion, DriverDescriptor, RadioSession, StateSink},
     error::Result,
     transport::CatTransport,
     update::StatePatch,
@@ -69,7 +69,7 @@ impl RadioSession for DummyRadioSession {
         command: RadioCommand,
         _state_before: &RadioState,
         sink: &mut dyn StateSink,
-    ) -> Result<()> {
+    ) -> Result<CommandCompletion> {
         tracing::debug!(?command, "dummy session handling command");
         let is_refresh = matches!(command, RadioCommand::Refresh);
         let patches = match command {
@@ -155,7 +155,7 @@ impl RadioSession for DummyRadioSession {
             UpdateSource::CommandResponse
         };
         sink.publish_patches(patches, source);
-        Ok(())
+        Ok(CommandCompletion::Accepted)
     }
 
     async fn process_incoming(
