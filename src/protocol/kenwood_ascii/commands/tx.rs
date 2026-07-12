@@ -216,7 +216,7 @@ fn encode_k4_power(power: Power) -> Result<PowerCommandEncoding> {
                 Ok(PowerCommandEncoding::K4Milli {
                     deci_milliwatts: value * 10,
                 })
-            } else if value % 100 == 0 && (100..=10_000).contains(&value) {
+            } else if value.is_multiple_of(100) && (100..=10_000).contains(&value) {
                 Ok(PowerCommandEncoding::K4Low {
                     deci_watts: value / 100,
                 })
@@ -230,7 +230,7 @@ fn encode_k4_power(power: Power) -> Result<PowerCommandEncoding> {
         }
         PowerUnit::Microwatts => {
             let value = power.value();
-            if value % 100 != 0 || !(100..=10_000).contains(&value) {
+            if !value.is_multiple_of(100) || !(100..=10_000).contains(&value) {
                 return Err(RadioError::InvalidValue {
                     field: "tx.power",
                     message: "K4 microwatt inputs must fit 0.1..=10 mW in 0.1 mW steps".to_string(),

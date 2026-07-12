@@ -9,17 +9,17 @@ use crate::error::Result;
 
 pub type BoxedCatTransport = Box<dyn CatTransport>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum TransportConfig {
+    #[default]
     None,
-    Serial { path: String, baud_rate: u32 },
-    Tcp { address: String },
-}
-
-impl Default for TransportConfig {
-    fn default() -> Self {
-        Self::None
-    }
+    Serial {
+        path: String,
+        baud_rate: u32,
+    },
+    Tcp {
+        address: String,
+    },
 }
 
 impl TransportConfig {

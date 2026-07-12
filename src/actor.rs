@@ -289,13 +289,11 @@ impl RadioTask {
                 self.emulated_keyer_done_at = Some(start_at + duration);
                 self.publish_patches(vec![StatePatch::KeyerSending(true)], UpdateSource::Emulated);
             }
-            RadioCommand::StopCw => {
-                if self.emulated_keyer_done_at.take().is_some() {
-                    self.publish_patches(
-                        vec![StatePatch::KeyerSending(false)],
-                        UpdateSource::Emulated,
-                    );
-                }
+            RadioCommand::StopCw if self.emulated_keyer_done_at.take().is_some() => {
+                self.publish_patches(
+                    vec![StatePatch::KeyerSending(false)],
+                    UpdateSource::Emulated,
+                );
             }
             _ => {}
         }

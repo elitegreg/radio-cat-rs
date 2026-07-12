@@ -41,11 +41,11 @@ impl Frequency {
 
 impl fmt::Display for Frequency {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.hz % 1_000_000 == 0 {
+        if self.hz.is_multiple_of(1_000_000) {
             write!(f, "{} MHz", self.hz / 1_000_000)
         } else if self.hz >= 1_000_000 {
             write!(f, "{:.3} MHz", self.mhz())
-        } else if self.hz % 1_000 == 0 {
+        } else if self.hz.is_multiple_of(1_000) {
             write!(f, "{} kHz", self.hz / 1_000)
         } else {
             write!(f, "{:.3} kHz", self.hz as f64 / 1_000.0)

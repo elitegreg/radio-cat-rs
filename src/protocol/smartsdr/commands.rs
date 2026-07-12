@@ -779,7 +779,7 @@ fn parse_rfpower(value: &str) -> Result<Power> {
 
 fn encode_rfpower(power: Power) -> Result<u16> {
     let microwatts = power.as_microwatts();
-    if microwatts % 1_000_000 != 0 {
+    if !microwatts.is_multiple_of(1_000_000) {
         return Err(RadioError::InvalidValue {
             field: "tx.power",
             message: "SmartSDR rfpower requires whole-watt values".to_string(),

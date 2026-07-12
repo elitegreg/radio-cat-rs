@@ -1264,7 +1264,7 @@ fn power_to_raw(profile: &IcomCivProfile, power: Power) -> u16 {
 fn raw_to_power(profile: &IcomCivProfile, raw: u16) -> Power {
     let max_milliwatts = profile.max_tx_power_watts as u64 * 1_000;
     let milliwatts = (raw as u64 * max_milliwatts + 127) / 255;
-    if milliwatts % 1_000 == 0 || milliwatts > u16::MAX as u64 {
+    if milliwatts.is_multiple_of(1_000) || milliwatts > u16::MAX as u64 {
         Power::from_watts(((milliwatts + 500) / 1_000) as u16)
     } else {
         Power::new(milliwatts as u16, PowerUnit::Milliwatts)
