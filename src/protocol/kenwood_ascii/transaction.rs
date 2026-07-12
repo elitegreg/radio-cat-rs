@@ -127,7 +127,9 @@ impl ActiveStep {
 
 #[derive(Debug, Default, Clone)]
 pub struct TransactionEngine {
-    queue: VecDeque<OutgoingTransaction>,
+    high_queue: VecDeque<OutgoingTransaction>,
+    normal_queue: VecDeque<OutgoingTransaction>,
+    background_queue: VecDeque<OutgoingTransaction>,
     active_transaction: Option<OutgoingTransaction>,
     waiting_on: Option<ActiveStep>,
     pending_completion: Option<&'static str>,
@@ -144,7 +146,16 @@ impl TransactionEngine {
             step_count = transaction.steps.len(),
             "queued CAT transaction"
         );
-        self.queue.push_back(transaction);
+        let priority = transaction
+            .steps
+            .front()
+            .map(|step| step.priority)
+            .unwrap_or(CommandPriority::Normal);
+        match priority {
+            CommandPriority::High => self.high_queue.push_back(transaction),
+            CommandPriority::Normal => self.normal_queue.push_back(transaction),
+            CommandPriority::Background => self.background_queue.push_back(transaction),
+        }
     }
 
     pub fn next_dispatch(&mut self) -> Option<TransactionEvent> {
@@ -157,56 +168,58 @@ impl TransactionEngine {
             return Some(TransactionEvent::CompletedWithoutResponse { command });
         }
 
-        loop {
-            if self.active_transaction.is_none() {
-                self.active_transaction = self.queue.pop_front();
+        if self.active_transaction.is_none() {
+            self.active_transaction = self
+                .high_queue
+                .pop_front()
+                .or_else(|| self.normal_queue.pop_front())
+                .or_else(|| self.background_queue.pop_front());
+        }
+
+        let active = self.active_transaction.as_mut()?;
+        let step = match active.steps.pop_front() {
+            Some(step) => step,
+            None => {
+                let command = active.command;
+                self.active_transaction = None;
+                tracing::debug!(command, "transaction completed without response");
+                return Some(TransactionEvent::CompletedWithoutResponse { command });
             }
+        };
 
-            let active = self.active_transaction.as_mut()?;
-            let step = match active.steps.pop_front() {
-                Some(step) => step,
-                None => {
-                    let command = active.command;
-                    self.active_transaction = None;
-                    tracing::debug!(command, "transaction completed without response");
-                    return Some(TransactionEvent::CompletedWithoutResponse { command });
-                }
-            };
+        tracing::debug!(
+            command = active.command,
+            tx_frame = step.frame.as_str(),
+            expected = ?step.expected,
+            priority = ?step.priority,
+            timeout_ms = step.timeout.as_millis(),
+            retries = step.retries,
+            "dispatching CAT frame"
+        );
 
-            tracing::debug!(
-                command = active.command,
-                tx_frame = step.frame.as_str(),
-                expected = ?step.expected,
-                priority = ?step.priority,
-                timeout_ms = step.timeout.as_millis(),
-                retries = step.retries,
-                "dispatching CAT frame"
-            );
+        let dispatch = TransactionDispatch {
+            command: active.command,
+            frame: step.frame.clone(),
+            priority: step.priority,
+            timeout: step.timeout,
+            waits_for_response: step.expected.expects_response(),
+        };
 
-            let dispatch = TransactionDispatch {
+        if step.expected.expects_response() {
+            self.waiting_on = Some(ActiveStep {
                 command: active.command,
-                frame: step.frame.clone(),
+                frame: step.frame,
+                expected: step.expected,
                 priority: step.priority,
                 timeout: step.timeout,
-                waits_for_response: step.expected.expects_response(),
-            };
-
-            if step.expected.expects_response() {
-                self.waiting_on = Some(ActiveStep {
-                    command: active.command,
-                    frame: step.frame,
-                    expected: step.expected,
-                    priority: step.priority,
-                    timeout: step.timeout,
-                    retries_remaining: step.retries,
-                });
-            } else if active.steps.is_empty() {
-                self.pending_completion = Some(active.command);
-                self.active_transaction = None;
-            }
-
-            return Some(TransactionEvent::Dispatched(dispatch));
+                retries_remaining: step.retries,
+            });
+        } else if active.steps.is_empty() {
+            self.pending_completion = Some(active.command);
+            self.active_transaction = None;
         }
+
+        Some(TransactionEvent::Dispatched(dispatch))
     }
 
     pub fn receive_frame(&mut self, frame: AsciiFrame) -> Result<TransactionEvent> {
@@ -369,6 +382,36 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn transaction_engine_dispatches_high_priority_before_queued_background_work() {
+        let mut engine = TransactionEngine::new();
+        engine.enqueue(OutgoingTransaction::new(
+            "poll",
+            [OutgoingStep::new(
+                AsciiFrame::new("IF;").unwrap(),
+                ResponseMatcher::None,
+                CommandPriority::Background,
+                Duration::from_millis(250),
+                0,
+            )],
+        ));
+        engine.enqueue(OutgoingTransaction::new(
+            "stop-cw",
+            [OutgoingStep::new(
+                AsciiFrame::new("KY0;").unwrap(),
+                ResponseMatcher::None,
+                CommandPriority::High,
+                Duration::from_millis(250),
+                0,
+            )],
+        ));
+
+        match engine.next_dispatch().unwrap() {
+            TransactionEvent::Dispatched(dispatch) => assert_eq!(dispatch.command, "stop-cw"),
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]

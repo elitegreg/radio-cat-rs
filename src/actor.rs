@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use tokio::{
     sync::{broadcast, mpsc, oneshot, watch},
@@ -15,6 +15,10 @@ use crate::{
 };
 
 const COMMAND_LOOP_IDLE_TICK: Duration = Duration::from_millis(50);
+const SESSION_STARTUP_DEADLINE: Duration = Duration::from_secs(15);
+const SESSION_COMMAND_DEADLINE: Duration = Duration::from_secs(3);
+const SESSION_POLL_DEADLINE: Duration = Duration::from_secs(1);
+const MAX_URGENT_BURST: u8 = 4;
 
 pub(crate) struct CommandEnvelope {
     pub command: RadioCommand,
@@ -25,6 +29,8 @@ pub struct RadioTask {
     session: Option<Box<dyn RadioSession>>,
     reducer: StateReducer,
     command_rx: mpsc::Receiver<CommandEnvelope>,
+    urgent_commands: VecDeque<CommandEnvelope>,
+    normal_commands: VecDeque<CommandEnvelope>,
     shutdown_rx: watch::Receiver<bool>,
     state_tx: watch::Sender<SharedRadioState>,
     update_tx: broadcast::Sender<StateUpdate>,
@@ -32,6 +38,7 @@ pub struct RadioTask {
     next_poll_at: Option<Instant>,
     emulated_keyer_done_at: Option<Instant>,
     started: bool,
+    urgent_burst: u8,
 }
 
 impl RadioTask {
@@ -48,6 +55,8 @@ impl RadioTask {
             session: Some(session),
             reducer: StateReducer::new(initial_state),
             command_rx,
+            urgent_commands: VecDeque::new(),
+            normal_commands: VecDeque::new(),
             shutdown_rx,
             state_tx,
             update_tx,
@@ -55,6 +64,7 @@ impl RadioTask {
             next_poll_at: None,
             emulated_keyer_done_at: None,
             started: false,
+            urgent_burst: 0,
         }
     }
 
@@ -91,6 +101,21 @@ impl RadioTask {
                 tracing::info!(driver = %driver.id, "radio task shutdown requested");
                 break;
             }
+            self.drain_commands();
+            if let Some(envelope) = self.next_command() {
+                self.complete_command(envelope).await;
+                continue;
+            }
+            if self.poll_due() {
+                if let Err(error) = self.run_poll_if_due().await {
+                    if matches!(error, RadioError::Transport(_)) {
+                        self.publish_terminal_error(&error);
+                        return Err(error);
+                    }
+                    tracing::warn!(driver = %driver.id, ?error, "native poll failed");
+                }
+                continue;
+            }
             let command_wait_timeout = self.command_wait_timeout();
             tokio::select! {
                 changed = self.shutdown_rx.changed() => {
@@ -100,14 +125,7 @@ impl RadioTask {
                     }
                 }
                 received = timeout(command_wait_timeout, self.command_rx.recv()) => match received {
-                Ok(Some(envelope)) => {
-                    tracing::debug!(driver = %driver.id, ?envelope.command, "radio task received command");
-                    let result = self.handle_command(envelope.command).await;
-                    if let Err(error) = &result {
-                        tracing::debug!(driver = %driver.id, ?error, "radio task command failed");
-                    }
-                    let _ = envelope.result_tx.send(result);
-                }
+                Ok(Some(envelope)) => self.enqueue_command(envelope),
                 Ok(None) => break,
                 Err(_) => {
                     self.finish_emulated_keyer_if_due();
@@ -124,14 +142,6 @@ impl RadioTask {
                         tracing::warn!(driver = %driver.id, ?error, "native incoming processing failed");
                     }
 
-                    if let Err(error) = self.run_poll_if_due().await {
-                        if matches!(error, RadioError::Transport(_)) {
-                            tracing::error!(driver = %driver.id, ?error, "native poll failed");
-                            self.publish_terminal_error(&error);
-                            return Err(error);
-                        }
-                        tracing::warn!(driver = %driver.id, ?error, "native poll failed");
-                    }
                 }
                 }
             }
@@ -145,6 +155,54 @@ impl RadioTask {
 
         tracing::info!(driver = %driver.id, "radio task run loop exiting");
         Ok(())
+    }
+
+    fn enqueue_command(&mut self, envelope: CommandEnvelope) {
+        if is_urgent(&envelope.command) {
+            self.urgent_commands.push_back(envelope);
+        } else {
+            self.normal_commands.push_back(envelope);
+        }
+    }
+
+    fn drain_commands(&mut self) {
+        while let Ok(envelope) = self.command_rx.try_recv() {
+            self.enqueue_command(envelope);
+        }
+    }
+
+    fn next_command(&mut self) -> Option<CommandEnvelope> {
+        // Give normal and background work a turn after a bounded urgent burst.
+        // A queued safety command is delayed by at most one bounded poll item.
+        if !self.urgent_commands.is_empty()
+            && self.normal_commands.is_empty()
+            && self.urgent_burst >= MAX_URGENT_BURST
+            && self.poll_due()
+        {
+            self.urgent_burst = 0;
+            return None;
+        }
+        if !self.urgent_commands.is_empty()
+            && (self.normal_commands.is_empty() || self.urgent_burst < MAX_URGENT_BURST)
+        {
+            self.urgent_burst += 1;
+            return self.urgent_commands.pop_front();
+        }
+        if let Some(envelope) = self.normal_commands.pop_front() {
+            self.urgent_burst = 0;
+            return Some(envelope);
+        }
+        self.urgent_burst = 0;
+        self.urgent_commands.pop_front()
+    }
+
+    async fn complete_command(&mut self, envelope: CommandEnvelope) {
+        tracing::debug!(?envelope.command, "radio task dispatching command");
+        let result = self.handle_command(envelope.command).await;
+        if let Err(error) = &result {
+            tracing::debug!(?error, "radio task command failed");
+        }
+        let _ = envelope.result_tx.send(result);
     }
 
     fn publish_terminal_error(&mut self, error: &RadioError) {
@@ -184,6 +242,11 @@ impl RadioTask {
         }
 
         wait_timeout
+    }
+
+    fn poll_due(&self) -> bool {
+        self.next_poll_at
+            .is_some_and(|deadline| Instant::now() >= deadline)
     }
 
     fn apply_emulated_keyer_command(&mut self, command: &RadioCommand) {
@@ -263,10 +326,16 @@ impl RadioTask {
     async fn run_session_startup(&mut self) -> Result<()> {
         let mut session = self.session.take().expect("session is present");
         let mut transport = self.transport.take();
-        let result = match transport.as_mut() {
-            Some(transport) => session.startup(Some(transport.as_mut()), self).await,
-            None => session.startup(None, self).await,
-        };
+        let result = timeout(SESSION_STARTUP_DEADLINE, async {
+            match transport.as_mut() {
+                Some(transport) => session.startup(Some(transport.as_mut()), self).await,
+                None => session.startup(None, self).await,
+            }
+        })
+        .await
+        .unwrap_or(Err(RadioError::Timeout {
+            command: "session-startup",
+        }));
         self.transport = transport;
         self.session = Some(session);
 
@@ -280,10 +349,16 @@ impl RadioTask {
     async fn run_session_refresh(&mut self) -> Result<()> {
         let mut session = self.session.take().expect("session is present");
         let mut transport = self.transport.take();
-        let result = match transport.as_mut() {
-            Some(transport) => session.refresh(Some(transport.as_mut()), self).await,
-            None => session.refresh(None, self).await,
-        };
+        let result = timeout(SESSION_COMMAND_DEADLINE, async {
+            match transport.as_mut() {
+                Some(transport) => session.refresh(Some(transport.as_mut()), self).await,
+                None => session.refresh(None, self).await,
+            }
+        })
+        .await
+        .unwrap_or(Err(RadioError::Timeout {
+            command: "session-refresh",
+        }));
         self.transport = transport;
         self.session = Some(session);
         result
@@ -296,14 +371,20 @@ impl RadioTask {
     ) -> Result<CommandCompletion> {
         let mut session = self.session.take().expect("session is present");
         let mut transport = self.transport.take();
-        let result = match transport.as_mut() {
-            Some(transport) => {
-                session
-                    .execute(Some(transport.as_mut()), command, state_before, self)
-                    .await
+        let result = timeout(SESSION_COMMAND_DEADLINE, async {
+            match transport.as_mut() {
+                Some(transport) => {
+                    session
+                        .execute(Some(transport.as_mut()), command, state_before, self)
+                        .await
+                }
+                None => session.execute(None, command, state_before, self).await,
             }
-            None => session.execute(None, command, state_before, self).await,
-        };
+        })
+        .await
+        .unwrap_or(Err(RadioError::Timeout {
+            command: "session-command",
+        }));
         self.transport = transport;
         self.session = Some(session);
         result
@@ -316,18 +397,29 @@ impl RadioTask {
     ) -> Result<bool> {
         let mut session = self.session.take().expect("session is present");
         let mut transport = self.transport.take();
-        let result = match transport.as_mut() {
-            Some(transport) => {
-                session
-                    .process_incoming(Some(transport.as_mut()), wait_timeout, default_source, self)
-                    .await
+        let result = timeout(SESSION_POLL_DEADLINE, async {
+            match transport.as_mut() {
+                Some(transport) => {
+                    session
+                        .process_incoming(
+                            Some(transport.as_mut()),
+                            wait_timeout,
+                            default_source,
+                            self,
+                        )
+                        .await
+                }
+                None => {
+                    session
+                        .process_incoming(None, wait_timeout, default_source, self)
+                        .await
+                }
             }
-            None => {
-                session
-                    .process_incoming(None, wait_timeout, default_source, self)
-                    .await
-            }
-        };
+        })
+        .await
+        .unwrap_or(Err(RadioError::Timeout {
+            command: "session-read",
+        }));
         self.transport = transport;
         self.session = Some(session);
         result
@@ -350,14 +442,24 @@ impl RadioTask {
 
         let mut session = self.session.take().expect("session is present");
         let mut transport = self.transport.take();
-        let result = match transport.as_mut() {
-            Some(transport) => session.poll(Some(transport.as_mut()), self).await,
-            None => session.poll(None, self).await,
-        };
+        let result = timeout(SESSION_POLL_DEADLINE, async {
+            match transport.as_mut() {
+                Some(transport) => session.poll_one(Some(transport.as_mut()), self).await,
+                None => session.poll_one(None, self).await,
+            }
+        })
+        .await
+        .unwrap_or(Err(RadioError::Timeout {
+            command: "session-poll",
+        }));
         self.transport = transport;
         self.session = Some(session);
-        self.schedule_next_poll();
-        result
+        match result {
+            Ok(true) => self.schedule_next_poll(),
+            Ok(false) => self.next_poll_at = Some(Instant::now()),
+            Err(_) => self.schedule_next_poll(),
+        }
+        result.map(|_| ())
     }
 
     fn schedule_next_poll(&mut self) {
@@ -409,6 +511,13 @@ impl RadioTask {
     }
 }
 
+fn is_urgent(command: &RadioCommand) -> bool {
+    matches!(
+        command,
+        RadioCommand::SetPtt(false) | RadioCommand::SetDataPtt(false) | RadioCommand::StopCw
+    )
+}
+
 impl StateSink for RadioTask {
     fn state(&self) -> &RadioState {
         self.reducer.state()
@@ -437,7 +546,11 @@ pub(crate) async fn send_command(
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use tokio::task::JoinHandle;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use tokio::{sync::Notify, task::JoinHandle};
 
     use crate::{
         Capability, DriverDescriptor, KeyerCapabilities, KeyerState, RadioCapabilities,
@@ -448,6 +561,86 @@ mod tests {
     struct TestSession {
         initial_state: RadioState,
         capabilities: RadioCapabilities,
+    }
+
+    struct PausingPollSession {
+        poll_started: Arc<Notify>,
+        urgent_dispatched: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl RadioSession for PausingPollSession {
+        fn descriptor(&self) -> DriverDescriptor {
+            TestSession::new(None).descriptor()
+        }
+        fn capabilities(&self) -> RadioCapabilities {
+            RadioCapabilities::dummy_all()
+        }
+        fn initial_state(&self) -> RadioState {
+            RadioState::default()
+        }
+        fn poll_interval(&self) -> Option<Duration> {
+            Some(Duration::from_millis(1))
+        }
+        async fn startup(
+            &mut self,
+            _: Option<&mut dyn crate::CatTransport>,
+            _: &mut dyn StateSink,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn refresh(
+            &mut self,
+            _: Option<&mut dyn crate::CatTransport>,
+            _: &mut dyn StateSink,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn execute(
+            &mut self,
+            _: Option<&mut dyn crate::CatTransport>,
+            command: RadioCommand,
+            _: &RadioState,
+            _: &mut dyn StateSink,
+        ) -> Result<CommandCompletion> {
+            if command == RadioCommand::SetPtt(false) {
+                self.urgent_dispatched.store(true, Ordering::SeqCst);
+            }
+            Ok(CommandCompletion::Accepted)
+        }
+        async fn process_incoming(
+            &mut self,
+            _: Option<&mut dyn crate::CatTransport>,
+            _: Duration,
+            _: UpdateSource,
+            _: &mut dyn StateSink,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+        async fn poll_one(
+            &mut self,
+            _: Option<&mut dyn crate::CatTransport>,
+            _: &mut dyn StateSink,
+        ) -> Result<bool> {
+            self.poll_started.notify_waiters();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            Ok(false)
+        }
+    }
+
+    struct NoopTransport;
+
+    #[async_trait]
+    impl crate::CatTransport for NoopTransport {
+        async fn write_all(&mut self, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        async fn read_some(&mut self, _: &mut [u8]) -> Result<usize> {
+            Ok(0)
+        }
+        async fn flush(&mut self) -> Result<()> {
+            Ok(())
+        }
     }
 
     impl TestSession {
@@ -537,12 +730,12 @@ mod tests {
             Ok(false)
         }
 
-        async fn poll(
+        async fn poll_one(
             &mut self,
             _transport: Option<&mut dyn crate::CatTransport>,
             _sink: &mut dyn StateSink,
-        ) -> Result<()> {
-            Ok(())
+        ) -> Result<bool> {
+            Ok(true)
         }
     }
 
@@ -574,6 +767,51 @@ mod tests {
             task.run().await
         });
         (command_tx, state_rx, handle)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn urgent_ptt_release_dispatches_within_one_nonresponsive_poll_item() {
+        let poll_started = Arc::new(Notify::new());
+        let urgent_dispatched = Arc::new(AtomicBool::new(false));
+        let session = PausingPollSession {
+            poll_started: poll_started.clone(),
+            urgent_dispatched: urgent_dispatched.clone(),
+        };
+        let initial_state = session.initial_state();
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (state_tx, _) = watch::channel(Arc::new(initial_state.clone()));
+        let (update_tx, _) = broadcast::channel(8);
+        let task = RadioTask::new(
+            Box::new(session),
+            initial_state,
+            command_rx,
+            shutdown_rx,
+            state_tx,
+            update_tx,
+            Some(Box::new(NoopTransport)),
+        );
+        let handle = tokio::spawn(task.run());
+
+        let waiting_for_poll = poll_started.notified();
+        tokio::time::advance(Duration::from_millis(50)).await;
+        waiting_for_poll.await;
+
+        let (result_tx, result_rx) = oneshot::channel();
+        command_tx
+            .send(CommandEnvelope {
+                command: RadioCommand::SetPtt(false),
+                result_tx,
+            })
+            .await
+            .unwrap();
+        tokio::time::advance(Duration::from_millis(500)).await;
+        tokio::task::yield_now().await;
+        assert!(result_rx.await.unwrap().is_ok());
+        assert!(urgent_dispatched.load(Ordering::SeqCst));
+
+        shutdown_tx.send(true).unwrap();
+        handle.await.unwrap().unwrap();
     }
 
     #[tokio::test]

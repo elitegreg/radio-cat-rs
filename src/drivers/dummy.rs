@@ -174,12 +174,12 @@ impl RadioSession for DummyRadioSession {
         Ok(false)
     }
 
-    async fn poll(
+    async fn poll_one(
         &mut self,
         _transport: Option<&mut dyn CatTransport>,
         _sink: &mut dyn StateSink,
-    ) -> Result<()> {
-        Ok(())
+    ) -> Result<bool> {
+        Ok(true)
     }
 }
 

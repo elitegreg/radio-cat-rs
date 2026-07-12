@@ -24,6 +24,7 @@ use crate::{
 const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 const STARTUP_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 const SMARTSDR_STARTUP_TIMEOUT: Duration = Duration::from_millis(1_500);
+const TRANSPORT_IO_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(crate) fn kenwood_session(
     profile: &'static KenwoodAsciiProfile,
@@ -60,6 +61,7 @@ struct KenwoodAsciiRuntime {
     options: KenwoodAsciiOptions,
     frame_splitter: KenwoodFrameSplitter,
     vfo_routing: kenwood_ascii::VfoRouting,
+    poll_index: usize,
 }
 
 impl KenwoodAsciiRuntime {
@@ -69,6 +71,7 @@ impl KenwoodAsciiRuntime {
             options,
             frame_splitter: KenwoodFrameSplitter::new(),
             vfo_routing: kenwood_ascii::VfoRouting::for_profile(profile),
+            poll_index: 0,
         }
     }
 
@@ -96,8 +99,16 @@ impl KenwoodAsciiRuntime {
                 "sending CAT frame"
             );
 
-            transport.write_all(frame.as_bytes()).await?;
-            transport.flush().await?;
+            timeout(TRANSPORT_IO_TIMEOUT, transport.write_all(frame.as_bytes()))
+                .await
+                .map_err(|_| RadioError::Timeout {
+                    command: "transport-write",
+                })??;
+            timeout(TRANSPORT_IO_TIMEOUT, transport.flush())
+                .await
+                .map_err(|_| RadioError::Timeout {
+                    command: "transport-flush",
+                })??;
 
             if is_last && matcher_expects_response(&encoded.matcher) {
                 let matched = self
@@ -606,22 +617,19 @@ impl RadioSession for KenwoodAsciiRuntime {
             .await
     }
 
-    async fn poll(
+    async fn poll_one(
         &mut self,
         transport: Option<&mut dyn CatTransport>,
         ctx: &mut dyn StateSink,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let Some(transport) = transport else {
-            return Ok(());
+            return Ok(true);
         };
         if let Some(plan) = self.profile.poll {
-            tracing::debug!(driver = %self.profile.id(), query_count = plan.queries.len(), "running poll plan");
-            for semantic in plan.queries {
-                let Some(encoded) = encode_kenwood_query(self.profile, semantic, self.vfo_routing)?
-                else {
-                    continue;
-                };
-
+            let semantic = plan.queries[self.poll_index];
+            self.poll_index = (self.poll_index + 1) % plan.queries.len();
+            let complete = self.poll_index == 0;
+            if let Some(encoded) = encode_kenwood_query(self.profile, semantic, self.vfo_routing)? {
                 if let Err(error) = self
                     .send_encoded(
                         transport,
@@ -635,9 +643,9 @@ impl RadioSession for KenwoodAsciiRuntime {
                     tracing::debug!(driver = %self.profile.id(), semantic, ?error, "poll query failed");
                 }
             }
+            return Ok(complete);
         }
-
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -660,6 +668,7 @@ struct IcomCivRuntime {
     profile: &'static IcomCivProfile,
     options: IcomCivOptions,
     frame_splitter: IcomFrameSplitter,
+    poll_index: usize,
 }
 
 impl IcomCivRuntime {
@@ -668,6 +677,7 @@ impl IcomCivRuntime {
             profile,
             options,
             frame_splitter: IcomFrameSplitter::new(),
+            poll_index: 0,
         }
     }
 
@@ -701,8 +711,16 @@ impl IcomCivRuntime {
                 "sending ICOM CI-V frame"
             );
 
-            transport.write_all(frame.as_bytes()).await?;
-            transport.flush().await?;
+            timeout(TRANSPORT_IO_TIMEOUT, transport.write_all(frame.as_bytes()))
+                .await
+                .map_err(|_| RadioError::Timeout {
+                    command: "transport-write",
+                })??;
+            timeout(TRANSPORT_IO_TIMEOUT, transport.flush())
+                .await
+                .map_err(|_| RadioError::Timeout {
+                    command: "transport-flush",
+                })??;
 
             if matcher.expects_response() {
                 match self
@@ -1163,22 +1181,19 @@ impl RadioSession for IcomCivRuntime {
         ))
     }
 
-    async fn poll(
+    async fn poll_one(
         &mut self,
         transport: Option<&mut dyn CatTransport>,
         ctx: &mut dyn StateSink,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let Some(transport) = transport else {
-            return Ok(());
+            return Ok(true);
         };
         if let Some(plan) = self.profile.poll {
-            tracing::debug!(driver = %self.profile.id(), query_count = plan.queries.len(), "running ICOM poll plan");
-            for semantic in plan.queries {
-                let Some(encoded) = icom_civ::encode_query(self.profile, self.options, semantic)?
-                else {
-                    continue;
-                };
-
+            let semantic = plan.queries[self.poll_index];
+            self.poll_index = (self.poll_index + 1) % plan.queries.len();
+            let complete = self.poll_index == 0;
+            if let Some(encoded) = icom_civ::encode_query(self.profile, self.options, semantic)? {
                 if let Err(error) = self
                     .send_encoded(
                         transport,
@@ -1192,9 +1207,9 @@ impl RadioSession for IcomCivRuntime {
                     tracing::debug!(driver = %self.profile.id(), semantic, ?error, "ICOM poll query failed");
                 }
             }
+            return Ok(complete);
         }
-
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -1262,8 +1277,16 @@ impl SmartSdrRuntime {
             tx_frame = frame.trim_end(),
             "sending SmartSDR command"
         );
-        transport.write_all(frame.as_bytes()).await?;
-        transport.flush().await?;
+        timeout(TRANSPORT_IO_TIMEOUT, transport.write_all(frame.as_bytes()))
+            .await
+            .map_err(|_| RadioError::Timeout {
+                command: "transport-write",
+            })??;
+        timeout(TRANSPORT_IO_TIMEOUT, transport.flush())
+            .await
+            .map_err(|_| RadioError::Timeout {
+                command: "transport-flush",
+            })??;
 
         match self
             .process_incoming_with_expected(
@@ -1641,12 +1664,12 @@ impl RadioSession for SmartSdrRuntime {
         ))
     }
 
-    async fn poll(
+    async fn poll_one(
         &mut self,
         _transport: Option<&mut dyn CatTransport>,
         _ctx: &mut dyn StateSink,
-    ) -> Result<()> {
-        Ok(())
+    ) -> Result<bool> {
+        Ok(true)
     }
 }
 

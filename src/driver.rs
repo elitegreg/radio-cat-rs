@@ -89,9 +89,11 @@ pub(crate) trait RadioSession: Send {
         sink: &mut dyn StateSink,
     ) -> Result<bool>;
 
-    async fn poll(
+    /// Run at most one item of the poll plan. Returns `true` when the plan has
+    /// completed (or when there is no plan).
+    async fn poll_one(
         &mut self,
         transport: Option<&mut dyn CatTransport>,
         sink: &mut dyn StateSink,
-    ) -> Result<()>;
+    ) -> Result<bool>;
 }
