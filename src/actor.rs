@@ -6,10 +6,9 @@ use tokio::{
 };
 
 use crate::{
-    driver::RadioDriver,
+    driver::{RadioSession, StateSink},
     error::{RadioError, Result},
     keyer_emulation,
-    protocol::runtime::{native_protocol_for_driver, NativeProtocol, ProtocolContext},
     transport::BoxedCatTransport,
     update::{SharedRadioState, StateReducer, StateUpdate},
     Capability, ConnectionState, RadioCommand, RadioState, StatePatch, UpdateSource,
@@ -23,52 +22,45 @@ pub(crate) struct CommandEnvelope {
 }
 
 pub struct RadioTask {
-    driver: Box<dyn RadioDriver>,
+    session: Option<Box<dyn RadioSession>>,
     reducer: StateReducer,
     command_rx: mpsc::Receiver<CommandEnvelope>,
     state_tx: watch::Sender<SharedRadioState>,
     update_tx: broadcast::Sender<StateUpdate>,
     transport: Option<BoxedCatTransport>,
-    native_protocol: Option<Box<dyn NativeProtocol>>,
-    driver_options: String,
     next_poll_at: Option<Instant>,
     emulated_keyer_done_at: Option<Instant>,
 }
 
 impl RadioTask {
     pub(crate) fn new(
-        driver: Box<dyn RadioDriver>,
+        session: Box<dyn RadioSession>,
         initial_state: crate::RadioState,
         command_rx: mpsc::Receiver<CommandEnvelope>,
         state_tx: watch::Sender<SharedRadioState>,
         update_tx: broadcast::Sender<StateUpdate>,
         transport: Option<BoxedCatTransport>,
-        driver_options: String,
     ) -> Self {
         Self {
-            driver,
+            session: Some(session),
             reducer: StateReducer::new(initial_state),
             command_rx,
             state_tx,
             update_tx,
             transport,
-            native_protocol: None,
-            driver_options,
             next_poll_at: None,
             emulated_keyer_done_at: None,
         }
     }
 
     pub async fn run(mut self) -> Result<()> {
-        let driver = self.driver.descriptor();
-        self.native_protocol = native_protocol_for_driver(driver.id, &self.driver_options)?;
+        let driver = self.session().descriptor();
 
         tracing::info!(driver = %driver.id, "radio task run loop starting");
 
-        match self.driver.start().await {
-            Ok(patches) => {
-                tracing::info!(driver = %driver.id, patch_count = patches.len(), "driver startup complete");
-                self.publish_patches(patches, UpdateSource::Native)
+        match self.run_session_startup().await {
+            Ok(()) => {
+                tracing::info!(driver = %driver.id, "session startup complete");
             }
             Err(error) => {
                 tracing::error!(driver = %driver.id, ?error, "driver startup failed");
@@ -81,17 +73,6 @@ impl RadioTask {
                 );
                 return Err(error);
             }
-        }
-
-        if self.native_protocol.is_some() && self.transport.is_some() {
-            let protocol = self
-                .native_protocol
-                .as_ref()
-                .map(|protocol| protocol.id())
-                .unwrap();
-            tracing::info!(driver = %driver.id, protocol, "starting native transport bootstrap");
-            self.run_native_startup().await?;
-            tracing::info!(driver = %driver.id, protocol, "native transport bootstrap complete");
         }
 
         tracing::info!(driver = %driver.id, "radio task command loop started");
@@ -111,7 +92,7 @@ impl RadioTask {
                     self.finish_emulated_keyer_if_due();
 
                     if let Err(error) = self
-                        .process_native_incoming(Duration::from_millis(1), UpdateSource::Native)
+                        .process_session_incoming(Duration::from_millis(1), UpdateSource::Native)
                         .await
                     {
                         tracing::warn!(driver = %driver.id, ?error, "native incoming processing failed");
@@ -135,20 +116,11 @@ impl RadioTask {
     }
 
     async fn handle_command(&mut self, command: RadioCommand) -> Result<()> {
-        let command_for_native = command.clone();
+        let command_for_emulation = command.clone();
         let state_before = self.reducer.state().clone();
 
-        let outcome = self.driver.handle_command(command, &state_before).await?;
-        tracing::debug!(
-            patch_count = outcome.patches.len(),
-            source = ?outcome.source,
-            "driver produced state patches"
-        );
-        self.publish_patches(outcome.patches, outcome.source);
-
-        self.dispatch_native_command(command_for_native.clone(), &state_before)
-            .await?;
-        self.apply_emulated_keyer_command(&command_for_native);
+        self.execute_session_command(command, &state_before).await?;
+        self.apply_emulated_keyer_command(&command_for_emulation);
 
         Ok(())
     }
@@ -164,7 +136,12 @@ impl RadioTask {
     }
 
     fn apply_emulated_keyer_command(&mut self, command: &RadioCommand) {
-        if self.driver.capabilities().keyer.map(|keyer| keyer.sending) != Some(Capability::Emulated)
+        if self
+            .session()
+            .capabilities()
+            .keyer
+            .map(|keyer| keyer.sending)
+            != Some(Capability::Emulated)
         {
             return;
         }
@@ -226,18 +203,21 @@ impl RadioTask {
         );
     }
 
-    async fn run_native_startup(&mut self) -> Result<()> {
-        let Some(mut protocol) = self.native_protocol.take() else {
-            return Ok(());
-        };
-        let Some(mut transport) = self.transport.take() else {
-            self.native_protocol = Some(protocol);
-            return Ok(());
-        };
+    fn session(&self) -> &dyn RadioSession {
+        self.session
+            .as_deref()
+            .expect("session is present outside calls")
+    }
 
-        let result = protocol.startup(&mut *transport, self).await;
-        self.transport = Some(transport);
-        self.native_protocol = Some(protocol);
+    async fn run_session_startup(&mut self) -> Result<()> {
+        let mut session = self.session.take().expect("session is present");
+        let mut transport = self.transport.take();
+        let result = match transport.as_mut() {
+            Some(transport) => session.startup(Some(transport.as_mut()), self).await,
+            None => session.startup(None, self).await,
+        };
+        self.transport = transport;
+        self.session = Some(session);
 
         if result.is_ok() {
             self.schedule_next_poll();
@@ -246,51 +226,52 @@ impl RadioTask {
         result
     }
 
-    async fn dispatch_native_command(
+    async fn execute_session_command(
         &mut self,
         command: RadioCommand,
         state_before: &RadioState,
     ) -> Result<()> {
-        let Some(mut protocol) = self.native_protocol.take() else {
-            return Ok(());
+        let mut session = self.session.take().expect("session is present");
+        let mut transport = self.transport.take();
+        let result = match transport.as_mut() {
+            Some(transport) => {
+                session
+                    .execute(Some(transport.as_mut()), command, state_before, self)
+                    .await
+            }
+            None => session.execute(None, command, state_before, self).await,
         };
-        let Some(mut transport) = self.transport.take() else {
-            tracing::trace!(driver = %protocol.id(), "no transport configured; skipping native command dispatch");
-            self.native_protocol = Some(protocol);
-            return Ok(());
-        };
-
-        let result = protocol
-            .dispatch_command(&mut *transport, command, state_before, self)
-            .await;
-        self.transport = Some(transport);
-        self.native_protocol = Some(protocol);
+        self.transport = transport;
+        self.session = Some(session);
         result
     }
 
-    async fn process_native_incoming(
+    async fn process_session_incoming(
         &mut self,
         wait_timeout: Duration,
         default_source: UpdateSource,
     ) -> Result<bool> {
-        let Some(mut protocol) = self.native_protocol.take() else {
-            return Ok(false);
+        let mut session = self.session.take().expect("session is present");
+        let mut transport = self.transport.take();
+        let result = match transport.as_mut() {
+            Some(transport) => {
+                session
+                    .process_incoming(Some(transport.as_mut()), wait_timeout, default_source, self)
+                    .await
+            }
+            None => {
+                session
+                    .process_incoming(None, wait_timeout, default_source, self)
+                    .await
+            }
         };
-        let Some(mut transport) = self.transport.take() else {
-            self.native_protocol = Some(protocol);
-            return Ok(false);
-        };
-
-        let result = protocol
-            .process_incoming(&mut *transport, wait_timeout, default_source, self)
-            .await;
-        self.transport = Some(transport);
-        self.native_protocol = Some(protocol);
+        self.transport = transport;
+        self.session = Some(session);
         result
     }
 
     async fn run_poll_if_due(&mut self) -> Result<()> {
-        if self.transport.is_none() || self.native_protocol.is_none() {
+        if self.transport.is_none() {
             return Ok(());
         }
 
@@ -304,26 +285,23 @@ impl RadioTask {
             return Ok(());
         }
 
-        let Some(mut protocol) = self.native_protocol.take() else {
-            return Ok(());
+        let mut session = self.session.take().expect("session is present");
+        let mut transport = self.transport.take();
+        let result = match transport.as_mut() {
+            Some(transport) => session.poll(Some(transport.as_mut()), self).await,
+            None => session.poll(None, self).await,
         };
-        let Some(mut transport) = self.transport.take() else {
-            self.native_protocol = Some(protocol);
-            return Ok(());
-        };
-
-        let result = protocol.poll(&mut *transport, self).await;
-        self.transport = Some(transport);
-        self.native_protocol = Some(protocol);
+        self.transport = transport;
+        self.session = Some(session);
         self.schedule_next_poll();
         result
     }
 
     fn schedule_next_poll(&mut self) {
         self.next_poll_at = self
-            .native_protocol
+            .session
             .as_ref()
-            .and_then(|protocol| protocol.poll_interval())
+            .and_then(|session| session.poll_interval())
             .map(|interval| Instant::now() + interval);
     }
 
@@ -368,7 +346,7 @@ impl RadioTask {
     }
 }
 
-impl ProtocolContext for RadioTask {
+impl StateSink for RadioTask {
     fn state(&self) -> &RadioState {
         self.reducer.state()
     }
@@ -398,18 +376,15 @@ mod tests {
     use async_trait::async_trait;
     use tokio::task::JoinHandle;
 
-    use crate::{
-        driver::{DriverCommandOutcome, DriverDescriptor},
-        Capability, KeyerCapabilities, KeyerState, RadioCapabilities,
-    };
+    use crate::{Capability, DriverDescriptor, KeyerCapabilities, KeyerState, RadioCapabilities};
 
     #[derive(Clone)]
-    struct TestDriver {
+    struct TestSession {
         initial_state: RadioState,
         capabilities: RadioCapabilities,
     }
 
-    impl TestDriver {
+    impl TestSession {
         fn new(speed_wpm: Option<u8>) -> Self {
             let mut capabilities = RadioCapabilities::dummy_all();
             capabilities.keyer = Some(KeyerCapabilities::new(
@@ -434,7 +409,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl RadioDriver for TestDriver {
+    impl RadioSession for TestSession {
         fn descriptor(&self) -> DriverDescriptor {
             DriverDescriptor {
                 id: "test-emulated-keyer",
@@ -451,16 +426,48 @@ mod tests {
             self.initial_state.clone()
         }
 
-        async fn start(&mut self) -> Result<Vec<StatePatch>> {
-            Ok(vec![StatePatch::Connection(ConnectionState::Ready)])
+        fn poll_interval(&self) -> Option<Duration> {
+            None
         }
 
-        async fn handle_command(
+        async fn startup(
             &mut self,
+            _transport: Option<&mut dyn crate::CatTransport>,
+            sink: &mut dyn StateSink,
+        ) -> Result<()> {
+            sink.publish_patches(
+                vec![StatePatch::Connection(ConnectionState::Ready)],
+                UpdateSource::Native,
+            );
+            Ok(())
+        }
+
+        async fn execute(
+            &mut self,
+            _transport: Option<&mut dyn crate::CatTransport>,
             _command: RadioCommand,
             _current_state: &RadioState,
-        ) -> Result<DriverCommandOutcome> {
-            Ok(DriverCommandOutcome::command_response(Vec::new()))
+            _sink: &mut dyn StateSink,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn process_incoming(
+            &mut self,
+            _transport: Option<&mut dyn crate::CatTransport>,
+            _wait_timeout: Duration,
+            _default_source: UpdateSource,
+            _sink: &mut dyn StateSink,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+
+        async fn poll(
+            &mut self,
+            _transport: Option<&mut dyn crate::CatTransport>,
+            _sink: &mut dyn StateSink,
+        ) -> Result<()> {
+            Ok(())
         }
     }
 
@@ -471,19 +478,18 @@ mod tests {
         watch::Receiver<SharedRadioState>,
         JoinHandle<Result<()>>,
     ) {
-        let driver = TestDriver::new(speed_wpm);
-        let initial_state = driver.initial_state();
+        let session = TestSession::new(speed_wpm);
+        let initial_state = session.initial_state();
         let (command_tx, command_rx) = mpsc::channel(8);
         let (state_tx, state_rx) = watch::channel(Arc::new(initial_state.clone()));
         let (update_tx, _) = broadcast::channel(8);
         let task = RadioTask::new(
-            Box::new(driver),
+            Box::new(session),
             initial_state,
             command_rx,
             state_tx,
             update_tx,
             None,
-            String::new(),
         );
 
         let handle = tokio::spawn(task.run());

@@ -2,8 +2,8 @@ mod actor;
 mod api;
 pub mod capabilities;
 pub mod command;
-pub mod driver;
-pub mod drivers;
+mod driver;
+mod drivers;
 pub mod error;
 mod frequency;
 mod keyer_emulation;
@@ -22,7 +22,7 @@ pub use capabilities::{
     TransmitterCapabilities,
 };
 pub use command::{RadioCommand, ReceiverPath};
-pub use driver::{DriverCommandOutcome, DriverDescriptor, RadioDriver};
+pub use driver::DriverDescriptor;
 pub use error::{RadioError, RangeError, Result};
 pub use frequency::Frequency;
 pub use mode::{Mode, ParseModeError};

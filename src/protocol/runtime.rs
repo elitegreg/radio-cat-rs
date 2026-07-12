@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use tokio::time::{timeout, Duration, Instant};
 
 use crate::{
+    driver::{DriverDescriptor, RadioSession, StateSink},
     error::{RadioError, Result},
     protocol::{
         icom_civ::{
@@ -16,74 +17,42 @@ use crate::{
         smartsdr::{self, LineSplitter as SmartSdrLineSplitter, SmartSdrProfile},
     },
     transport::CatTransport,
-    ConnectionState, RadioCommand, RadioState, ReceiverPath, StatePatch, UpdateSource,
+    ConnectionState, KeyerState, RadioCapabilities, RadioCommand, RadioState, ReceiverPath,
+    ReceiverState, RitXitState, StatePatch, TransmitterState, UpdateSource,
 };
 
 const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 const STARTUP_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 const SMARTSDR_STARTUP_TIMEOUT: Duration = Duration::from_millis(1_500);
 
-pub(crate) trait ProtocolContext: Send {
-    fn state(&self) -> &RadioState;
-    fn publish_patches(&mut self, patches: Vec<StatePatch>, source: UpdateSource);
-}
-
-#[async_trait]
-pub(crate) trait NativeProtocol: Send {
-    fn id(&self) -> &'static str;
-    fn poll_interval(&self) -> Option<Duration>;
-
-    async fn startup(
-        &mut self,
-        transport: &mut dyn CatTransport,
-        ctx: &mut dyn ProtocolContext,
-    ) -> Result<()>;
-
-    async fn dispatch_command(
-        &mut self,
-        transport: &mut dyn CatTransport,
-        command: RadioCommand,
-        state_before: &RadioState,
-        ctx: &mut dyn ProtocolContext,
-    ) -> Result<()>;
-
-    async fn process_incoming(
-        &mut self,
-        transport: &mut dyn CatTransport,
-        wait_timeout: Duration,
-        default_source: UpdateSource,
-        ctx: &mut dyn ProtocolContext,
-    ) -> Result<bool>;
-
-    async fn poll(
-        &mut self,
-        transport: &mut dyn CatTransport,
-        ctx: &mut dyn ProtocolContext,
-    ) -> Result<()>;
-}
-
-pub(crate) fn native_protocol_for_driver(
-    driver_id: &str,
+pub(crate) fn kenwood_session(
+    profile: &'static KenwoodAsciiProfile,
     options: &str,
-) -> Result<Option<Box<dyn NativeProtocol>>> {
-    if let Some(profile) = kenwood_ascii::profile_by_id(driver_id) {
-        let options = KenwoodAsciiOptions::parse(options)?;
-        return Ok(Some(Box::new(KenwoodAsciiRuntime::new(profile, options))));
-    }
+) -> Result<Box<dyn RadioSession>> {
+    Ok(Box::new(KenwoodAsciiRuntime::new(
+        profile,
+        KenwoodAsciiOptions::parse(options)?,
+    )))
+}
 
-    if let Some(profile) = icom_civ::profile_by_id(driver_id) {
-        let options = IcomCivOptions::parse(profile, options)?;
-        return Ok(Some(Box::new(IcomCivRuntime::new(profile, options))));
-    }
+pub(crate) fn icom_session(
+    profile: &'static IcomCivProfile,
+    options: &str,
+) -> Result<Box<dyn RadioSession>> {
+    Ok(Box::new(IcomCivRuntime::new(
+        profile,
+        IcomCivOptions::parse(profile, options)?,
+    )))
+}
 
-    if let Some(profile) = smartsdr::profile_by_id(driver_id) {
-        let options = smartsdr::SmartSdrOptions::parse(profile, options)?;
-        let mut profile = *profile;
-        profile.slice = options.slice;
-        return Ok(Some(Box::new(SmartSdrRuntime::new(profile))));
-    }
-
-    Ok(None)
+pub(crate) fn smartsdr_session(
+    profile: &'static SmartSdrProfile,
+    options: &str,
+) -> Result<Box<dyn RadioSession>> {
+    let options = smartsdr::SmartSdrOptions::parse(profile, options)?;
+    let mut profile = *profile;
+    profile.slice = options.slice;
+    Ok(Box::new(SmartSdrRuntime::new(profile)))
 }
 
 struct KenwoodAsciiRuntime {
@@ -109,7 +78,7 @@ impl KenwoodAsciiRuntime {
         encoded: EncodedCommand,
         default_source: UpdateSource,
         wait_timeout: Duration,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) -> Result<()> {
         let frame_count = encoded.frames.len();
         for (index, frame) in encoded.frames.into_iter().enumerate() {
@@ -152,7 +121,7 @@ impl KenwoodAsciiRuntime {
         wait_timeout: Duration,
         default_source: UpdateSource,
         expected: Option<&ResponseMatcher>,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) -> Result<bool> {
         let deadline = Instant::now() + wait_timeout;
         let mut saw_frames = false;
@@ -262,7 +231,7 @@ impl KenwoodAsciiRuntime {
         transport: &mut dyn CatTransport,
         command: &RadioCommand,
         state_before: &RadioState,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) {
         for semantic in kenwood_timeout_recovery_queries(self.profile, command, state_before) {
             let Some(encoded) =
@@ -306,9 +275,37 @@ impl KenwoodAsciiRuntime {
 }
 
 #[async_trait]
-impl NativeProtocol for KenwoodAsciiRuntime {
-    fn id(&self) -> &'static str {
-        self.profile.id()
+impl RadioSession for KenwoodAsciiRuntime {
+    fn descriptor(&self) -> DriverDescriptor {
+        self.profile.descriptor
+    }
+
+    fn capabilities(&self) -> RadioCapabilities {
+        self.profile.capabilities
+    }
+
+    fn initial_state(&self) -> RadioState {
+        RadioState {
+            connection: ConnectionState::Connecting,
+            main_rx: ReceiverState::default(),
+            sub_rx: match self.profile.receiver_kind {
+                kenwood_ascii::ReceiverKind::SingleVfo => None,
+                kenwood_ascii::ReceiverKind::DualVfo | kenwood_ascii::ReceiverKind::DualRx => {
+                    Some(ReceiverState::default())
+                }
+            },
+            tx: self
+                .profile
+                .capabilities
+                .tx
+                .map(|_| TransmitterState::default()),
+            rit_xit: RitXitState::default(),
+            keyer: self
+                .profile
+                .capabilities
+                .keyer
+                .map(|_| KeyerState::default()),
+        }
     }
 
     fn poll_interval(&self) -> Option<Duration> {
@@ -317,9 +314,19 @@ impl NativeProtocol for KenwoodAsciiRuntime {
 
     async fn startup(
         &mut self,
-        transport: &mut dyn CatTransport,
-        ctx: &mut dyn ProtocolContext,
+        transport: Option<&mut dyn CatTransport>,
+        ctx: &mut dyn StateSink,
     ) -> Result<()> {
+        ctx.publish_patches(
+            vec![
+                StatePatch::Connection(ConnectionState::Identifying),
+                StatePatch::Connection(ConnectionState::Ready),
+            ],
+            UpdateSource::Native,
+        );
+        let Some(transport) = transport else {
+            return Ok(());
+        };
         tracing::info!(
             driver = %self.profile.id(),
             startup_steps = self.profile.startup.len(),
@@ -392,13 +399,36 @@ impl NativeProtocol for KenwoodAsciiRuntime {
         Ok(())
     }
 
-    async fn dispatch_command(
+    async fn execute(
         &mut self,
-        transport: &mut dyn CatTransport,
+        transport: Option<&mut dyn CatTransport>,
         command: RadioCommand,
         state_before: &RadioState,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) -> Result<()> {
+        if matches!(command, RadioCommand::Refresh) {
+            return Ok(());
+        }
+
+        let Some(encoded) = encode_kenwood_command(
+            self.profile,
+            self.options,
+            &command,
+            state_before,
+            self.vfo_routing,
+        )?
+        else {
+            return Err(RadioError::UnsupportedCapability {
+                capability: "command",
+            });
+        };
+
+        ctx.publish_patches(encoded.optimistic.clone(), UpdateSource::Optimistic);
+
+        let Some(transport) = transport else {
+            return Ok(());
+        };
+
         if command_matches_state(&command, state_before) {
             for semantic in kenwood_validation_queries(self.profile, &command, state_before) {
                 let Some(encoded) =
@@ -449,18 +479,6 @@ impl NativeProtocol for KenwoodAsciiRuntime {
             }
         }
 
-        let Some(encoded) = encode_kenwood_command(
-            self.profile,
-            self.options,
-            &command,
-            state_before,
-            self.vfo_routing,
-        )?
-        else {
-            tracing::trace!(driver = %self.profile.id(), ?command, "command has no native transport encoding");
-            return Ok(());
-        };
-
         tracing::debug!(
             driver = %self.profile.id(),
             ?command,
@@ -497,20 +515,26 @@ impl NativeProtocol for KenwoodAsciiRuntime {
 
     async fn process_incoming(
         &mut self,
-        transport: &mut dyn CatTransport,
+        transport: Option<&mut dyn CatTransport>,
         wait_timeout: Duration,
         default_source: UpdateSource,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) -> Result<bool> {
+        let Some(transport) = transport else {
+            return Ok(false);
+        };
         self.process_incoming_with_expected(transport, wait_timeout, default_source, None, ctx)
             .await
     }
 
     async fn poll(
         &mut self,
-        transport: &mut dyn CatTransport,
-        ctx: &mut dyn ProtocolContext,
+        transport: Option<&mut dyn CatTransport>,
+        ctx: &mut dyn StateSink,
     ) -> Result<()> {
+        let Some(transport) = transport else {
+            return Ok(());
+        };
         if let Some(plan) = self.profile.poll {
             tracing::debug!(driver = %self.profile.id(), query_count = plan.queries.len(), "running poll plan");
             for semantic in plan.queries {
@@ -574,7 +598,7 @@ impl IcomCivRuntime {
         encoded: icom_civ::EncodedCommand,
         default_source: UpdateSource,
         wait_timeout: Duration,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) -> Result<()> {
         let icom_civ::EncodedCommand {
             frames,
@@ -633,7 +657,7 @@ impl IcomCivRuntime {
         expected: Option<&IcomResponseMatcher>,
         echo: Option<&[u8]>,
         receiver_hint: Option<crate::ReceiverPath>,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) -> Result<IcomWaitOutcome> {
         let deadline = Instant::now() + wait_timeout;
         let mut saw_frames = false;
@@ -753,7 +777,7 @@ impl IcomCivRuntime {
         frame: &CivFrame,
         default_source: UpdateSource,
         receiver_hint: Option<crate::ReceiverPath>,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) {
         match icom_civ::decode(self.profile, frame, ctx.state(), receiver_hint) {
             Ok(Some(decoded)) => {
@@ -787,9 +811,36 @@ impl IcomCivRuntime {
 }
 
 #[async_trait]
-impl NativeProtocol for IcomCivRuntime {
-    fn id(&self) -> &'static str {
-        self.profile.id()
+impl RadioSession for IcomCivRuntime {
+    fn descriptor(&self) -> DriverDescriptor {
+        self.profile.descriptor
+    }
+
+    fn capabilities(&self) -> RadioCapabilities {
+        self.profile.capabilities
+    }
+
+    fn initial_state(&self) -> RadioState {
+        RadioState {
+            connection: ConnectionState::Connecting,
+            main_rx: ReceiverState::default(),
+            sub_rx: self
+                .profile
+                .capabilities
+                .sub_rx
+                .map(|_| ReceiverState::default()),
+            tx: self
+                .profile
+                .capabilities
+                .tx
+                .map(|_| TransmitterState::default()),
+            rit_xit: RitXitState::default(),
+            keyer: self
+                .profile
+                .capabilities
+                .keyer
+                .map(|_| KeyerState::default()),
+        }
     }
 
     fn poll_interval(&self) -> Option<Duration> {
@@ -798,9 +849,19 @@ impl NativeProtocol for IcomCivRuntime {
 
     async fn startup(
         &mut self,
-        transport: &mut dyn CatTransport,
-        ctx: &mut dyn ProtocolContext,
+        transport: Option<&mut dyn CatTransport>,
+        ctx: &mut dyn StateSink,
     ) -> Result<()> {
+        ctx.publish_patches(
+            vec![
+                StatePatch::Connection(ConnectionState::Identifying),
+                StatePatch::Connection(ConnectionState::Ready),
+            ],
+            UpdateSource::Native,
+        );
+        let Some(transport) = transport else {
+            return Ok(());
+        };
         tracing::info!(
             driver = %self.profile.id(),
             startup_steps = self.profile.startup.len(),
@@ -847,13 +908,30 @@ impl NativeProtocol for IcomCivRuntime {
         Ok(())
     }
 
-    async fn dispatch_command(
+    async fn execute(
         &mut self,
-        transport: &mut dyn CatTransport,
+        transport: Option<&mut dyn CatTransport>,
         command: RadioCommand,
         state_before: &RadioState,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) -> Result<()> {
+        if matches!(command, RadioCommand::Refresh) {
+            return Ok(());
+        }
+
+        let Some(encoded) = icom_civ::encode(self.profile, self.options, &command, state_before)?
+        else {
+            return Err(RadioError::UnsupportedCapability {
+                capability: "command",
+            });
+        };
+
+        ctx.publish_patches(encoded.optimistic.clone(), UpdateSource::Optimistic);
+
+        let Some(transport) = transport else {
+            return Ok(());
+        };
+
         if command_matches_state(&command, state_before) {
             for semantic in icom_validation_queries(self.profile, &command, state_before) {
                 let Some(encoded) =
@@ -904,12 +982,6 @@ impl NativeProtocol for IcomCivRuntime {
             }
         }
 
-        let Some(encoded) = icom_civ::encode(self.profile, self.options, &command, state_before)?
-        else {
-            tracing::trace!(driver = %self.profile.id(), ?command, "command has no ICOM native transport encoding");
-            return Ok(());
-        };
-
         tracing::debug!(
             driver = %self.profile.id(),
             ?command,
@@ -930,11 +1002,14 @@ impl NativeProtocol for IcomCivRuntime {
 
     async fn process_incoming(
         &mut self,
-        transport: &mut dyn CatTransport,
+        transport: Option<&mut dyn CatTransport>,
         wait_timeout: Duration,
         default_source: UpdateSource,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) -> Result<bool> {
+        let Some(transport) = transport else {
+            return Ok(false);
+        };
         Ok(matches!(
             self.process_incoming_with_expected(
                 transport,
@@ -952,9 +1027,12 @@ impl NativeProtocol for IcomCivRuntime {
 
     async fn poll(
         &mut self,
-        transport: &mut dyn CatTransport,
-        ctx: &mut dyn ProtocolContext,
+        transport: Option<&mut dyn CatTransport>,
+        ctx: &mut dyn StateSink,
     ) -> Result<()> {
+        let Some(transport) = transport else {
+            return Ok(());
+        };
         if let Some(plan) = self.profile.poll {
             tracing::debug!(driver = %self.profile.id(), query_count = plan.queries.len(), "running ICOM poll plan");
             for semantic in plan.queries {
@@ -1009,7 +1087,7 @@ impl SmartSdrRuntime {
         encoded: smartsdr::EncodedCommand,
         default_source: UpdateSource,
         wait_timeout: Duration,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) -> Result<()> {
         let smartsdr::EncodedCommand {
             commands,
@@ -1034,7 +1112,7 @@ impl SmartSdrRuntime {
         command: &str,
         default_source: UpdateSource,
         wait_timeout: Duration,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) -> Result<()> {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1);
@@ -1078,7 +1156,7 @@ impl SmartSdrRuntime {
         default_source: UpdateSource,
         expected_sequence: Option<u32>,
         expected_command: Option<&str>,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) -> Result<SmartSdrWaitOutcome> {
         let deadline = Instant::now() + wait_timeout;
         let mut saw_lines = false;
@@ -1228,9 +1306,24 @@ impl SmartSdrRuntime {
 }
 
 #[async_trait]
-impl NativeProtocol for SmartSdrRuntime {
-    fn id(&self) -> &'static str {
-        self.profile.id()
+impl RadioSession for SmartSdrRuntime {
+    fn descriptor(&self) -> DriverDescriptor {
+        self.profile.descriptor
+    }
+
+    fn capabilities(&self) -> RadioCapabilities {
+        self.profile.capabilities
+    }
+
+    fn initial_state(&self) -> RadioState {
+        RadioState {
+            connection: ConnectionState::Connecting,
+            main_rx: ReceiverState::default(),
+            sub_rx: None,
+            tx: Some(TransmitterState::default()),
+            rit_xit: RitXitState::default(),
+            keyer: Some(KeyerState::default()),
+        }
     }
 
     fn poll_interval(&self) -> Option<Duration> {
@@ -1239,9 +1332,19 @@ impl NativeProtocol for SmartSdrRuntime {
 
     async fn startup(
         &mut self,
-        transport: &mut dyn CatTransport,
-        ctx: &mut dyn ProtocolContext,
+        transport: Option<&mut dyn CatTransport>,
+        ctx: &mut dyn StateSink,
     ) -> Result<()> {
+        ctx.publish_patches(
+            vec![StatePatch::Connection(ConnectionState::Identifying)],
+            UpdateSource::Native,
+        );
+        let Some(transport) = transport else {
+            return Err(RadioError::InvalidValue {
+                field: "transport",
+                message: "flexradio-smartsdr requires a transport".to_string(),
+            });
+        };
         let _ = self
             .process_incoming_with_expected(
                 transport,
@@ -1299,13 +1402,30 @@ impl NativeProtocol for SmartSdrRuntime {
         Ok(())
     }
 
-    async fn dispatch_command(
+    async fn execute(
         &mut self,
-        transport: &mut dyn CatTransport,
+        transport: Option<&mut dyn CatTransport>,
         command: RadioCommand,
         state_before: &RadioState,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) -> Result<()> {
+        if matches!(command, RadioCommand::Refresh) {
+            return Ok(());
+        }
+
+        let Some(encoded) = smartsdr::encode(&self.profile, &command, state_before)? else {
+            return Err(RadioError::UnsupportedCapability {
+                capability: "command",
+            });
+        };
+
+        let Some(transport) = transport else {
+            return Err(RadioError::InvalidValue {
+                field: "transport",
+                message: "flexradio-smartsdr requires a transport".to_string(),
+            });
+        };
+
         if command_matches_state(&command, state_before) {
             tracing::debug!(
                 driver = %self.profile.id(),
@@ -1314,10 +1434,6 @@ impl NativeProtocol for SmartSdrRuntime {
             );
             return Ok(());
         }
-
-        let Some(encoded) = smartsdr::encode(&self.profile, &command, state_before)? else {
-            return Ok(());
-        };
 
         self.send_encoded(
             transport,
@@ -1331,11 +1447,14 @@ impl NativeProtocol for SmartSdrRuntime {
 
     async fn process_incoming(
         &mut self,
-        transport: &mut dyn CatTransport,
+        transport: Option<&mut dyn CatTransport>,
         wait_timeout: Duration,
         default_source: UpdateSource,
-        ctx: &mut dyn ProtocolContext,
+        ctx: &mut dyn StateSink,
     ) -> Result<bool> {
+        let Some(transport) = transport else {
+            return Ok(false);
+        };
         Ok(matches!(
             self.process_incoming_with_expected(
                 transport,
@@ -1352,8 +1471,8 @@ impl NativeProtocol for SmartSdrRuntime {
 
     async fn poll(
         &mut self,
-        _transport: &mut dyn CatTransport,
-        _ctx: &mut dyn ProtocolContext,
+        _transport: Option<&mut dyn CatTransport>,
+        _ctx: &mut dyn StateSink,
     ) -> Result<()> {
         Ok(())
     }

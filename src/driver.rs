@@ -1,8 +1,10 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 
 use crate::{
-    capabilities::RadioCapabilities, command::RadioCommand, error::Result, update::StatePatch,
-    RadioState, UpdateSource,
+    error::Result, transport::CatTransport, RadioCapabilities, RadioCommand, RadioState,
+    StatePatch, UpdateSource,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -12,38 +14,47 @@ pub struct DriverDescriptor {
     pub description: &'static str,
 }
 
-#[derive(Debug, Clone)]
-pub struct DriverCommandOutcome {
-    pub patches: Vec<StatePatch>,
-    pub source: UpdateSource,
+pub(crate) trait StateSink: Send {
+    fn state(&self) -> &RadioState;
+    fn publish_patches(&mut self, patches: Vec<StatePatch>, source: UpdateSource);
 }
 
-impl DriverCommandOutcome {
-    pub fn command_response(patches: impl Into<Vec<StatePatch>>) -> Self {
-        Self {
-            patches: patches.into(),
-            source: UpdateSource::CommandResponse,
-        }
-    }
-
-    pub fn manual_refresh(patches: impl Into<Vec<StatePatch>>) -> Self {
-        Self {
-            patches: patches.into(),
-            source: UpdateSource::ManualRefresh,
-        }
-    }
-}
-
+/// The complete, per-connection behavior for one supported radio.
+///
+/// This is intentionally crate-private. The supported extension point is the
+/// built-in factory registry rather than downstream trait implementations.
 #[async_trait]
-pub trait RadioDriver: Send + 'static {
+pub(crate) trait RadioSession: Send {
     fn descriptor(&self) -> DriverDescriptor;
     fn capabilities(&self) -> RadioCapabilities;
     fn initial_state(&self) -> RadioState;
+    fn poll_interval(&self) -> Option<Duration>;
 
-    async fn start(&mut self) -> Result<Vec<StatePatch>>;
-    async fn handle_command(
+    async fn startup(
         &mut self,
+        transport: Option<&mut dyn CatTransport>,
+        sink: &mut dyn StateSink,
+    ) -> Result<()>;
+
+    async fn execute(
+        &mut self,
+        transport: Option<&mut dyn CatTransport>,
         command: RadioCommand,
-        current_state: &RadioState,
-    ) -> Result<DriverCommandOutcome>;
+        state_before: &RadioState,
+        sink: &mut dyn StateSink,
+    ) -> Result<()>;
+
+    async fn process_incoming(
+        &mut self,
+        transport: Option<&mut dyn CatTransport>,
+        wait_timeout: Duration,
+        default_source: UpdateSource,
+        sink: &mut dyn StateSink,
+    ) -> Result<bool>;
+
+    async fn poll(
+        &mut self,
+        transport: Option<&mut dyn CatTransport>,
+        sink: &mut dyn StateSink,
+    ) -> Result<()>;
 }

@@ -5,9 +5,9 @@ use tokio::sync::{broadcast, mpsc, watch};
 use crate::{
     actor::{send_command, CommandEnvelope, RadioTask},
     command::{RadioCommand, ReceiverPath},
+    driver::RadioSession,
     drivers,
-    drivers::{DummyRadioDriver, FlexRadioSmartSdrDriver, IcomCivDriver, KenwoodAsciiDriver},
-    error::{RadioError, Result},
+    error::Result,
     transport::{
         boxed_transport, open_transport, BoxedCatTransport, CatTransport, TransportConfig,
     },
@@ -119,9 +119,8 @@ impl Radio {
     }
 
     pub async fn build(config: RadioConfig) -> Result<(Self, RadioTask)> {
-        if FlexRadioSmartSdrDriver::from_driver_id(&config.driver, "")?.is_some() {
-            FlexRadioSmartSdrDriver::validate_transport_config(&config.transport)?;
-        }
+        let session =
+            drivers::create_session(&config.driver, &config.options, &config.transport, false)?;
 
         tracing::debug!(
             driver = %config.driver,
@@ -129,7 +128,7 @@ impl Radio {
             "opening transport for radio"
         );
         let transport = open_transport(&config.transport).await?;
-        Self::build_inner(config, transport).await
+        Self::build_from_session(config, session, transport)
     }
 
     pub async fn connect_with_transport<T>(config: RadioConfig, transport: T) -> Result<Self>
@@ -170,16 +169,18 @@ impl Radio {
     where
         T: CatTransport + 'static,
     {
-        Self::build_inner(config, Some(boxed_transport(transport))).await
+        let session =
+            drivers::create_session(&config.driver, &config.options, &config.transport, true)?;
+        Self::build_from_session(config, session, Some(boxed_transport(transport)))
     }
 
-    async fn build_inner(
+    fn build_from_session(
         config: RadioConfig,
+        session: Box<dyn RadioSession>,
         transport: Option<BoxedCatTransport>,
     ) -> Result<(Self, RadioTask)> {
-        let driver_id = config.driver.trim();
         tracing::debug!(
-            driver = %driver_id,
+            driver = %config.driver,
             options = %config.options,
             has_transport = transport.is_some(),
             command_channel_capacity = config.command_channel_capacity,
@@ -187,31 +188,9 @@ impl Radio {
             "building radio internals"
         );
 
-        let driver: Box<dyn crate::RadioDriver> = match driver_id.to_ascii_lowercase().as_str() {
-            "dummy" => Box::new(DummyRadioDriver::with_options(config.options.clone())),
-            _ => match KenwoodAsciiDriver::from_driver_id(driver_id, config.options.clone())? {
-                Some(driver) => Box::new(driver),
-                None => match IcomCivDriver::from_driver_id(driver_id, config.options.clone())? {
-                    Some(driver) => Box::new(driver),
-                    None => match FlexRadioSmartSdrDriver::from_driver_id(
-                        driver_id,
-                        config.options.clone(),
-                    )? {
-                        Some(driver) => Box::new(driver),
-                        None => {
-                            tracing::error!(driver = %config.driver, "unsupported radio driver requested");
-                            return Err(RadioError::UnsupportedDriver {
-                                driver: config.driver,
-                            });
-                        }
-                    },
-                },
-            },
-        };
-
-        let descriptor = driver.descriptor();
-        let capabilities = Arc::new(driver.capabilities());
-        let initial_state = driver.initial_state();
+        let descriptor = session.descriptor();
+        let capabilities = Arc::new(session.capabilities());
+        let initial_state = session.initial_state();
         let initial_snapshot = Arc::new(initial_state.clone());
 
         let (command_tx, command_rx) = mpsc::channel(config.command_channel_capacity.max(1));
@@ -233,13 +212,12 @@ impl Radio {
         };
 
         let task = RadioTask::new(
-            driver,
+            session,
             initial_state,
             command_rx,
             state_tx,
             update_tx,
             transport,
-            config.options,
         );
 
         Ok((radio, task))
@@ -540,7 +518,7 @@ pub fn supported_drivers() -> &'static [DriverDescriptor] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Capability, ChangeFlags};
+    use crate::{Capability, ChangeFlags, RadioError};
 
     fn assert_send_sync<T: Send + Sync>() {}
 
@@ -667,6 +645,43 @@ mod tests {
                 field: "transport",
                 ..
             }
+        ));
+    }
+
+    #[tokio::test]
+    async fn registry_resolution_and_option_parsing_happen_before_transport_open() {
+        let unsupported =
+            Radio::build(RadioConfig::new("not-a-radio").with_tcp_transport("127.0.0.1:0")).await;
+        assert!(matches!(
+            unsupported,
+            Err(RadioError::UnsupportedDriver { .. })
+        ));
+
+        let invalid_options = Radio::build(
+            RadioConfig::new("icom-ic705")
+                .with_options("poll_interval=invalid")
+                .with_tcp_transport("127.0.0.1:0"),
+        )
+        .await;
+        assert!(matches!(
+            invalid_options,
+            Err(RadioError::InvalidValue { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn transportless_native_session_validates_and_applies_optimistic_state() {
+        let radio = Radio::connect(RadioConfig::new("ELECRAFT-K2"))
+            .await
+            .unwrap();
+        let frequency = Frequency::from_hz(7_100_000);
+
+        radio.set_main_frequency(frequency).await.unwrap();
+
+        assert_eq!(radio.latest_state().main_rx.frequency, Some(frequency));
+        assert!(matches!(
+            radio.set_main_mode(Mode::Am).await,
+            Err(RadioError::InvalidValue { field: "mode", .. })
         ));
     }
 

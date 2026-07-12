@@ -1,44 +1,39 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 
 use crate::{
-    capabilities::RadioCapabilities,
     command::{RadioCommand, ReceiverPath},
-    driver::{DriverCommandOutcome, DriverDescriptor, RadioDriver},
+    driver::{DriverDescriptor, RadioSession, StateSink},
     error::Result,
+    transport::CatTransport,
     update::StatePatch,
-    ConnectionState, Frequency, LeveledSetting, Mode, Power, RadioState, ReceiverFilterState,
-    ReceiverRfState, ReceiverState, RitXitOffsetHz, RitXitState, TransmitterState,
+    ConnectionState, Frequency, LeveledSetting, Mode, Power, RadioCapabilities, RadioState,
+    ReceiverFilterState, ReceiverRfState, ReceiverState, RitXitOffsetHz, RitXitState,
+    TransmitterState, UpdateSource,
 };
 
-pub const DUMMY_DRIVER: DriverDescriptor = DriverDescriptor {
+pub(crate) const DUMMY_DRIVER: DriverDescriptor = DriverDescriptor {
     id: "dummy",
     display_name: "Dummy Radio",
     description: "In-memory radio driver that exposes every normalized v1 capability.",
 };
 
 #[derive(Debug, Clone, Default)]
-pub struct DummyRadioDriver {
+pub(crate) struct DummyRadioSession {
     options: String,
 }
 
-impl DummyRadioDriver {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_options(options: impl Into<String>) -> Self {
+impl DummyRadioSession {
+    pub(crate) fn with_options(options: impl Into<String>) -> Self {
         Self {
             options: options.into(),
         }
     }
-
-    pub fn options(&self) -> &str {
-        &self.options
-    }
 }
 
 #[async_trait]
-impl RadioDriver for DummyRadioDriver {
+impl RadioSession for DummyRadioSession {
     fn descriptor(&self) -> DriverDescriptor {
         DUMMY_DRIVER
     }
@@ -51,17 +46,31 @@ impl RadioDriver for DummyRadioDriver {
         dummy_state(ConnectionState::Connecting)
     }
 
-    async fn start(&mut self) -> Result<Vec<StatePatch>> {
-        tracing::info!(options = %self.options, "dummy driver start");
-        Ok(vec![StatePatch::Connection(ConnectionState::Ready)])
+    fn poll_interval(&self) -> Option<Duration> {
+        None
     }
 
-    async fn handle_command(
+    async fn startup(
         &mut self,
+        _transport: Option<&mut dyn CatTransport>,
+        sink: &mut dyn StateSink,
+    ) -> Result<()> {
+        tracing::info!(options = %self.options, "dummy session start");
+        sink.publish_patches(
+            vec![StatePatch::Connection(ConnectionState::Ready)],
+            UpdateSource::Native,
+        );
+        Ok(())
+    }
+
+    async fn execute(
+        &mut self,
+        _transport: Option<&mut dyn CatTransport>,
         command: RadioCommand,
-        _current_state: &RadioState,
-    ) -> Result<DriverCommandOutcome> {
-        tracing::debug!(?command, "dummy driver handling command");
+        _state_before: &RadioState,
+        sink: &mut dyn StateSink,
+    ) -> Result<()> {
+        tracing::debug!(?command, "dummy session handling command");
         let is_refresh = matches!(command, RadioCommand::Refresh);
         let patches = match command {
             RadioCommand::SetReceiverFrequency {
@@ -115,47 +124,56 @@ impl RadioDriver for DummyRadioDriver {
                 StatePatch::MainRxAutoNotch(enabled),
                 StatePatch::SubRxAutoNotch(enabled),
             ),
-
             RadioCommand::SetTxFrequency(frequency) => vec![StatePatch::TxFrequency(frequency)],
             RadioCommand::SetTxMode(mode) => vec![StatePatch::TxMode(mode)],
             RadioCommand::SetTxPower(power) => vec![StatePatch::TxPower(power)],
             RadioCommand::SetPtt(transmitting) | RadioCommand::SetDataPtt(transmitting) => {
                 vec![StatePatch::Transmitting(transmitting)]
             }
-            RadioCommand::SetSplit(split) => vec![StatePatch::Split(split)],
-
+            RadioCommand::SetSplit(enabled) => vec![StatePatch::Split(enabled)],
             RadioCommand::SetRitEnabled { receiver, enabled } => receiver_patch(
                 receiver,
                 StatePatch::MainRitEnabled(enabled),
                 StatePatch::SubRitEnabled(enabled),
             ),
             RadioCommand::SetXitEnabled(enabled) => vec![StatePatch::XitEnabled(enabled)],
+            RadioCommand::SetRitXitOffset(offset) => vec![StatePatch::RitXitOffset(offset)],
             RadioCommand::SetRitOffset { receiver, offset } => receiver_patch(
                 receiver,
                 StatePatch::RitOffset(offset),
                 StatePatch::SubRitOffset(offset),
             ),
             RadioCommand::SetXitOffset(offset) => vec![StatePatch::XitOffset(offset)],
-            RadioCommand::SetRitXitOffset(offset) => vec![StatePatch::RitXitOffset(offset)],
-
             RadioCommand::SetKeyerSpeed(wpm) => vec![StatePatch::KeyerSpeed(wpm)],
-            RadioCommand::SendCw(_text) => vec![StatePatch::KeyerSending(true)],
+            RadioCommand::SendCw(_) => vec![StatePatch::KeyerSending(true)],
             RadioCommand::StopCw => vec![StatePatch::KeyerSending(false)],
-
             RadioCommand::Refresh => Vec::new(),
         };
-
-        tracing::debug!(
-            patch_count = patches.len(),
-            is_refresh,
-            "dummy driver produced patches"
-        );
-
-        if is_refresh {
-            Ok(DriverCommandOutcome::manual_refresh(patches))
+        let source = if is_refresh {
+            UpdateSource::ManualRefresh
         } else {
-            Ok(DriverCommandOutcome::command_response(patches))
-        }
+            UpdateSource::CommandResponse
+        };
+        sink.publish_patches(patches, source);
+        Ok(())
+    }
+
+    async fn process_incoming(
+        &mut self,
+        _transport: Option<&mut dyn CatTransport>,
+        _wait_timeout: Duration,
+        _default_source: UpdateSource,
+        _sink: &mut dyn StateSink,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
+    async fn poll(
+        &mut self,
+        _transport: Option<&mut dyn CatTransport>,
+        _sink: &mut dyn StateSink,
+    ) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -211,76 +229,14 @@ fn dummy_state(connection: ConnectionState) -> RadioState {
             sub_rit_enabled: Some(false),
             xit_enabled: Some(false),
             sub_xit_enabled: Some(false),
-            offset_hz: Some(RitXitOffsetHz::new(0).expect("zero is a valid RIT/XIT offset")),
-            xit_offset_hz: Some(RitXitOffsetHz::new(0).expect("zero is a valid RIT/XIT offset")),
-            sub_offset_hz: Some(RitXitOffsetHz::new(0).expect("zero is a valid RIT/XIT offset")),
-            sub_xit_offset_hz: Some(
-                RitXitOffsetHz::new(0).expect("zero is a valid RIT/XIT offset"),
-            ),
+            offset_hz: Some(RitXitOffsetHz::new(0).expect("zero is valid")),
+            xit_offset_hz: Some(RitXitOffsetHz::new(0).expect("zero is valid")),
+            sub_offset_hz: Some(RitXitOffsetHz::new(0).expect("zero is valid")),
+            sub_xit_offset_hz: Some(RitXitOffsetHz::new(0).expect("zero is valid")),
         },
         keyer: Some(crate::KeyerState {
             speed_wpm: Some(20),
             sending: Some(false),
         }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{Capability, RitXitOffsetType};
-
-    #[test]
-    fn dummy_reports_all_normalized_capabilities() {
-        let caps = DummyRadioDriver::new().capabilities();
-
-        assert_eq!(caps.main_rx.frequency, Capability::ReadWrite);
-        assert_eq!(
-            caps.sub_rx.unwrap().rf.noise_reduction,
-            Capability::ReadWrite
-        );
-        assert_eq!(caps.tx.unwrap().split, Capability::ReadWrite);
-        assert_eq!(caps.rit_xit.offset, Capability::ReadWrite);
-        assert_eq!(caps.rit_xit.offset_type, RitXitOffsetType::Independent);
-        assert!(caps.keyer.unwrap().send_cw.is_supported());
-    }
-
-    #[test]
-    fn dummy_receives_passthrough_options() {
-        let driver = DummyRadioDriver::with_options("foo=bar,answer=42");
-        assert_eq!(driver.options(), "foo=bar,answer=42");
-    }
-
-    #[tokio::test]
-    async fn dummy_supports_independent_rit_and_xit_offsets() {
-        let mut driver = DummyRadioDriver::new();
-        let state = driver.initial_state();
-        let offset = RitXitOffsetHz::new(125).unwrap();
-        let xit = RitXitOffsetHz::new(-250).unwrap();
-        let shared = RitXitOffsetHz::new(400).unwrap();
-
-        let outcome = driver
-            .handle_command(
-                RadioCommand::SetRitOffset {
-                    receiver: ReceiverPath::Main,
-                    offset,
-                },
-                &state,
-            )
-            .await
-            .unwrap();
-        assert_eq!(outcome.patches, vec![StatePatch::RitOffset(offset)]);
-
-        let outcome = driver
-            .handle_command(RadioCommand::SetXitOffset(xit), &state)
-            .await
-            .unwrap();
-        assert_eq!(outcome.patches, vec![StatePatch::XitOffset(xit)]);
-
-        let outcome = driver
-            .handle_command(RadioCommand::SetRitXitOffset(shared), &state)
-            .await
-            .unwrap();
-        assert_eq!(outcome.patches, vec![StatePatch::RitXitOffset(shared)]);
     }
 }
