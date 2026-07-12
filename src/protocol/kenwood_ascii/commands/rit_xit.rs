@@ -8,7 +8,7 @@ use crate::{
 
 use super::{DecodedFrame, EncodedCommand};
 use crate::protocol::kenwood_ascii::{
-    AsciiFrame, CommandPriority, KenwoodAsciiProfile, ResponseMatcher,
+    AsciiFrame, CommandPriority, KenwoodAsciiProfile, OutgoingStep, ResponseMatcher,
 };
 
 pub fn encode(
@@ -197,13 +197,19 @@ fn encode_offset(
     }
 
     let (confirm_frame, matcher) = confirm_query(profile)?;
-    frames.push(confirm_frame);
-
-    Ok(EncodedCommand::new(
-        frames,
+    let mut steps = frames
+        .into_iter()
+        .map(|frame| OutgoingStep::written(frame, CommandPriority::Normal))
+        .collect::<Vec<_>>();
+    steps.push(OutgoingStep::decoded(
+        confirm_frame,
         matcher,
-        vec![offset_patch(receiver, target_offset)],
         CommandPriority::Normal,
+    ));
+
+    Ok(EncodedCommand::with_steps(
+        steps,
+        vec![offset_patch(receiver, target_offset)],
     ))
 }
 

@@ -8,7 +8,7 @@ use crate::{
 
 use super::{DecodedFrame, EncodedCommand, VfoRouting};
 use crate::protocol::kenwood_ascii::{
-    AsciiFrame, CommandPriority, KenwoodAsciiProfile, ResponseMatcher,
+    AsciiFrame, CommandPriority, KenwoodAsciiProfile, OutgoingStep, ResponseMatcher,
 };
 
 pub fn encode(
@@ -353,10 +353,25 @@ fn encode_noise_blanker(
         }
     };
 
+    let patches = vec![setting_patch(receiver, Feature::NoiseBlanker, index)];
+    if frames.len() == 2 && profile.id() == "kenwood-ts990" {
+        let steps = frames
+            .into_iter()
+            .zip([
+                ResponseMatcher::Prefix("NB1"),
+                ResponseMatcher::Prefix("NB2"),
+            ])
+            .map(|(frame, expected)| {
+                OutgoingStep::decoded(frame, expected, CommandPriority::Normal)
+            })
+            .collect();
+        return Ok(EncodedCommand::with_steps(steps, patches));
+    }
+
     Ok(EncodedCommand::new(
         frames,
         matcher,
-        vec![setting_patch(receiver, Feature::NoiseBlanker, index)],
+        patches,
         CommandPriority::Normal,
     ))
 }
@@ -1048,6 +1063,8 @@ mod tests {
         .unwrap();
         assert_eq!(nb.frames[0].as_str(), "NB111;");
         assert_eq!(nb.frames[1].as_str(), "NB211;");
+        assert_eq!(nb.steps[0].expected, ResponseMatcher::Prefix("NB1"));
+        assert_eq!(nb.steps[1].expected, ResponseMatcher::Prefix("NB2"));
 
         let yaesu = profile_by_id("yaesu-ftdx10").unwrap();
         let an = encode(

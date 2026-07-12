@@ -10,14 +10,17 @@ pub mod tx;
 
 use crate::{command::ReceiverPath, error::RadioError, update::StatePatch, Result, UpdateSource};
 
-use super::{AsciiFrame, CommandPriority, ResponseMatcher};
+use super::{AsciiFrame, CommandPriority, OutgoingStep, ResponseMatcher};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedCommand {
-    pub frames: Vec<AsciiFrame>,
-    pub matcher: ResponseMatcher,
+    pub steps: Vec<OutgoingStep>,
+    // Compatibility views for codec consumers. Production dispatch uses only
+    // `steps`, which is the authoritative transaction representation.
+    pub(crate) frames: Vec<AsciiFrame>,
+    pub(crate) matcher: ResponseMatcher,
     pub completion_patches: Vec<StatePatch>,
-    pub priority: CommandPriority,
+    pub(crate) priority: CommandPriority,
 }
 
 impl EncodedCommand {
@@ -27,12 +30,58 @@ impl EncodedCommand {
         completion_patches: Vec<StatePatch>,
         priority: CommandPriority,
     ) -> Self {
+        let steps = frames
+            .iter()
+            .cloned()
+            .map(|frame| match matcher_for_frame(&frame, &matcher) {
+                ResponseMatcher::None => OutgoingStep::written(frame, priority),
+                expected => OutgoingStep::decoded(frame, expected, priority),
+            })
+            .collect();
         Self {
+            steps,
             frames,
             matcher,
             completion_patches,
             priority,
         }
+    }
+
+    pub fn with_steps(steps: Vec<OutgoingStep>, completion_patches: Vec<StatePatch>) -> Self {
+        let frames = steps.iter().map(|step| step.frame.clone()).collect();
+        let matcher = steps
+            .last()
+            .map(|step| step.expected.clone())
+            .unwrap_or(ResponseMatcher::None);
+        let priority = steps
+            .first()
+            .map(|step| step.priority)
+            .unwrap_or(CommandPriority::Normal);
+        Self {
+            steps,
+            frames,
+            matcher,
+            completion_patches,
+            priority,
+        }
+    }
+}
+
+fn matcher_for_frame(frame: &AsciiFrame, matcher: &ResponseMatcher) -> ResponseMatcher {
+    match matcher {
+        ResponseMatcher::OneOf(prefixes) => prefixes
+            .iter()
+            .copied()
+            .find(|prefix| frame.command() == *prefix)
+            .or_else(|| {
+                prefixes
+                    .iter()
+                    .copied()
+                    .find(|prefix| frame.command().starts_with(prefix))
+            })
+            .map(ResponseMatcher::Prefix)
+            .unwrap_or_else(|| matcher.clone()),
+        _ => matcher.clone(),
     }
 }
 

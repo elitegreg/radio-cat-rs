@@ -11,7 +11,7 @@ use super::{
     DecodedFrame, EncodedCommand,
 };
 use crate::protocol::kenwood_ascii::{
-    AsciiFrame, CommandPriority, KenwoodAsciiProfile, ResponseMatcher,
+    AsciiFrame, CommandPriority, KenwoodAsciiProfile, OutgoingStep, ResponseMatcher,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -158,12 +158,30 @@ fn encode_mode_for_target(
         return Err(RadioError::UnsupportedCapability { capability: "mode" });
     };
 
-    Ok(EncodedCommand::new(
-        frames,
-        matcher,
-        mode_patches(profile, target, mode, state),
-        CommandPriority::Normal,
-    ))
+    let patches = mode_patches(profile, target, mode, state);
+    if frames.len() == 1 {
+        return Ok(EncodedCommand::new(
+            frames,
+            matcher,
+            patches,
+            CommandPriority::Normal,
+        ));
+    }
+
+    let steps = frames
+        .into_iter()
+        .map(|frame| {
+            let expected = match frame.command() {
+                "MD" => ResponseMatcher::Prefix("MD"),
+                "DA" => ResponseMatcher::Prefix("DA"),
+                "MD$" => ResponseMatcher::Prefix("MD$"),
+                "DT$" => ResponseMatcher::Prefix("DT$"),
+                command => unreachable!("unexpected multi-frame mode command {command}"),
+            };
+            OutgoingStep::decoded(frame, expected, CommandPriority::Normal)
+        })
+        .collect();
+    Ok(EncodedCommand::with_steps(steps, patches))
 }
 
 fn decode_md(

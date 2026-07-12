@@ -80,50 +80,67 @@ impl KenwoodAsciiRuntime {
         transport: &mut dyn CatTransport,
         encoded: EncodedCommand,
         default_source: UpdateSource,
-        wait_timeout: Duration,
+        _wait_timeout: Duration,
         ctx: &mut dyn StateSink,
     ) -> Result<CommandCompletion> {
-        let completion = if matcher_expects_response(&encoded.matcher) {
-            CommandCompletion::Observed
-        } else {
-            CommandCompletion::Written
-        };
-        let frame_count = encoded.frames.len();
-        for (index, frame) in encoded.frames.into_iter().enumerate() {
-            let is_last = index + 1 == frame_count;
+        let mut completion = CommandCompletion::Written;
+        for step in encoded.steps {
+            let mut busy_retries = step.busy_retries;
+            loop {
+                let frame = &step.frame;
 
-            tracing::debug!(
-                driver = %self.profile.id(),
-                tx_frame = frame.as_str(),
-                priority = ?encoded.priority,
-                "sending CAT frame"
-            );
+                tracing::debug!(
+                    driver = %self.profile.id(),
+                    tx_frame = frame.as_str(),
+                    priority = ?step.priority,
+                    busy_retries,
+                    "sending CAT transaction step"
+                );
 
-            timeout(TRANSPORT_IO_TIMEOUT, transport.write_all(frame.as_bytes()))
-                .await
-                .map_err(|_| RadioError::Timeout {
-                    command: "transport-write",
-                })??;
-            timeout(TRANSPORT_IO_TIMEOUT, transport.flush())
-                .await
-                .map_err(|_| RadioError::Timeout {
-                    command: "transport-flush",
-                })??;
+                timeout(TRANSPORT_IO_TIMEOUT, transport.write_all(frame.as_bytes()))
+                    .await
+                    .map_err(|_| RadioError::Timeout {
+                        command: "transport-write",
+                    })??;
+                timeout(TRANSPORT_IO_TIMEOUT, transport.flush())
+                    .await
+                    .map_err(|_| RadioError::Timeout {
+                        command: "transport-flush",
+                    })??;
 
-            if is_last && matcher_expects_response(&encoded.matcher) {
-                let matched = self
+                if !step.expected.expects_response() {
+                    break;
+                }
+
+                let result = self
                     .process_incoming_with_expected(
                         transport,
-                        wait_timeout,
+                        step.timeout,
                         default_source,
-                        Some(&encoded.matcher),
+                        Some(&step.expected),
+                        step.decode_required,
                         ctx,
                     )
-                    .await?;
-                if !matched {
-                    return Err(RadioError::Timeout {
-                        command: "command-response",
-                    });
+                    .await;
+                match result {
+                    Ok(true) => {
+                        completion = match step.completion {
+                            kenwood_ascii::StepCompletion::Written => completion,
+                            kenwood_ascii::StepCompletion::Matched => CommandCompletion::Accepted,
+                            kenwood_ascii::StepCompletion::Decoded => CommandCompletion::Observed,
+                        };
+                        break;
+                    }
+                    Ok(false) => {
+                        return Err(RadioError::Timeout {
+                            command: "kenwood-step-response",
+                        })
+                    }
+                    Err(RadioError::ProtocolBusy) if busy_retries > 0 => {
+                        busy_retries -= 1;
+                        tokio::time::sleep(step.busy_retry_delay).await;
+                    }
+                    Err(error) => return Err(error),
                 }
             }
         }
@@ -137,6 +154,7 @@ impl KenwoodAsciiRuntime {
         wait_timeout: Duration,
         default_source: UpdateSource,
         expected: Option<&ResponseMatcher>,
+        decode_required: bool,
         ctx: &mut dyn StateSink,
     ) -> Result<bool> {
         let deadline = Instant::now() + wait_timeout;
@@ -185,23 +203,13 @@ impl KenwoodAsciiRuntime {
                         "received CAT protocol error frame"
                     );
                     if expected.is_some() {
-                        let reason = match protocol_error {
-                            kenwood_ascii::ProtocolErrorFrame::Syntax { .. } => "syntax error",
-                            kenwood_ascii::ProtocolErrorFrame::Busy => "radio busy",
-                            kenwood_ascii::ProtocolErrorFrame::Communication => {
-                                "communication failure"
-                            }
-                        };
-                        return Err(RadioError::CommandRejected {
-                            protocol: "kenwood-ascii",
-                            reason,
-                        });
+                        return Err(protocol_error.to_error());
                     }
                     continue;
                 }
 
                 if let Some(expected) = expected {
-                    if matcher_matches_frame(expected, &frame) {
+                    if expected.matches(&frame) {
                         tracing::debug!(
                             driver = %self.profile.id(),
                             rx_frame = frame.as_str(),
@@ -226,6 +234,12 @@ impl KenwoodAsciiRuntime {
                         ctx.publish_patches(decoded.patches, source);
                     }
                     Ok(None) => {
+                        if matched_expected && decode_required {
+                            return Err(RadioError::Decode {
+                                command: "kenwood-response",
+                                message: "matched response was not decoded".to_string(),
+                            });
+                        }
                         tracing::trace!(
                             driver = %self.profile.id(),
                             rx_frame = frame.as_str(),
@@ -233,6 +247,9 @@ impl KenwoodAsciiRuntime {
                         );
                     }
                     Err(error) => {
+                        if matched_expected {
+                            return Err(error);
+                        }
                         tracing::warn!(
                             driver = %self.profile.id(),
                             rx_frame = frame.as_str(),
@@ -249,53 +266,6 @@ impl KenwoodAsciiRuntime {
 
             if matched_expected {
                 return Ok(true);
-            }
-        }
-    }
-
-    async fn recover_timeout(
-        &mut self,
-        transport: &mut dyn CatTransport,
-        command: &RadioCommand,
-        state_before: &RadioState,
-        ctx: &mut dyn StateSink,
-    ) {
-        for semantic in kenwood_timeout_recovery_queries(self.profile, command, state_before) {
-            let Some(encoded) =
-                (match encode_kenwood_query(self.profile, semantic, self.vfo_routing) {
-                    Ok(encoded) => encoded,
-                    Err(error) => {
-                        tracing::warn!(
-                            driver = %self.profile.id(),
-                            ?command,
-                            semantic,
-                            ?error,
-                            "failed to encode Kenwood timeout recovery query"
-                        );
-                        continue;
-                    }
-                })
-            else {
-                continue;
-            };
-
-            if let Err(error) = self
-                .send_encoded(
-                    transport,
-                    encoded,
-                    UpdateSource::CommandResponse,
-                    COMMAND_RESPONSE_TIMEOUT,
-                    ctx,
-                )
-                .await
-            {
-                tracing::warn!(
-                    driver = %self.profile.id(),
-                    ?command,
-                    semantic,
-                    ?error,
-                    "Kenwood timeout recovery query failed; continuing"
-                );
             }
         }
     }
@@ -532,24 +502,14 @@ impl RadioSession for KenwoodAsciiRuntime {
                     continue;
                 };
 
-                if let Err(error) = self
-                    .send_encoded(
-                        transport,
-                        encoded,
-                        UpdateSource::CommandResponse,
-                        COMMAND_RESPONSE_TIMEOUT,
-                        ctx,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        driver = %self.profile.id(),
-                        ?command,
-                        semantic,
-                        ?error,
-                        "Kenwood validation query failed; continuing with setter"
-                    );
-                }
+                self.send_encoded(
+                    transport,
+                    encoded,
+                    UpdateSource::CommandResponse,
+                    COMMAND_RESPONSE_TIMEOUT,
+                    ctx,
+                )
+                .await?;
             }
 
             if command_matches_state(&command, ctx.state()) {
@@ -572,7 +532,7 @@ impl RadioSession for KenwoodAsciiRuntime {
 
         let completion_patches = encoded.completion_patches.clone();
 
-        match self
+        let completion = self
             .send_encoded(
                 transport,
                 encoded,
@@ -580,27 +540,11 @@ impl RadioSession for KenwoodAsciiRuntime {
                 COMMAND_RESPONSE_TIMEOUT,
                 ctx,
             )
-            .await
-        {
-            Ok(completion) => {
-                if completion == CommandCompletion::Written {
-                    ctx.publish_patches(completion_patches, UpdateSource::CommandResponse);
-                }
-                Ok(completion)
-            }
-            Err(error @ RadioError::Timeout { .. }) => {
-                tracing::warn!(
-                    driver = %self.profile.id(),
-                    ?command,
-                    ?error,
-                    "Kenwood-ASCII set command timed out; querying current state instead"
-                );
-                self.recover_timeout(transport, &command, state_before, ctx)
-                    .await;
-                Err(error)
-            }
-            Err(error) => Err(error),
+            .await?;
+        if completion == CommandCompletion::Written {
+            ctx.publish_patches(completion_patches, UpdateSource::CommandResponse);
         }
+        Ok(completion)
     }
 
     async fn process_incoming(
@@ -613,8 +557,15 @@ impl RadioSession for KenwoodAsciiRuntime {
         let Some(transport) = transport else {
             return Ok(false);
         };
-        self.process_incoming_with_expected(transport, wait_timeout, default_source, None, ctx)
-            .await
+        self.process_incoming_with_expected(
+            transport,
+            wait_timeout,
+            default_source,
+            None,
+            false,
+            ctx,
+        )
+        .await
     }
 
     async fn poll_one(
@@ -1797,11 +1748,7 @@ fn decode_kenwood_frame(
     Ok(None)
 }
 
-fn matcher_expects_response(matcher: &ResponseMatcher) -> bool {
-    !matches!(matcher, ResponseMatcher::None)
-}
-
-fn kenwood_timeout_recovery_queries(
+fn kenwood_validation_queries(
     profile: &'static KenwoodAsciiProfile,
     command: &RadioCommand,
     _state_before: &RadioState,
@@ -2014,17 +1961,6 @@ fn rit_offset_queries(
     }
 }
 
-fn matcher_matches_frame(matcher: &ResponseMatcher, frame: &AsciiFrame) -> bool {
-    match matcher {
-        ResponseMatcher::None => false,
-        ResponseMatcher::Exact(expected) => frame.as_str() == *expected,
-        ResponseMatcher::Prefix(prefix) => frame.as_str().starts_with(prefix),
-        ResponseMatcher::OneOf(prefixes) => prefixes
-            .iter()
-            .any(|prefix| frame.as_str().starts_with(prefix)),
-    }
-}
-
 fn command_matches_state(command: &RadioCommand, state: &RadioState) -> bool {
     match command {
         RadioCommand::SetReceiverFrequency {
@@ -2137,14 +2073,6 @@ fn receiver_state(state: &RadioState, receiver: ReceiverPath) -> Option<&crate::
         ReceiverPath::Main => Some(&state.main_rx),
         ReceiverPath::Sub => state.sub_rx.as_ref(),
     }
-}
-
-fn kenwood_validation_queries(
-    profile: &'static KenwoodAsciiProfile,
-    command: &RadioCommand,
-    state_before: &RadioState,
-) -> Vec<&'static str> {
-    kenwood_timeout_recovery_queries(profile, command, state_before)
 }
 
 fn icom_validation_queries(
@@ -2268,6 +2196,7 @@ mod tests {
     struct TestTransport {
         reads: VecDeque<Vec<u8>>,
         writes: Vec<Vec<u8>>,
+        pending_when_empty: bool,
     }
 
     #[async_trait]
@@ -2279,6 +2208,9 @@ mod tests {
 
         async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
             let Some(chunk) = self.reads.pop_front() else {
+                if self.pending_when_empty {
+                    return std::future::pending().await;
+                }
                 return Ok(0);
             };
             buf[..chunk.len()].copy_from_slice(&chunk);
@@ -2343,15 +2275,218 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(
-            error,
-            RadioError::CommandRejected {
-                protocol: "kenwood-ascii",
-                reason: "syntax error",
-            }
-        ));
+        assert!(matches!(error, RadioError::ProtocolSyntax { .. }));
         assert_eq!(sink.state().main_rx.frequency, None);
         assert!(sink.updates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn kenwood_communication_error_remains_structured() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut runtime =
+            KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
+        let mut transport = TestTransport {
+            reads: VecDeque::from([b"E;".to_vec()]),
+            ..Default::default()
+        };
+        let mut sink = TestSink::new(RadioState::default());
+        let command = RadioCommand::SetReceiverFrequency {
+            receiver: ReceiverPath::Main,
+            frequency: Frequency::from_hz(7_030_000),
+        };
+        let state_before = sink.state().clone();
+
+        let error = runtime
+            .execute(Some(&mut transport), command, &state_before, &mut sink)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RadioError::ProtocolCommunication));
+        assert!(sink.updates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn kenwood_validation_failure_aborts_before_setter() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut runtime =
+            KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
+        let mut transport = TestTransport {
+            reads: VecDeque::from([b"?;".to_vec()]),
+            ..Default::default()
+        };
+        let mut state = RadioState::default();
+        state.main_rx.frequency = Some(Frequency::from_hz(7_030_000));
+        let mut sink = TestSink::new(state);
+        let command = RadioCommand::SetReceiverFrequency {
+            receiver: ReceiverPath::Main,
+            frequency: Frequency::from_hz(7_030_000),
+        };
+        let state_before = sink.state().clone();
+
+        let error = runtime
+            .execute(Some(&mut transport), command, &state_before, &mut sink)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RadioError::ProtocolSyntax { .. }));
+        assert_eq!(transport.writes, vec![b"FA;".to_vec()]);
+        assert!(sink.updates.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn kenwood_timeout_returns_without_hidden_recovery_queries() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut runtime =
+            KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
+        let mut transport = TestTransport {
+            pending_when_empty: true,
+            ..Default::default()
+        };
+        let mut sink = TestSink::new(RadioState::default());
+        let command = RadioCommand::SetReceiverFrequency {
+            receiver: ReceiverPath::Main,
+            frequency: Frequency::from_hz(7_030_000),
+        };
+        let state_before = sink.state().clone();
+
+        let error = runtime
+            .execute(Some(&mut transport), command, &state_before, &mut sink)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RadioError::Timeout { .. }));
+        assert_eq!(transport.writes, vec![b"FA00007030000;".to_vec()]);
+        assert!(sink.updates.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn kenwood_busy_retries_once_after_delay_then_succeeds() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut runtime =
+            KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
+        let mut transport = TestTransport {
+            reads: VecDeque::from([b"O;".to_vec(), b"FA00007030000;".to_vec()]),
+            ..Default::default()
+        };
+        let mut sink = TestSink::new(RadioState::default());
+        let command = RadioCommand::SetReceiverFrequency {
+            receiver: ReceiverPath::Main,
+            frequency: Frequency::from_hz(7_030_000),
+        };
+        let state_before = sink.state().clone();
+        let started_at = Instant::now();
+
+        let completion = runtime
+            .execute(Some(&mut transport), command, &state_before, &mut sink)
+            .await
+            .unwrap();
+
+        assert_eq!(completion, CommandCompletion::Observed);
+        assert_eq!(transport.writes, vec![b"FA00007030000;".to_vec(); 2]);
+        assert_eq!(Instant::now() - started_at, Duration::from_millis(250));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn kenwood_busy_retry_exhaustion_returns_structured_error() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut runtime =
+            KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
+        let mut transport = TestTransport {
+            reads: VecDeque::from([b"O;".to_vec(), b"O;".to_vec()]),
+            ..Default::default()
+        };
+        let mut sink = TestSink::new(RadioState::default());
+        let command = RadioCommand::SetReceiverFrequency {
+            receiver: ReceiverPath::Main,
+            frequency: Frequency::from_hz(7_030_000),
+        };
+        let state_before = sink.state().clone();
+
+        let error = runtime
+            .execute(Some(&mut transport), command, &state_before, &mut sink)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RadioError::ProtocolBusy));
+        assert_eq!(transport.writes, vec![b"FA00007030000;".to_vec(); 2]);
+        assert!(sink.updates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn kenwood_malformed_matching_response_fails_without_state_update() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut runtime =
+            KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
+        let mut transport = TestTransport {
+            reads: VecDeque::from([b"FAbad;".to_vec()]),
+            ..Default::default()
+        };
+        let mut sink = TestSink::new(RadioState::default());
+        let command = RadioCommand::SetReceiverFrequency {
+            receiver: ReceiverPath::Main,
+            frequency: Frequency::from_hz(7_030_000),
+        };
+        let state_before = sink.state().clone();
+
+        let error = runtime
+            .execute(Some(&mut transport), command, &state_before, &mut sink)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RadioError::Decode { .. }));
+        assert!(sink.updates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn kenwood_failed_first_step_aborts_multiframe_command() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut runtime =
+            KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
+        let mut transport = TestTransport {
+            reads: VecDeque::from([b"?;".to_vec()]),
+            ..Default::default()
+        };
+        let mut sink = TestSink::new(RadioState::default());
+        let command = RadioCommand::SetReceiverMode {
+            receiver: ReceiverPath::Main,
+            mode: Mode::DataUsb,
+        };
+        let state_before = sink.state().clone();
+
+        let error = runtime
+            .execute(Some(&mut transport), command, &state_before, &mut sink)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RadioError::ProtocolSyntax { .. }));
+        assert_eq!(transport.writes, vec![b"MD2;".to_vec()]);
+        assert!(sink.updates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn kenwood_multiframe_command_requires_each_matching_response() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut runtime =
+            KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
+        let mut transport = TestTransport {
+            reads: VecDeque::from([b"MD2;".to_vec(), b"DA1;".to_vec()]),
+            ..Default::default()
+        };
+        let mut sink = TestSink::new(RadioState::default());
+        let command = RadioCommand::SetReceiverMode {
+            receiver: ReceiverPath::Main,
+            mode: Mode::DataUsb,
+        };
+        let state_before = sink.state().clone();
+
+        let completion = runtime
+            .execute(Some(&mut transport), command, &state_before, &mut sink)
+            .await
+            .unwrap();
+
+        assert_eq!(completion, CommandCompletion::Observed);
+        assert_eq!(transport.writes, vec![b"MD2;".to_vec(), b"DA1;".to_vec()]);
+        assert_eq!(sink.state().main_rx.mode, Some(Mode::DataUsb));
     }
 
     #[tokio::test]
