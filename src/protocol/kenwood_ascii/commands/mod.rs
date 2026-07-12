@@ -116,6 +116,7 @@ pub enum PhysicalVfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VfoRouting {
     pub(crate) main_vfo: PhysicalVfo,
+    pub(crate) tx_vfo: PhysicalVfo,
     pub(crate) switchable: bool,
     pub(crate) main_bandwidth_id: Option<u8>,
 }
@@ -124,6 +125,7 @@ impl VfoRouting {
     pub fn for_profile(profile: &super::KenwoodAsciiProfile) -> Self {
         Self {
             main_vfo: PhysicalVfo::A,
+            tx_vfo: PhysicalVfo::A,
             switchable: matches!(
                 profile.id(),
                 "yaesu-ftdx10"
@@ -184,6 +186,29 @@ impl VfoRouting {
         }
     }
 
+    pub fn tx_vfo(self) -> PhysicalVfo {
+        self.tx_vfo
+    }
+
+    pub fn set_tx_vfo(&mut self, vfo: PhysicalVfo) {
+        self.tx_vfo = vfo;
+    }
+
+    pub fn set_split(&mut self, split: bool) {
+        self.tx_vfo = if split {
+            match self.main_vfo {
+                PhysicalVfo::A => PhysicalVfo::B,
+                PhysicalVfo::B => PhysicalVfo::A,
+            }
+        } else {
+            self.main_vfo
+        };
+    }
+
+    pub fn split(self) -> bool {
+        self.tx_vfo != self.main_vfo
+    }
+
     pub fn set_main_bandwidth_id(&mut self, id: u8) {
         self.main_bandwidth_id = Some(id);
     }
@@ -193,6 +218,7 @@ impl Default for VfoRouting {
     fn default() -> Self {
         Self {
             main_vfo: PhysicalVfo::A,
+            tx_vfo: PhysicalVfo::A,
             switchable: false,
             main_bandwidth_id: None,
         }

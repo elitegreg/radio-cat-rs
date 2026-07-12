@@ -479,6 +479,7 @@ impl RadioSession for KenwoodAsciiRuntime {
 
         let Some(transport) = transport else {
             ctx.publish_patches(encoded.completion_patches, UpdateSource::CommandResponse);
+            apply_kenwood_routing_command(&mut self.vfo_routing, &command);
             return Ok(CommandCompletion::Accepted);
         };
 
@@ -543,6 +544,7 @@ impl RadioSession for KenwoodAsciiRuntime {
             .await?;
         if completion == CommandCompletion::Written {
             ctx.publish_patches(completion_patches, UpdateSource::CommandResponse);
+            apply_kenwood_routing_command(&mut self.vfo_routing, &command);
         }
         Ok(completion)
     }
@@ -1660,7 +1662,9 @@ fn encode_kenwood_command(
     {
         return Ok(Some(encoded));
     }
-    if let Some(encoded) = kenwood_ascii::split::encode(profile, command, current_state)? {
+    if let Some(encoded) =
+        kenwood_ascii::split::encode_with_routing(profile, command, current_state, vfo_routing)?
+    {
         return Ok(Some(encoded));
     }
     if let Some(encoded) = kenwood_ascii::rit_xit::encode(profile, command, current_state)? {
@@ -1682,6 +1686,12 @@ fn encode_kenwood_command(
     }
 
     Ok(None)
+}
+
+fn apply_kenwood_routing_command(routing: &mut kenwood_ascii::VfoRouting, command: &RadioCommand) {
+    if let RadioCommand::SetSplit(split) = command {
+        routing.set_split(*split);
+    }
 }
 
 fn encode_kenwood_query(
@@ -2271,6 +2281,90 @@ mod tests {
                 Some(expected_sub)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn kenwood_session_keeps_tx_routing_when_vfos_have_equal_frequencies() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut runtime =
+            KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
+        let mut state = runtime.initial_state();
+        state.main_rx.frequency = Some(Frequency::from_hz(14_074_000));
+        state.sub_rx.as_mut().unwrap().frequency = Some(Frequency::from_hz(14_074_000));
+        let mut sink = TestSink::new(state);
+
+        let mut route_transport = TestTransport {
+            reads: VecDeque::from([b"FR1;".to_vec()]),
+            ..Default::default()
+        };
+        runtime
+            .process_incoming(
+                Some(&mut route_transport),
+                COMMAND_RESPONSE_TIMEOUT,
+                UpdateSource::Native,
+                &mut sink,
+            )
+            .await
+            .unwrap();
+
+        let mut info_transport = TestTransport {
+            reads: VecDeque::from([concat!(
+                "IF",
+                "00014074000",
+                "00000",
+                "+0000",
+                "0",
+                "0",
+                "000",
+                "0",
+                "2",
+                "1",
+                "1",
+                "00000",
+                ";"
+            )
+            .as_bytes()
+            .to_vec()]),
+            ..Default::default()
+        };
+        runtime
+            .process_incoming(
+                Some(&mut info_transport),
+                COMMAND_RESPONSE_TIMEOUT,
+                UpdateSource::Native,
+                &mut sink,
+            )
+            .await
+            .unwrap();
+
+        let mut command_transport = TestTransport {
+            reads: VecDeque::from([b"FA00014075000;".to_vec()]),
+            ..Default::default()
+        };
+        let state_before = sink.state().clone();
+        let completion = runtime
+            .execute(
+                Some(&mut command_transport),
+                RadioCommand::SetTxFrequency(Frequency::from_hz(14_075_000)),
+                &state_before,
+                &mut sink,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(completion, CommandCompletion::Observed);
+        assert_eq!(command_transport.writes, vec![b"FA00014075000;".to_vec()]);
+        assert_eq!(
+            sink.state()
+                .sub_rx
+                .as_ref()
+                .and_then(|receiver| receiver.frequency),
+            Some(Frequency::from_hz(14_075_000))
+        );
+        assert_eq!(
+            sink.state().tx.as_ref().and_then(|tx| tx.frequency),
+            Some(Frequency::from_hz(14_075_000))
+        );
     }
 
     #[tokio::test]
