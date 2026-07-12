@@ -607,15 +607,25 @@ mod tests {
             Capability::ReadWrite
         );
 
-        let kenwood = Radio::connect(RadioConfig::new("kenwood-ts590"))
-            .await
+        let kenwood = supported_drivers()
+            .iter()
+            .find(|driver| driver.id == "kenwood-ts590")
             .unwrap();
-        assert_eq!(kenwood.driver_descriptor().id, "kenwood-ts590");
+        assert_eq!(
+            kenwood.transport_requirement,
+            crate::TransportRequirement::SerialOrTcp
+        );
+        assert!(kenwood.capabilities().main_rx.frequency.is_supported());
 
-        let icom = Radio::connect(RadioConfig::new("icom-ic705"))
-            .await
+        let icom = supported_drivers()
+            .iter()
+            .find(|driver| driver.id == "icom-ic705")
             .unwrap();
-        assert_eq!(icom.driver_descriptor().id, "icom-ic705");
+        assert_eq!(
+            icom.transport_requirement,
+            crate::TransportRequirement::SerialOrTcp
+        );
+        assert!(icom.capabilities().main_rx.frequency.is_supported());
     }
 
     #[tokio::test]
@@ -671,19 +681,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transportless_native_session_validates_and_applies_local_state() {
-        let radio = Radio::connect(RadioConfig::new("ELECRAFT-K2"))
-            .await
-            .unwrap();
-        let frequency = Frequency::from_hz(7_100_000);
-
-        radio.set_main_frequency(frequency).await.unwrap();
-
-        assert_eq!(radio.latest_state().main_rx.frequency, Some(frequency));
-        assert!(matches!(
-            radio.set_main_mode(Mode::Am).await,
-            Err(RadioError::InvalidValue { field: "mode", .. })
-        ));
+    async fn physical_drivers_reject_missing_transport_before_connecting() {
+        for driver in ["kenwood-ts590", "icom-ic705", "  flexradio-smartsdr  "] {
+            assert!(matches!(
+                Radio::build(RadioConfig::new(driver)).await,
+                Err(RadioError::InvalidValue {
+                    field: "transport",
+                    ..
+                })
+            ));
+        }
     }
 
     #[tokio::test]

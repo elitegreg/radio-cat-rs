@@ -4,7 +4,7 @@ use crate::{
         ReceiverRfCapabilities, RitXitCapabilities, RitXitOffsetType, StateUpdateCapability,
         TransmitterCapabilities,
     },
-    driver::DriverDescriptor,
+    driver::{DriverDescriptor, TransportRequirement},
     error::{RadioError, Result},
 };
 
@@ -100,6 +100,7 @@ pub const FLEXRADIO_SMARTSDR: SmartSdrProfile = SmartSdrProfile {
         display_name: "FlexRadio SmartSDR",
         description:
             "FlexRadio SmartSDR TCP slice control (default slice 0; configurable via options).",
+        transport_requirement: TransportRequirement::Tcp,
     },
     slice: 0,
     capabilities: RadioCapabilities::new(

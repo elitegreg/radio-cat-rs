@@ -6,7 +6,7 @@ use crate::{
         ReceiverRfCapabilities, RitXitCapabilities, RitXitOffsetType, StateUpdateCapability,
         TransmitterCapabilities,
     },
-    driver::DriverDescriptor,
+    driver::{DriverDescriptor, TransportRequirement},
     error::{RadioError, Result},
 };
 
@@ -415,6 +415,7 @@ const fn descriptor(
         id,
         display_name,
         description,
+        transport_requirement: TransportRequirement::SerialOrTcp,
     }
 }
 

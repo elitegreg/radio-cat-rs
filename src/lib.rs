@@ -22,7 +22,7 @@ pub use capabilities::{
     TransmitterCapabilities,
 };
 pub use command::{RadioCommand, ReceiverPath};
-pub use driver::DriverDescriptor;
+pub use driver::{DriverDescriptor, TransportRequirement};
 pub use error::{RadioError, RangeError, Result};
 pub use frequency::Frequency;
 pub use mode::{Mode, ParseModeError};

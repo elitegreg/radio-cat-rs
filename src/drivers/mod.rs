@@ -3,7 +3,7 @@ mod dummy;
 use std::sync::OnceLock;
 
 use crate::{
-    driver::{DriverDescriptor, RadioSession},
+    driver::{DriverDescriptor, RadioSession, TransportRequirement},
     error::{RadioError, Result},
     protocol::{
         icom_civ as icom_protocol, kenwood_ascii as kenwood_protocol, runtime,
@@ -18,10 +18,6 @@ trait RadioSessionFactory: Sync {
     fn descriptors(&self) -> Vec<DriverDescriptor>;
     fn matches(&self, normalized_id: &str) -> bool;
     fn create(&self, normalized_id: &str, options: &str) -> Result<Box<dyn RadioSession>>;
-
-    fn validate_transport(&self, _config: &TransportConfig, _caller_provided: bool) -> Result<()> {
-        Ok(())
-    }
 }
 
 struct DummyFactory;
@@ -101,22 +97,6 @@ impl RadioSessionFactory for SmartSdrFactory {
             options,
         )
     }
-
-    fn validate_transport(&self, config: &TransportConfig, caller_provided: bool) -> Result<()> {
-        if caller_provided || matches!(config, TransportConfig::Tcp { .. }) {
-            return Ok(());
-        }
-
-        let message = match config {
-            TransportConfig::Serial { .. } => "flexradio-smartsdr supports TCP transport only",
-            TransportConfig::None => "flexradio-smartsdr requires a TCP transport configuration",
-            TransportConfig::Tcp { .. } => unreachable!(),
-        };
-        Err(RadioError::InvalidValue {
-            field: "transport",
-            message: message.to_string(),
-        })
-    }
 }
 
 static DUMMY_FACTORY: DummyFactory = DummyFactory;
@@ -144,6 +124,17 @@ pub(crate) fn supported_drivers() -> &'static [DriverDescriptor] {
         .as_slice()
 }
 
+pub(crate) fn capabilities_for(id: &str) -> Option<crate::RadioCapabilities> {
+    if id == DUMMY_DRIVER.id {
+        return Some(crate::RadioCapabilities::dummy_all());
+    }
+
+    kenwood_protocol::profile_by_id(id)
+        .map(|profile| profile.capabilities)
+        .or_else(|| icom_protocol::profile_by_id(id).map(|profile| profile.capabilities))
+        .or_else(|| smartsdr_protocol::profile_by_id(id).map(|profile| profile.capabilities))
+}
+
 pub(crate) fn create_session(
     requested_id: &str,
     options: &str,
@@ -160,8 +151,52 @@ pub(crate) fn create_session(
         });
     };
 
-    factory.validate_transport(transport, caller_provided_transport)?;
+    let descriptor = supported_drivers()
+        .iter()
+        .find(|descriptor| descriptor.id == normalized_id)
+        .expect("factory match always has a supported descriptor");
+    validate_transport(
+        descriptor.transport_requirement,
+        transport,
+        caller_provided_transport,
+    )?;
     factory.create(&normalized_id, options)
+}
+
+fn validate_transport(
+    requirement: TransportRequirement,
+    config: &TransportConfig,
+    caller_provided: bool,
+) -> Result<()> {
+    if caller_provided || matches!(requirement, TransportRequirement::None) {
+        return Ok(());
+    }
+
+    let valid = match requirement {
+        TransportRequirement::None => true,
+        TransportRequirement::SerialOrTcp => {
+            matches!(
+                config,
+                TransportConfig::Serial { .. } | TransportConfig::Tcp { .. }
+            )
+        }
+        TransportRequirement::Tcp => matches!(config, TransportConfig::Tcp { .. }),
+    };
+    if valid {
+        return Ok(());
+    }
+
+    let message = match requirement {
+        TransportRequirement::None => unreachable!(),
+        TransportRequirement::SerialOrTcp => {
+            "this physical radio driver requires a serial or TCP transport configuration"
+        }
+        TransportRequirement::Tcp => "this radio driver requires a TCP transport configuration",
+    };
+    Err(RadioError::InvalidValue {
+        field: "transport",
+        message: message.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -170,7 +205,13 @@ mod tests {
 
     #[test]
     fn registry_resolves_ids_case_insensitively() {
-        let session = create_session("  ICOM-IC705 ", "", &TransportConfig::None, false).unwrap();
+        let session = create_session(
+            "  ICOM-IC705 ",
+            "",
+            &TransportConfig::serial("ignored", 9_600),
+            false,
+        )
+        .unwrap();
         assert_eq!(session.descriptor().id, "icom-ic705");
     }
 
@@ -183,7 +224,9 @@ mod tests {
     }
 
     #[test]
-    fn smartsdr_transport_is_validated_by_its_factory() {
+    fn physical_drivers_require_configured_transports() {
+        assert!(create_session("kenwood-ts590", "", &TransportConfig::None, false).is_err());
+        assert!(create_session("icom-ic705", "", &TransportConfig::None, false).is_err());
         assert!(create_session(
             "flexradio-smartsdr",
             "",
@@ -191,6 +234,9 @@ mod tests {
             false,
         )
         .is_err());
+        assert!(
+            create_session("  flexradio-smartsdr  ", "", &TransportConfig::None, false,).is_err()
+        );
         assert!(create_session("flexradio-smartsdr", "", &TransportConfig::None, true,).is_ok());
     }
 }

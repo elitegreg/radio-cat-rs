@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::{
     command::{RadioCommand, ReceiverPath},
-    driver::{CommandCompletion, DriverDescriptor, RadioSession, StateSink},
+    driver::{CommandCompletion, DriverDescriptor, RadioSession, StateSink, TransportRequirement},
     error::Result,
     transport::CatTransport,
     update::StatePatch,
@@ -17,6 +17,7 @@ pub(crate) const DUMMY_DRIVER: DriverDescriptor = DriverDescriptor {
     id: "dummy",
     display_name: "Dummy Radio",
     description: "In-memory radio driver that exposes every normalized v1 capability.",
+    transport_requirement: TransportRequirement::None,
 };
 
 #[derive(Debug, Clone, Default)]

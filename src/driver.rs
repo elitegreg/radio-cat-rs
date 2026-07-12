@@ -7,11 +7,29 @@ use crate::{
     StatePatch, UpdateSource,
 };
 
+/// Transport types a driver can use for a direct connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransportRequirement {
+    None,
+    SerialOrTcp,
+    Tcp,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DriverDescriptor {
     pub id: &'static str,
     pub display_name: &'static str,
     pub description: &'static str,
+    pub transport_requirement: TransportRequirement,
+}
+
+impl DriverDescriptor {
+    /// Capability metadata is available without opening a transport or
+    /// constructing a radio connection.
+    pub fn capabilities(self) -> RadioCapabilities {
+        crate::drivers::capabilities_for(self.id)
+            .expect("supported driver descriptors always have capabilities")
+    }
 }
 
 /// The furthest protocol stage reached by a successful command.

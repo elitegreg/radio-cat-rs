@@ -422,7 +422,10 @@ mod tests {
     use async_trait::async_trait;
     use tokio::task::JoinHandle;
 
-    use crate::{Capability, DriverDescriptor, KeyerCapabilities, KeyerState, RadioCapabilities};
+    use crate::{
+        Capability, DriverDescriptor, KeyerCapabilities, KeyerState, RadioCapabilities,
+        TransportRequirement,
+    };
 
     #[derive(Clone)]
     struct TestSession {
@@ -461,6 +464,7 @@ mod tests {
                 id: "test-emulated-keyer",
                 display_name: "Test Emulated Keyer",
                 description: "test",
+                transport_requirement: TransportRequirement::None,
             }
         }
 
