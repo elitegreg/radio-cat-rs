@@ -161,6 +161,11 @@ impl RadioTask {
     }
 
     async fn handle_command(&mut self, command: RadioCommand) -> Result<()> {
+        if matches!(command, RadioCommand::Refresh) {
+            self.run_session_refresh().await?;
+            return Ok(());
+        }
+
         let command_for_emulation = command.clone();
         let state_before = self.reducer.state().clone();
 
@@ -269,6 +274,18 @@ impl RadioTask {
             self.schedule_next_poll();
         }
 
+        result
+    }
+
+    async fn run_session_refresh(&mut self) -> Result<()> {
+        let mut session = self.session.take().expect("session is present");
+        let mut transport = self.transport.take();
+        let result = match transport.as_mut() {
+            Some(transport) => session.refresh(Some(transport.as_mut()), self).await,
+            None => session.refresh(None, self).await,
+        };
+        self.transport = transport;
+        self.session = Some(session);
         result
     }
 
@@ -489,6 +506,14 @@ mod tests {
                 vec![StatePatch::Connection(ConnectionState::Ready)],
                 UpdateSource::Native,
             );
+            Ok(())
+        }
+
+        async fn refresh(
+            &mut self,
+            _transport: Option<&mut dyn crate::CatTransport>,
+            _sink: &mut dyn StateSink,
+        ) -> Result<()> {
             Ok(())
         }
 

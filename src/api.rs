@@ -264,6 +264,8 @@ impl Radio {
         result
     }
 
+    /// Reissue the connected radio's startup queries and wait for their protocol completion.
+    /// Decoded state changes are published with [`UpdateSource::ManualRefresh`].
     pub async fn refresh(&self) -> Result<()> {
         self.command(RadioCommand::Refresh).await
     }

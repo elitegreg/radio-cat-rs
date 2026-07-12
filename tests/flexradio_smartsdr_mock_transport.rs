@@ -156,6 +156,64 @@ async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
 }
 
 #[tokio::test]
+async fn flexradio_refresh_reissues_subscriptions_and_preserves_connection_state() {
+    let transport = SharedMockTransport::default();
+    transport.push_read(lines(["V1.0.0.0", "HABC1234"])).await;
+    transport.push_read(lines(["R1|0||"])).await;
+    transport.push_read(lines(["R2|0||"])).await;
+    transport.push_read(lines(["R3|0||"])).await;
+    transport
+        .push_read(lines([
+            "S0|slice 0 RF_frequency=14.074 mode=DIGU filter_lo=300 filter_hi=2700 rit_on=0 rit_freq=0 xit_on=0 xit_freq=0 nr=off nb=off anf=off",
+            "S0|cwx wpm=25 break_in_delay=100",
+            "S0|transmit freq=14.074000 rfpower=100 tunepower=10 vox_enable=0 speed=25",
+        ]))
+        .await;
+
+    let radio =
+        Radio::connect_with_transport(RadioConfig::new("flexradio-smartsdr"), transport.clone())
+            .await
+            .unwrap();
+    wait_for(Duration::from_secs(2), || {
+        let radio = radio.clone();
+        async move { radio.latest_state().connection == radio_cat_rs::ConnectionState::Ready }
+    })
+    .await
+    .unwrap();
+
+    let baseline = transport.written_len().await;
+    transport
+        .push_read(lines([
+            "S0|slice 0 RF_frequency=7.030 mode=CW filter_lo=300 filter_hi=2700 rit_on=0 rit_freq=0 xit_on=0 xit_freq=0 nr=off nb=off anf=off",
+            "R4|0||",
+        ]))
+        .await;
+    transport.push_read(lines(["R5|0||"])).await;
+    transport.push_read(lines(["R6|0||"])).await;
+
+    radio.refresh().await.unwrap();
+
+    assert_eq!(
+        radio.latest_state().connection,
+        radio_cat_rs::ConnectionState::Ready
+    );
+    assert_eq!(
+        radio.latest_state().main_rx.frequency,
+        Some(Frequency::from_hz(7_030_000))
+    );
+
+    let written = transport.written_frames().await;
+    assert_eq!(
+        &written[baseline..],
+        &[
+            b"C4|sub slice 0\n".to_vec(),
+            b"C5|sub cwx all\n".to_vec(),
+            b"C6|sub tx all\n".to_vec(),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn flexradio_uses_configured_slice_option() {
     let transport = SharedMockTransport::default();
     transport.push_read(lines(["V1.0.0.0", "HABC1234"])).await;

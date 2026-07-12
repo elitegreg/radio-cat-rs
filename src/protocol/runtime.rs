@@ -421,6 +421,61 @@ impl RadioSession for KenwoodAsciiRuntime {
         Ok(())
     }
 
+    async fn refresh(
+        &mut self,
+        transport: Option<&mut dyn CatTransport>,
+        ctx: &mut dyn StateSink,
+    ) -> Result<()> {
+        let Some(transport) = transport else {
+            return Err(RadioError::InvalidValue {
+                field: "transport",
+                message: "kenwood-ascii requires a transport".to_string(),
+            });
+        };
+
+        tracing::info!(
+            driver = %self.profile.id(),
+            refresh_steps = self.profile.startup.len(),
+            "running kenwood-ascii refresh sequence"
+        );
+        for step in self.profile.startup {
+            match *step {
+                StartupStep::AutoInfo(frame_text) => {
+                    self.send_encoded(
+                        transport,
+                        EncodedCommand::new(
+                            vec![AsciiFrame::new(frame_text)?],
+                            ResponseMatcher::None,
+                            Vec::new(),
+                            CommandPriority::High,
+                        ),
+                        UpdateSource::ManualRefresh,
+                        STARTUP_RESPONSE_TIMEOUT,
+                        ctx,
+                    )
+                    .await?;
+                }
+                StartupStep::Query(semantic) => {
+                    let Some(encoded) =
+                        encode_kenwood_query(self.profile, semantic, self.vfo_routing)?
+                    else {
+                        continue;
+                    };
+                    self.send_encoded(
+                        transport,
+                        encoded,
+                        UpdateSource::ManualRefresh,
+                        STARTUP_RESPONSE_TIMEOUT,
+                        ctx,
+                    )
+                    .await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     async fn execute(
         &mut self,
         transport: Option<&mut dyn CatTransport>,
@@ -428,10 +483,6 @@ impl RadioSession for KenwoodAsciiRuntime {
         state_before: &RadioState,
         ctx: &mut dyn StateSink,
     ) -> Result<CommandCompletion> {
-        if matches!(command, RadioCommand::Refresh) {
-            return Ok(CommandCompletion::Observed);
-        }
-
         let Some(encoded) = encode_kenwood_command(
             self.profile,
             self.options,
@@ -954,6 +1005,42 @@ impl RadioSession for IcomCivRuntime {
         Ok(())
     }
 
+    async fn refresh(
+        &mut self,
+        transport: Option<&mut dyn CatTransport>,
+        ctx: &mut dyn StateSink,
+    ) -> Result<()> {
+        let Some(transport) = transport else {
+            return Err(RadioError::InvalidValue {
+                field: "transport",
+                message: "icom-civ requires a transport".to_string(),
+            });
+        };
+
+        tracing::info!(
+            driver = %self.profile.id(),
+            refresh_steps = self.profile.startup.len(),
+            "running icom-civ refresh sequence"
+        );
+        for step in self.profile.startup {
+            let icom_civ::StartupStep::Query(semantic) = *step;
+            let Some(encoded) = icom_civ::encode_query(self.profile, self.options, semantic)?
+            else {
+                continue;
+            };
+            self.send_encoded(
+                transport,
+                encoded,
+                UpdateSource::ManualRefresh,
+                STARTUP_RESPONSE_TIMEOUT,
+                ctx,
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
     async fn execute(
         &mut self,
         transport: Option<&mut dyn CatTransport>,
@@ -961,10 +1048,6 @@ impl RadioSession for IcomCivRuntime {
         state_before: &RadioState,
         ctx: &mut dyn StateSink,
     ) -> Result<CommandCompletion> {
-        if matches!(command, RadioCommand::Refresh) {
-            return Ok(CommandCompletion::Observed);
-        }
-
         let Some(encoded) = icom_civ::encode(self.profile, self.options, &command, state_before)?
         else {
             return Err(RadioError::UnsupportedCapability {
@@ -1455,6 +1538,46 @@ impl RadioSession for SmartSdrRuntime {
         Ok(())
     }
 
+    async fn refresh(
+        &mut self,
+        transport: Option<&mut dyn CatTransport>,
+        ctx: &mut dyn StateSink,
+    ) -> Result<()> {
+        let Some(transport) = transport else {
+            return Err(RadioError::InvalidValue {
+                field: "transport",
+                message: "flexradio-smartsdr requires a transport".to_string(),
+            });
+        };
+
+        self.send_command_body(
+            transport,
+            &format!("sub slice {}", self.profile.slice),
+            UpdateSource::ManualRefresh,
+            SMARTSDR_STARTUP_TIMEOUT,
+            ctx,
+        )
+        .await?;
+        self.send_command_body(
+            transport,
+            "sub cwx all",
+            UpdateSource::ManualRefresh,
+            SMARTSDR_STARTUP_TIMEOUT,
+            ctx,
+        )
+        .await?;
+        self.send_command_body(
+            transport,
+            "sub tx all",
+            UpdateSource::ManualRefresh,
+            SMARTSDR_STARTUP_TIMEOUT,
+            ctx,
+        )
+        .await?;
+
+        Ok(())
+    }
+
     async fn execute(
         &mut self,
         transport: Option<&mut dyn CatTransport>,
@@ -1462,10 +1585,6 @@ impl RadioSession for SmartSdrRuntime {
         state_before: &RadioState,
         ctx: &mut dyn StateSink,
     ) -> Result<CommandCompletion> {
-        if matches!(command, RadioCommand::Refresh) {
-            return Ok(CommandCompletion::Observed);
-        }
-
         let Some(encoded) = smartsdr::encode(&self.profile, &command, state_before)? else {
             return Err(RadioError::UnsupportedCapability {
                 capability: "command",
@@ -2125,11 +2244,13 @@ mod tests {
     #[derive(Default)]
     struct TestTransport {
         reads: VecDeque<Vec<u8>>,
+        writes: Vec<Vec<u8>>,
     }
 
     #[async_trait]
     impl CatTransport for TestTransport {
-        async fn write_all(&mut self, _bytes: &[u8]) -> Result<()> {
+        async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
+            self.writes.push(bytes.to_vec());
             Ok(())
         }
 
@@ -2185,6 +2306,7 @@ mod tests {
             KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
         let mut transport = TestTransport {
             reads: VecDeque::from([b"?;".to_vec()]),
+            ..Default::default()
         };
         let mut sink = TestSink::new(RadioState::default());
         let command = RadioCommand::SetReceiverFrequency {
@@ -2210,12 +2332,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn kenwood_refresh_reissues_startup_steps_and_propagates_failure() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut runtime =
+            KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
+        let mut transport = TestTransport::default();
+        let mut sink = TestSink::new(RadioState::default());
+
+        let error = runtime
+            .refresh(Some(&mut transport), &mut sink)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RadioError::Transport(_)));
+        assert_eq!(transport.writes, vec![b"AI2;".to_vec(), b"IF;".to_vec()]);
+        assert!(sink.updates.is_empty());
+    }
+
+    #[tokio::test]
     async fn kenwood_observed_response_wins_over_requested_value() {
         let profile = profile_by_id("kenwood-ts590").unwrap();
         let mut runtime =
             KenwoodAsciiRuntime::new(profile, KenwoodAsciiOptions::parse("").unwrap());
         let mut transport = TestTransport {
             reads: VecDeque::from([b"FA00007031000;".to_vec()]),
+            ..Default::default()
         };
         let mut sink = TestSink::new(RadioState::default());
         let command = RadioCommand::SetReceiverFrequency {
@@ -2236,5 +2377,42 @@ mod tests {
         );
         assert_eq!(sink.updates.len(), 1);
         assert_eq!(sink.updates[0].1, UpdateSource::CommandResponse);
+    }
+
+    #[tokio::test]
+    async fn smartsdr_refresh_reissues_subscriptions_with_manual_provenance() {
+        let profile = smartsdr::profile_by_id("flexradio-smartsdr").unwrap();
+        let mut runtime = SmartSdrRuntime::new(*profile);
+        let mut transport = TestTransport {
+            reads: VecDeque::from([
+                b"S0|slice 0 RF_frequency=7.030 mode=CW filter_lo=300 filter_hi=2700 rit_on=0 rit_freq=0 xit_on=0 xit_freq=0 nr=off nb=off anf=off\nR1|0||\n".to_vec(),
+                b"R2|0||\n".to_vec(),
+                b"R3|0||\n".to_vec(),
+            ]),
+            ..Default::default()
+        };
+        let mut sink = TestSink::new(runtime.initial_state());
+
+        runtime
+            .refresh(Some(&mut transport), &mut sink)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            transport.writes,
+            vec![
+                b"C1|sub slice 0\n".to_vec(),
+                b"C2|sub cwx all\n".to_vec(),
+                b"C3|sub tx all\n".to_vec(),
+            ]
+        );
+        assert_eq!(
+            sink.state().main_rx.frequency,
+            Some(Frequency::from_hz(7_030_000))
+        );
+        assert!(sink
+            .updates
+            .iter()
+            .any(|(_, source)| *source == UpdateSource::ManualRefresh));
     }
 }

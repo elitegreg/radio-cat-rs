@@ -300,6 +300,34 @@ async fn write_failure_leaves_accepted_state_unchanged() {
     assert_eq!(radio.latest_state().main_rx.frequency, before);
 }
 
+#[tokio::test]
+async fn ic705_refresh_writes_startup_queries_and_propagates_failure() {
+    let transport = SharedMockTransport::default();
+    transport
+        .push_read(response([0x25, 0x00, 0x00, 0x40, 0x07, 0x14, 0x00]))
+        .await;
+    let radio = Radio::connect_with_transport(
+        RadioConfig::new("icom-ic705").with_options("poll_interval=5"),
+        transport.clone(),
+    )
+    .await
+    .unwrap();
+
+    wait_for(Duration::from_secs(2), || {
+        let radio = radio.clone();
+        async move { radio.latest_state().main_rx.frequency.is_some() }
+    })
+    .await
+    .unwrap();
+
+    let baseline = transport.written_len().await;
+    let error = radio.refresh().await.unwrap_err();
+
+    assert!(matches!(error, RadioError::Timeout { .. }));
+    let written = transport.written_frames().await;
+    assert_eq!(&written[baseline..], &[command([0x25, 0x00])]);
+}
+
 fn command<const N: usize>(payload: [u8; N]) -> Vec<u8> {
     CivFrame::new(0xa4, 0xe0, payload)
         .unwrap()

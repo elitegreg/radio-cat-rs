@@ -340,7 +340,9 @@ pub fn encode(
             vec!["cwx clear".to_string()],
             Vec::new(),
         ))),
-        RadioCommand::Refresh => Ok(None),
+        RadioCommand::Refresh => {
+            unreachable!("refresh is dispatched through RadioSession::refresh")
+        }
     }
 }
 

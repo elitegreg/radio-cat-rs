@@ -66,6 +66,13 @@ pub(crate) trait RadioSession: Send {
         sink: &mut dyn StateSink,
     ) -> Result<()>;
 
+    /// Reissue the protocol's startup refresh plan without changing connection lifecycle state.
+    async fn refresh(
+        &mut self,
+        transport: Option<&mut dyn CatTransport>,
+        sink: &mut dyn StateSink,
+    ) -> Result<()>;
+
     async fn execute(
         &mut self,
         transport: Option<&mut dyn CatTransport>,

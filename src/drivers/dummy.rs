@@ -64,6 +64,15 @@ impl RadioSession for DummyRadioSession {
         Ok(())
     }
 
+    async fn refresh(
+        &mut self,
+        _transport: Option<&mut dyn CatTransport>,
+        sink: &mut dyn StateSink,
+    ) -> Result<()> {
+        sink.publish_patches(Vec::new(), UpdateSource::ManualRefresh);
+        Ok(())
+    }
+
     async fn execute(
         &mut self,
         _transport: Option<&mut dyn CatTransport>,
@@ -72,7 +81,6 @@ impl RadioSession for DummyRadioSession {
         sink: &mut dyn StateSink,
     ) -> Result<CommandCompletion> {
         tracing::debug!(?command, "dummy session handling command");
-        let is_refresh = matches!(command, RadioCommand::Refresh);
         let patches = match command {
             RadioCommand::SetReceiverFrequency {
                 receiver,
@@ -148,14 +156,11 @@ impl RadioSession for DummyRadioSession {
             RadioCommand::SetKeyerSpeed(wpm) => vec![StatePatch::KeyerSpeed(wpm)],
             RadioCommand::SendCw(_) => vec![StatePatch::KeyerSending(true)],
             RadioCommand::StopCw => vec![StatePatch::KeyerSending(false)],
-            RadioCommand::Refresh => Vec::new(),
+            RadioCommand::Refresh => {
+                unreachable!("refresh is dispatched through RadioSession::refresh")
+            }
         };
-        let source = if is_refresh {
-            UpdateSource::ManualRefresh
-        } else {
-            UpdateSource::CommandResponse
-        };
-        sink.publish_patches(patches, source);
+        sink.publish_patches(patches, UpdateSource::CommandResponse);
         Ok(CommandCompletion::Accepted)
     }
 
