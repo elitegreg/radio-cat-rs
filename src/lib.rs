@@ -1,3 +1,10 @@
+//! Async CAT control for amateur radios.
+//!
+//! The default API consists of [`Radio`], [`RadioConfig`], driver descriptors
+//! and capabilities, state and update types, commands, transports, and errors.
+//! Protocol encoders, decoders, and profile tables are available through the
+//! `advanced-protocol-api` feature.
+
 mod actor;
 mod api;
 pub mod capabilities;
@@ -8,13 +15,16 @@ pub mod error;
 mod frequency;
 mod keyer_emulation;
 pub mod mode;
+#[cfg(feature = "advanced-protocol-api")]
 pub mod protocol;
+#[cfg(not(feature = "advanced-protocol-api"))]
+#[allow(dead_code, unused_imports)]
+mod protocol;
 pub mod serial_ports;
 pub mod state;
 pub mod transport;
 pub mod update;
 
-pub use actor::RadioTask;
 pub use api::{supported_drivers, Radio, RadioConfig};
 pub use capabilities::{
     Capability, KeyerCapabilities, RadioCapabilities, ReceiverCapabilities, ReceiverKind,
@@ -33,7 +43,7 @@ pub use state::{
 };
 pub use transport::{
     boxed_transport, open_transport, AsyncIoTransport, BoxedCatTransport, CatTransport,
-    ConnectionConfig, SerialTransport, TcpTransport, TransportConfig,
+    SerialTransport, TcpTransport, TransportConfig,
 };
 pub use update::{
     ChangeFlags, ChangeSet, SharedRadioState, StateField, StatePatch, StateReducer, StateUpdate,

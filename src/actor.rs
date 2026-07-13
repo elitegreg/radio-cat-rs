@@ -25,7 +25,7 @@ pub(crate) struct CommandEnvelope {
     pub result_tx: oneshot::Sender<Result<()>>,
 }
 
-pub struct RadioTask {
+pub(crate) struct RadioTask {
     session: Option<Box<dyn RadioSession>>,
     reducer: StateReducer,
     command_rx: mpsc::Receiver<CommandEnvelope>,

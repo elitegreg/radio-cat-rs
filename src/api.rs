@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -89,6 +89,16 @@ pub struct Radio {
     driver: DriverDescriptor,
 }
 
+impl fmt::Debug for Radio {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Radio")
+            .field("driver", &self.driver)
+            .field("capabilities", &self.capabilities)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Radio {
     pub async fn connect(config: RadioConfig) -> Result<Self> {
         tracing::info!(
@@ -101,7 +111,7 @@ impl Radio {
         Self::start(radio, task).await
     }
 
-    pub async fn build(config: RadioConfig) -> Result<(Self, RadioTask)> {
+    pub(crate) async fn build(config: RadioConfig) -> Result<(Self, RadioTask)> {
         let session =
             drivers::create_session(&config.driver, &config.options, &config.transport, false)?;
 
@@ -151,7 +161,7 @@ impl Radio {
         Ok(radio)
     }
 
-    pub async fn build_with_transport<T>(
+    pub(crate) async fn build_with_transport<T>(
         config: RadioConfig,
         transport: T,
     ) -> Result<(Self, RadioTask)>
@@ -242,10 +252,6 @@ impl Radio {
 
     pub fn driver_descriptor(&self) -> DriverDescriptor {
         self.driver
-    }
-
-    pub fn supported_drivers() -> &'static [DriverDescriptor] {
-        drivers::supported_drivers()
     }
 
     /// Submit a command and wait until its protocol session reaches its
@@ -528,6 +534,16 @@ mod tests {
     #[test]
     fn radio_handle_is_send_sync() {
         assert_send_sync::<Radio>();
+    }
+
+    #[tokio::test]
+    async fn radio_debug_redacts_internal_channels() {
+        let radio = Radio::connect(RadioConfig::dummy()).await.unwrap();
+        let debug = format!("{radio:?}");
+        assert!(debug.contains("Radio"));
+        assert!(debug.contains("dummy"));
+        assert!(!debug.contains("command_tx"));
+        radio.shutdown();
     }
 
     #[test]

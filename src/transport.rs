@@ -53,8 +53,6 @@ impl TransportConfig {
     }
 }
 
-pub type ConnectionConfig = TransportConfig;
-
 #[async_trait]
 pub trait CatTransport: Send {
     async fn write_all(&mut self, bytes: &[u8]) -> Result<()>;

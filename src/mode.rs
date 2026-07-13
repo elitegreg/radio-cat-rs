@@ -50,11 +50,20 @@ impl fmt::Display for Mode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseModeError;
+pub struct ParseModeError {
+    input: String,
+}
+
+impl ParseModeError {
+    /// The input that could not be parsed.
+    pub fn input(&self) -> &str {
+        &self.input
+    }
+}
 
 impl fmt::Display for ParseModeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("unknown radio mode")
+        write!(f, "unknown radio mode: {:?}", self.input)
     }
 }
 
@@ -83,7 +92,22 @@ impl FromStr for Mode {
             "data-fm" | "datafm" => Ok(Self::DataFm),
             "data-am" | "dataam" => Ok(Self::DataAm),
             "digital-voice" | "digitalvoice" | "dv" | "d-star" | "dstar" => Ok(Self::DigitalVoice),
-            _ => Err(ParseModeError),
+            _ => Err(ParseModeError {
+                input: s.trim().to_string(),
+            }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Mode;
+    use std::str::FromStr;
+
+    #[test]
+    fn parse_error_retains_unknown_input() {
+        let error = Mode::from_str("  mystery-mode ").unwrap_err();
+        assert_eq!(error.input(), "mystery-mode");
+        assert_eq!(error.to_string(), "unknown radio mode: \"mystery-mode\"");
     }
 }
