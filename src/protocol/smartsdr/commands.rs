@@ -7,6 +7,8 @@ use crate::{
 
 use super::SmartSdrProfile;
 
+const MAX_LINE_BYTES: usize = 8192;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedCommand {
     pub commands: Vec<String>,
@@ -69,16 +71,16 @@ impl LineSplitter {
                         continue;
                     }
 
-                    let line =
-                        String::from_utf8(std::mem::take(&mut self.buffer)).map_err(|error| {
-                            RadioError::Decode {
-                                command: "smartsdr-line",
-                                message: error.to_string(),
-                            }
-                        })?;
-                    lines.push(line);
+                    if let Ok(line) = String::from_utf8(std::mem::take(&mut self.buffer)) {
+                        lines.push(line);
+                    }
                 }
-                _ => self.buffer.push(*byte),
+                _ => {
+                    self.buffer.push(*byte);
+                    if self.buffer.len() > MAX_LINE_BYTES {
+                        self.buffer.clear();
+                    }
+                }
             }
         }
 
@@ -1031,5 +1033,24 @@ mod tests {
                 "S0|slice 0 RF_frequency=14.074".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn line_splitter_skips_invalid_utf8_without_losing_other_lines() {
+        let mut splitter = LineSplitter::new();
+        let lines = splitter.push(b"V1\n\xff\nH2\n").unwrap();
+
+        assert_eq!(lines, vec!["V1".to_string(), "H2".to_string()]);
+    }
+
+    #[test]
+    fn line_splitter_bounds_unterminated_lines_and_recovers() {
+        let mut splitter = LineSplitter::new();
+        let mut bytes = vec![b'X'; 8193];
+        bytes.extend_from_slice(b"\nH2\n");
+
+        let lines = splitter.push(&bytes).unwrap();
+
+        assert_eq!(lines, vec!["H2".to_string()]);
     }
 }
