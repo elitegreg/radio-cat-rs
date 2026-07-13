@@ -15,6 +15,7 @@ struct SharedMockTransport {
 struct MockInner {
     written_frames: Vec<Vec<u8>>,
     read_chunks: VecDeque<Vec<u8>>,
+    eof: bool,
 }
 
 impl SharedMockTransport {
@@ -39,8 +40,17 @@ impl CatTransport for SharedMockTransport {
     }
 
     async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let Some(mut chunk) = self.inner.lock().await.read_chunks.pop_front() else {
-            return Ok(0);
+        let (mut chunk, eof) = {
+            let mut inner = self.inner.lock().await;
+            (inner.read_chunks.pop_front(), inner.eof)
+        };
+        let Some(mut chunk) = chunk.take() else {
+            if eof {
+                return Ok(0);
+            }
+            return Err(RadioError::Timeout {
+                command: "mock-transport-read",
+            });
         };
 
         let count = chunk.len().min(buf.len());

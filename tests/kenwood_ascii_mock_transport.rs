@@ -6,18 +6,24 @@ use radio_cat_rs::{
         filter, frequency, info, keyer, mode, profile_by_id, rf, rit_xit, split, tx, AsciiFrame,
         FrameSplitter, StartupStep,
     },
-    CatTransport, RadioError, RadioState, Result, StateReducer,
+    CatTransport, Radio, RadioConfig, RadioError, RadioState, Result, StateReducer,
 };
 
 #[derive(Debug, Default)]
 struct MockTransport {
     written_frames: Vec<String>,
     read_chunks: VecDeque<Vec<u8>>,
+    eof: bool,
 }
 
 impl MockTransport {
     fn written_frames(&self) -> &[String] {
         &self.written_frames
+    }
+
+    fn with_eof(mut self) -> Self {
+        self.eof = true;
+        self
     }
 }
 
@@ -36,7 +42,12 @@ impl CatTransport for MockTransport {
 
     async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
         let Some(mut chunk) = self.read_chunks.pop_front() else {
-            return Ok(0);
+            if self.eof {
+                return Ok(0);
+            }
+            return Err(RadioError::Timeout {
+                command: "mock-transport-read",
+            });
         };
 
         let count = chunk.len().min(buf.len());
@@ -70,6 +81,18 @@ async fn startup_sends_auto_info_and_explicit_query_plan() {
         "NB;", "NR;", "PA;", "RA;", "PC;", "KS;",
     ];
     assert_eq!(transport.written_frames(), expected.as_slice());
+}
+
+#[tokio::test]
+async fn kenwood_actor_reports_startup_eof() {
+    let error = Radio::connect_with_transport(
+        RadioConfig::new("kenwood-ts590"),
+        MockTransport::default().with_eof(),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(error, RadioError::Transport(message) if message.contains("closed by peer")));
 }
 
 async fn run_startup(
@@ -106,7 +129,11 @@ async fn drain_transport_frames(
 
     loop {
         let mut buf = [0u8; 64];
-        let count = transport.read_some(&mut buf).await?;
+        let count = match transport.read_some(&mut buf).await {
+            Ok(count) => count,
+            Err(RadioError::Timeout { .. }) => break,
+            Err(error) => return Err(error),
+        };
         if count == 0 {
             break;
         }

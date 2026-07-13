@@ -17,6 +17,7 @@ struct MockInner {
     written_frames: Vec<Vec<u8>>,
     read_chunks: VecDeque<Vec<u8>>,
     fail_writes: bool,
+    eof: bool,
 }
 
 impl SharedMockTransport {
@@ -35,6 +36,10 @@ impl SharedMockTransport {
     async fn set_fail_writes(&self, fail_writes: bool) {
         self.inner.lock().await.fail_writes = fail_writes;
     }
+
+    async fn set_eof(&self, eof: bool) {
+        self.inner.lock().await.eof = eof;
+    }
 }
 
 #[async_trait]
@@ -49,7 +54,14 @@ impl CatTransport for SharedMockTransport {
     }
 
     async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let Some(mut chunk) = self.inner.lock().await.read_chunks.pop_front() else {
+        let (mut chunk, eof) = {
+            let mut inner = self.inner.lock().await;
+            (inner.read_chunks.pop_front(), inner.eof)
+        };
+        let Some(mut chunk) = chunk.take() else {
+            if eof {
+                return Ok(0);
+            }
             return Err(RadioError::Timeout {
                 command: "mock-transport-read",
             });
@@ -103,6 +115,18 @@ async fn ic705_actor_skips_mode_set_when_validation_query_confirms_state() {
     let written = transport.written_frames().await;
     let additional = &written[baseline..];
     assert_eq!(additional, &[command([0x26, 0x00])]);
+}
+
+#[tokio::test]
+async fn ic705_actor_reports_startup_eof() {
+    let transport = SharedMockTransport::default();
+    transport.set_eof(true).await;
+
+    let error = Radio::connect_with_transport(RadioConfig::new("icom-ic705"), transport)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, RadioError::Transport(message) if message.contains("closed by peer")));
 }
 
 #[tokio::test]
