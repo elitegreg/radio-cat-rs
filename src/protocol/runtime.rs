@@ -223,7 +223,11 @@ impl KenwoodAsciiRuntime {
                 match decode_kenwood_frame(self.profile, &frame, ctx.state(), &mut self.vfo_routing)
                 {
                     Ok(Some(decoded)) => {
-                        let source = decoded.source_hint.unwrap_or(default_source);
+                        let source = if matched_expected {
+                            default_source
+                        } else {
+                            UpdateSource::Native
+                        };
                         tracing::debug!(
                             driver = %self.profile.id(),
                             rx_frame = frame.as_str(),
@@ -845,7 +849,12 @@ impl IcomCivRuntime {
                     }
                 }
 
-                self.decode_and_publish_frame(&frame, default_source, receiver_hint, ctx);
+                let source = if matched_expected {
+                    default_source
+                } else {
+                    UpdateSource::Native
+                };
+                self.decode_and_publish_frame(&frame, source, receiver_hint, ctx);
 
                 if matched_expected {
                     return Ok(IcomWaitOutcome::Matched);
@@ -871,7 +880,7 @@ impl IcomCivRuntime {
     ) {
         match icom_civ::decode(self.profile, frame, ctx.state(), receiver_hint) {
             Ok(Some(decoded)) => {
-                let source = decoded.source_hint.unwrap_or(default_source);
+                let source = default_source;
                 tracing::debug!(
                     driver = %self.profile.id(),
                     rx_bytes = ?frame.as_bytes(),
@@ -1394,7 +1403,11 @@ impl SmartSdrRuntime {
                         }
                         match smartsdr::decode_status(&self.profile, &message, ctx.state()) {
                             Ok(Some(decoded)) => {
-                                let source = decoded.source_hint.unwrap_or(default_source);
+                                let source = if default_source == UpdateSource::ManualRefresh {
+                                    UpdateSource::ManualRefresh
+                                } else {
+                                    UpdateSource::Native
+                                };
                                 ctx.publish_patches(decoded.patches, source);
                             }
                             Ok(None) => {}
@@ -1426,9 +1439,7 @@ impl SmartSdrRuntime {
                                         ctx.state(),
                                     ) {
                                         Ok(Some(decoded)) => {
-                                            let source =
-                                                decoded.source_hint.unwrap_or(default_source);
-                                            ctx.publish_patches(decoded.patches, source);
+                                            ctx.publish_patches(decoded.patches, default_source);
                                         }
                                         Ok(None) => {}
                                         Err(error) => {

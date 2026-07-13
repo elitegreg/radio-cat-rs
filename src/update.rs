@@ -39,8 +39,6 @@ bitflags! {
         const KEYER                 = 1 << 18;
         const CONNECTION            = 1 << 19;
 
-        const OTHER                 = 1 << 31;
-
         const FREQUENCY =
             Self::MAIN_RX_FREQ.bits()
             | Self::SUB_RX_FREQ.bits()
@@ -124,7 +122,6 @@ pub enum StateField {
     KeyerSending,
 
     Connection,
-    Other(&'static str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -166,12 +163,18 @@ impl ChangeSet {
 
     fn add(&mut self, flags: ChangeFlags, field: StateField) {
         self.flags |= flags;
-        self.fields.push(field);
+        if !self.fields.contains(&field) {
+            self.fields.push(field);
+        }
     }
 
     fn extend(&mut self, other: ChangeSet) {
         self.flags |= other.flags;
-        self.fields.extend(other.fields);
+        for field in other.fields {
+            if !self.fields.contains(&field) {
+                self.fields.push(field);
+            }
+        }
     }
 }
 
@@ -236,10 +239,6 @@ impl StateReducer {
 
     pub fn state(&self) -> &RadioState {
         &self.state
-    }
-
-    pub fn snapshot(&self) -> SharedRadioState {
-        Arc::new(self.state.clone())
     }
 
     pub fn apply_patches<I>(&mut self, patches: I) -> ChangeSet
@@ -316,24 +315,34 @@ impl StateReducer {
                 }
                 (false, true) => {
                     self.state.sub_rx = None;
+                    self.state.rit_xit.sub_rit_enabled = None;
+                    self.state.rit_xit.sub_xit_enabled = None;
+                    self.state.rit_xit.sub_offset_hz = None;
+                    self.state.rit_xit.sub_xit_offset_hz = None;
                     changes.add(ChangeFlags::SUB_RX, StateField::SubRxPresent);
                 }
                 _ => {}
             },
             StatePatch::SubRxFrequency(value) => {
-                let rx = ensure_sub_rx(&mut self.state, &mut changes);
+                let Some(rx) = existing_sub_rx(&mut self.state) else {
+                    return changes;
+                };
                 if set_option(&mut rx.frequency, value) {
                     changes.add(ChangeFlags::SUB_RX_FREQ, StateField::SubRxFrequency);
                 }
             }
             StatePatch::SubRxMode(value) => {
-                let rx = ensure_sub_rx(&mut self.state, &mut changes);
+                let Some(rx) = existing_sub_rx(&mut self.state) else {
+                    return changes;
+                };
                 if set_option(&mut rx.mode, value) {
                     changes.add(ChangeFlags::SUB_RX_MODE, StateField::SubRxMode);
                 }
             }
             StatePatch::SubRxFilterBandwidth(value) => {
-                let rx = ensure_sub_rx(&mut self.state, &mut changes);
+                let Some(rx) = existing_sub_rx(&mut self.state) else {
+                    return changes;
+                };
                 if set_option(&mut rx.filter.bandwidth_hz, value) {
                     changes.add(
                         ChangeFlags::SUB_RX_FILTER_BW,
@@ -342,7 +351,9 @@ impl StateReducer {
                 }
             }
             StatePatch::SubRxFilterShift(value) => {
-                let rx = ensure_sub_rx(&mut self.state, &mut changes);
+                let Some(rx) = existing_sub_rx(&mut self.state) else {
+                    return changes;
+                };
                 if set_option(&mut rx.filter.shift_hz, value) {
                     changes.add(
                         ChangeFlags::SUB_RX_FILTER_SHIFT,
@@ -351,37 +362,59 @@ impl StateReducer {
                 }
             }
             StatePatch::SubRxPreamp(value) => {
-                let rx = ensure_sub_rx(&mut self.state, &mut changes);
+                let Some(rx) = existing_sub_rx(&mut self.state) else {
+                    return changes;
+                };
                 if set_option(&mut rx.rf.preamp, value) {
                     changes.add(ChangeFlags::SUB_RX_RF, StateField::SubRxPreamp);
                 }
             }
             StatePatch::SubRxAttenuator(value) => {
-                let rx = ensure_sub_rx(&mut self.state, &mut changes);
+                let Some(rx) = existing_sub_rx(&mut self.state) else {
+                    return changes;
+                };
                 if set_option(&mut rx.rf.attenuator, value) {
                     changes.add(ChangeFlags::SUB_RX_RF, StateField::SubRxAttenuator);
                 }
             }
             StatePatch::SubRxNoiseBlanker(value) => {
-                let rx = ensure_sub_rx(&mut self.state, &mut changes);
+                let Some(rx) = existing_sub_rx(&mut self.state) else {
+                    return changes;
+                };
                 if set_option(&mut rx.rf.noise_blanker, value) {
                     changes.add(ChangeFlags::SUB_RX_RF, StateField::SubRxNoiseBlanker);
                 }
             }
             StatePatch::SubRxNoiseReduction(value) => {
-                let rx = ensure_sub_rx(&mut self.state, &mut changes);
+                let Some(rx) = existing_sub_rx(&mut self.state) else {
+                    return changes;
+                };
                 if set_option(&mut rx.rf.noise_reduction, value) {
                     changes.add(ChangeFlags::SUB_RX_RF, StateField::SubRxNoiseReduction);
                 }
             }
             StatePatch::SubRxAutoNotch(value) => {
-                let rx = ensure_sub_rx(&mut self.state, &mut changes);
+                let Some(rx) = existing_sub_rx(&mut self.state) else {
+                    return changes;
+                };
                 if set_option(&mut rx.rf.auto_notch, value) {
                     changes.add(ChangeFlags::SUB_RX_RF, StateField::SubRxAutoNotch);
                 }
             }
             StatePatch::SwapVfoFrequencies => {
-                let sub = self.state.sub_rx.get_or_insert_with(ReceiverState::default);
+                let Some(sub) = self.state.sub_rx.as_mut() else {
+                    return changes;
+                };
+                let old_main_frequency = self.state.main_rx.frequency;
+                let old_sub_frequency = sub.frequency;
+                let old_main_rit_enabled = self.state.rit_xit.main_rit_enabled;
+                let old_sub_rit_enabled = self.state.rit_xit.sub_rit_enabled;
+                let old_xit_enabled = self.state.rit_xit.xit_enabled;
+                let old_sub_xit_enabled = self.state.rit_xit.sub_xit_enabled;
+                let old_rit_offset = self.state.rit_xit.offset_hz;
+                let old_sub_rit_offset = self.state.rit_xit.sub_offset_hz;
+                let old_xit_offset = self.state.rit_xit.xit_offset_hz;
+                let old_sub_xit_offset = self.state.rit_xit.sub_xit_offset_hz;
                 std::mem::swap(&mut self.state.main_rx.frequency, &mut sub.frequency);
                 std::mem::swap(
                     &mut self.state.rit_xit.main_rit_enabled,
@@ -399,21 +432,59 @@ impl StateReducer {
                     &mut self.state.rit_xit.xit_offset_hz,
                     &mut self.state.rit_xit.sub_xit_offset_hz,
                 );
-                for (flag, field) in [
-                    (ChangeFlags::MAIN_RX_FREQ, StateField::MainRxFrequency),
-                    (ChangeFlags::SUB_RX, StateField::SubRxPresent),
-                    (ChangeFlags::SUB_RX_FREQ, StateField::SubRxFrequency),
-                    (ChangeFlags::RIT_XIT, StateField::MainRitEnabled),
-                    (ChangeFlags::RIT_XIT, StateField::SubRitEnabled),
-                    (ChangeFlags::RIT_XIT, StateField::XitEnabled),
-                    (ChangeFlags::RIT_XIT, StateField::SubXitEnabled),
-                    (ChangeFlags::RIT_XIT, StateField::RitXitOffset),
-                    (ChangeFlags::RIT_XIT, StateField::XitOffset),
-                    (ChangeFlags::RIT_XIT, StateField::SubRitOffset),
-                    (ChangeFlags::RIT_XIT, StateField::SubXitOffset),
-                ] {
-                    changes.add(flag, field);
+                if old_main_frequency != self.state.main_rx.frequency {
+                    changes.add(ChangeFlags::MAIN_RX_FREQ, StateField::MainRxFrequency);
                 }
+                if old_sub_frequency != sub.frequency {
+                    changes.add(ChangeFlags::SUB_RX_FREQ, StateField::SubRxFrequency);
+                }
+                macro_rules! add_if_changed {
+                    ($old:expr, $new:expr, $field:expr) => {
+                        if $old != $new {
+                            changes.add(ChangeFlags::RIT_XIT, $field);
+                        }
+                    };
+                }
+                add_if_changed!(
+                    old_main_rit_enabled,
+                    self.state.rit_xit.main_rit_enabled,
+                    StateField::MainRitEnabled
+                );
+                add_if_changed!(
+                    old_sub_rit_enabled,
+                    self.state.rit_xit.sub_rit_enabled,
+                    StateField::SubRitEnabled
+                );
+                add_if_changed!(
+                    old_xit_enabled,
+                    self.state.rit_xit.xit_enabled,
+                    StateField::XitEnabled
+                );
+                add_if_changed!(
+                    old_sub_xit_enabled,
+                    self.state.rit_xit.sub_xit_enabled,
+                    StateField::SubXitEnabled
+                );
+                add_if_changed!(
+                    old_rit_offset,
+                    self.state.rit_xit.offset_hz,
+                    StateField::RitXitOffset
+                );
+                add_if_changed!(
+                    old_xit_offset,
+                    self.state.rit_xit.xit_offset_hz,
+                    StateField::XitOffset
+                );
+                add_if_changed!(
+                    old_sub_rit_offset,
+                    self.state.rit_xit.sub_offset_hz,
+                    StateField::SubRitOffset
+                );
+                add_if_changed!(
+                    old_sub_xit_offset,
+                    self.state.rit_xit.sub_xit_offset_hz,
+                    StateField::SubXitOffset
+                );
 
                 if let Some(tx) = self.state.tx.as_mut() {
                     let source = if tx.split == Some(true) {
@@ -444,31 +515,41 @@ impl StateReducer {
                 _ => {}
             },
             StatePatch::TxFrequency(value) => {
-                let tx = ensure_tx(&mut self.state, &mut changes);
+                let Some(tx) = self.state.tx.as_mut() else {
+                    return changes;
+                };
                 if set_option(&mut tx.frequency, value) {
                     changes.add(ChangeFlags::TX_FREQ, StateField::TxFrequency);
                 }
             }
             StatePatch::TxMode(value) => {
-                let tx = ensure_tx(&mut self.state, &mut changes);
+                let Some(tx) = self.state.tx.as_mut() else {
+                    return changes;
+                };
                 if set_option(&mut tx.mode, value) {
                     changes.add(ChangeFlags::TX_MODE, StateField::TxMode);
                 }
             }
             StatePatch::TxPower(value) => {
-                let tx = ensure_tx(&mut self.state, &mut changes);
+                let Some(tx) = self.state.tx.as_mut() else {
+                    return changes;
+                };
                 if set_option(&mut tx.power, value) {
                     changes.add(ChangeFlags::TX_POWER, StateField::TxPower);
                 }
             }
             StatePatch::Transmitting(value) => {
-                let tx = ensure_tx(&mut self.state, &mut changes);
+                let Some(tx) = self.state.tx.as_mut() else {
+                    return changes;
+                };
                 if set_option(&mut tx.transmitting, value) {
                     changes.add(ChangeFlags::PTT, StateField::Transmitting);
                 }
             }
             StatePatch::Split(value) => {
-                let tx = ensure_tx(&mut self.state, &mut changes);
+                let Some(tx) = self.state.tx.as_mut() else {
+                    return changes;
+                };
                 if set_option(&mut tx.split, value) {
                     changes.add(ChangeFlags::SPLIT, StateField::Split);
                 }
@@ -535,13 +616,17 @@ impl StateReducer {
                 _ => {}
             },
             StatePatch::KeyerSpeed(value) => {
-                let keyer = ensure_keyer(&mut self.state, &mut changes);
+                let Some(keyer) = self.state.keyer.as_mut() else {
+                    return changes;
+                };
                 if set_option(&mut keyer.speed_wpm, value) {
                     changes.add(ChangeFlags::KEYER, StateField::KeyerSpeed);
                 }
             }
             StatePatch::KeyerSending(value) => {
-                let keyer = ensure_keyer(&mut self.state, &mut changes);
+                let Some(keyer) = self.state.keyer.as_mut() else {
+                    return changes;
+                };
                 if set_option(&mut keyer.sending, value) {
                     changes.add(ChangeFlags::KEYER, StateField::KeyerSending);
                 }
@@ -558,31 +643,8 @@ impl StateReducer {
     }
 }
 
-fn ensure_sub_rx<'a>(state: &'a mut RadioState, changes: &mut ChangeSet) -> &'a mut ReceiverState {
-    if state.sub_rx.is_none() {
-        state.sub_rx = Some(ReceiverState::default());
-        changes.add(ChangeFlags::SUB_RX, StateField::SubRxPresent);
-    }
-
-    state.sub_rx.as_mut().expect("sub receiver just created")
-}
-
-fn ensure_tx<'a>(state: &'a mut RadioState, changes: &mut ChangeSet) -> &'a mut TransmitterState {
-    if state.tx.is_none() {
-        state.tx = Some(TransmitterState::default());
-        changes.add(ChangeFlags::TX, StateField::TxPresent);
-    }
-
-    state.tx.as_mut().expect("transmitter just created")
-}
-
-fn ensure_keyer<'a>(state: &'a mut RadioState, changes: &mut ChangeSet) -> &'a mut KeyerState {
-    if state.keyer.is_none() {
-        state.keyer = Some(KeyerState::default());
-        changes.add(ChangeFlags::KEYER, StateField::KeyerPresent);
-    }
-
-    state.keyer.as_mut().expect("keyer just created")
+fn existing_sub_rx(state: &mut RadioState) -> Option<&mut ReceiverState> {
+    state.sub_rx.as_mut()
 }
 
 fn set_option<T>(slot: &mut Option<T>, value: T) -> bool
@@ -628,17 +690,44 @@ mod tests {
     }
 
     #[test]
-    fn reducer_creates_optional_sub_receiver_when_patch_targets_it() {
+    fn reducer_does_not_create_unsupported_optional_sub_receiver() {
         let mut reducer = StateReducer::new(RadioState::default());
         let changes = reducer.apply_patch(StatePatch::SubRxMode(Mode::Usb));
 
-        assert!(reducer.state().sub_rx.is_some());
-        assert!(changes.flags.contains(ChangeFlags::SUB_RX));
-        assert!(changes.flags.contains(ChangeFlags::SUB_RX_MODE));
-        assert_eq!(
-            changes.fields.as_slice(),
-            &[StateField::SubRxPresent, StateField::SubRxMode]
-        );
+        assert!(reducer.state().sub_rx.is_none());
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn reducer_clears_hidden_sub_rit_xit_state_when_sub_receiver_is_removed() {
+        let mut state = RadioState {
+            sub_rx: Some(ReceiverState::default()),
+            ..RadioState::default()
+        };
+        state.rit_xit.sub_rit_enabled = Some(true);
+        state.rit_xit.sub_xit_enabled = Some(true);
+        state.rit_xit.sub_offset_hz = Some(RitXitOffsetHz::new(100).unwrap());
+        state.rit_xit.sub_xit_offset_hz = Some(RitXitOffsetHz::new(-100).unwrap());
+        let mut reducer = StateReducer::new(state);
+
+        reducer.apply_patch(StatePatch::SubRxPresent(false));
+
+        assert!(reducer.state().sub_rx.is_none());
+        assert_eq!(reducer.state().rit_xit.sub_rit_enabled, None);
+        assert_eq!(reducer.state().rit_xit.sub_xit_enabled, None);
+        assert_eq!(reducer.state().rit_xit.sub_offset_hz, None);
+        assert_eq!(reducer.state().rit_xit.sub_xit_offset_hz, None);
+    }
+
+    #[test]
+    fn reducer_deduplicates_fields_across_a_patch_batch() {
+        let mut reducer = StateReducer::new(RadioState::default());
+        let changes = reducer.apply_patches([
+            StatePatch::MainRxFrequency(Frequency::from_hz(14_074_000)),
+            StatePatch::MainRxFrequency(Frequency::from_hz(7_074_000)),
+        ]);
+
+        assert_eq!(changes.fields.as_slice(), &[StateField::MainRxFrequency]);
     }
 
     #[test]

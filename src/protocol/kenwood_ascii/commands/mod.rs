@@ -8,7 +8,7 @@ pub mod rit_xit;
 pub mod split;
 pub mod tx;
 
-use crate::{command::ReceiverPath, error::RadioError, update::StatePatch, Result, UpdateSource};
+use crate::{command::ReceiverPath, error::RadioError, update::StatePatch, Result};
 
 use super::{AsciiFrame, CommandPriority, OutgoingStep, ResponseMatcher};
 
@@ -88,15 +88,11 @@ fn matcher_for_frame(frame: &AsciiFrame, matcher: &ResponseMatcher) -> ResponseM
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedFrame {
     pub patches: Vec<StatePatch>,
-    pub source_hint: Option<UpdateSource>,
 }
 
 impl DecodedFrame {
     pub fn new(patches: Vec<StatePatch>) -> Self {
-        Self {
-            patches,
-            source_hint: None,
-        }
+        Self { patches }
     }
 }
 

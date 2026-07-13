@@ -1,7 +1,7 @@
 use crate::{
     command::{RadioCommand, ReceiverPath},
     error::RadioError,
-    update::{StatePatch, UpdateSource},
+    update::StatePatch,
     Frequency, LeveledSetting, Mode, Power, RadioState, Result, RitXitOffsetHz,
 };
 
@@ -25,15 +25,11 @@ impl EncodedCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedFrame {
     pub patches: Vec<StatePatch>,
-    pub source_hint: Option<UpdateSource>,
 }
 
 impl DecodedFrame {
     pub fn new(patches: Vec<StatePatch>) -> Self {
-        Self {
-            patches,
-            source_hint: None,
-        }
+        Self { patches }
     }
 }
 
