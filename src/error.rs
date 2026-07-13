@@ -1,3 +1,5 @@
+use std::io;
+
 use thiserror::Error;
 
 pub type Result<T, E = RadioError> = std::result::Result<T, E>;
@@ -46,23 +48,43 @@ pub enum RadioError {
     #[error("radio command response channel was canceled")]
     CommandCanceled,
 
+    /// A transport failure with no typed source (kept for caller-created errors).
     #[error("transport error: {0}")]
     Transport(String),
+
+    #[error("I/O transport error")]
+    Io {
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("serial transport error")]
+    Serial {
+        #[source]
+        source: tokio_serial::Error,
+    },
 }
 
 impl From<std::io::Error> for RadioError {
     fn from(value: std::io::Error) -> Self {
-        Self::Transport(value.to_string())
+        Self::Io { source: value }
     }
 }
 
 impl From<tokio_serial::Error> for RadioError {
     fn from(value: tokio_serial::Error) -> Self {
-        Self::Transport(value.to_string())
+        Self::Serial { source: value }
     }
 }
 
 impl RadioError {
+    pub fn is_transport(&self) -> bool {
+        matches!(
+            self,
+            Self::Transport(_) | Self::Io { .. } | Self::Serial { .. }
+        )
+    }
+
     pub fn protocol_syntax(command: Option<&str>) -> Self {
         let command_suffix = match command {
             Some(command) => format!(" for {command}"),
@@ -70,6 +92,26 @@ impl RadioError {
         };
 
         Self::ProtocolSyntax { command_suffix }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use super::*;
+
+    #[test]
+    fn io_errors_retain_their_source_and_kind() {
+        let error = RadioError::from(io::Error::from(io::ErrorKind::TimedOut));
+        assert!(error.is_transport());
+        assert_eq!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<io::Error>())
+                .map(io::Error::kind),
+            Some(io::ErrorKind::TimedOut)
+        );
     }
 }
 

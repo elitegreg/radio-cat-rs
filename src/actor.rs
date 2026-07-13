@@ -108,7 +108,7 @@ impl RadioTask {
             }
             if self.poll_due() {
                 if let Err(error) = self.run_poll_if_due().await {
-                    if matches!(error, RadioError::Transport(_)) {
+                    if error.is_transport() {
                         self.publish_terminal_error(&error);
                         return Err(error);
                     }
@@ -134,7 +134,7 @@ impl RadioTask {
                         .process_session_incoming(Duration::from_millis(1), UpdateSource::Native)
                         .await
                     {
-                        if matches!(error, RadioError::Transport(_)) {
+                        if error.is_transport() {
                             tracing::error!(driver = %driver.id, ?error, "native incoming processing failed");
                             self.publish_terminal_error(&error);
                             return Err(error);

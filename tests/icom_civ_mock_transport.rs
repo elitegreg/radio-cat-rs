@@ -346,7 +346,7 @@ async fn write_failure_leaves_accepted_state_unchanged() {
         .await
         .unwrap_err();
 
-    assert!(matches!(error, RadioError::Transport(_)));
+    assert!(error.is_transport());
     assert_eq!(radio.latest_state().main_rx.frequency, before);
 }
 

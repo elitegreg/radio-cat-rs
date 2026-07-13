@@ -352,7 +352,7 @@ impl RadioSession for KenwoodAsciiRuntime {
                         )
                         .await
                     {
-                        if matches!(error, RadioError::Transport(_)) {
+                        if error.is_transport() {
                             return Err(error);
                         }
                         tracing::warn!(driver = %self.profile.id(), step = step.label(), ?error, "startup auto-info step failed; continuing");
@@ -383,9 +383,7 @@ impl RadioSession for KenwoodAsciiRuntime {
                         .await
                     {
                         Ok(_) => responsive = true,
-                        Err(error) if matches!(error, RadioError::Transport(_)) => {
-                            return Err(error)
-                        }
+                        Err(error) if error.is_transport() => return Err(error),
                         Err(error) => {
                             tracing::warn!(driver = %self.profile.id(), semantic, ?error, "startup query failed; continuing")
                         }
@@ -993,9 +991,7 @@ impl RadioSession for IcomCivRuntime {
                         .await
                     {
                         Ok(_) => responsive = true,
-                        Err(error) if matches!(error, RadioError::Transport(_)) => {
-                            return Err(error)
-                        }
+                        Err(error) if error.is_transport() => return Err(error),
                         Err(error) => {
                             tracing::warn!(driver = %self.profile.id(), semantic, ?error, "ICOM startup query failed; continuing")
                         }
@@ -2708,7 +2704,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(error, RadioError::Transport(_)));
+        assert!(error.is_transport());
         assert_eq!(transport.writes, vec![b"AI2;".to_vec(), b"IF;".to_vec()]);
         assert!(sink.updates.is_empty());
     }

@@ -177,7 +177,10 @@ async fn flexradio_startup_requires_the_configured_slice_status() {
     };
     assert!(matches!(
         error,
-        RadioError::Transport(_) | RadioError::Timeout { .. }
+        RadioError::Transport(_)
+            | RadioError::Io { .. }
+            | RadioError::Serial { .. }
+            | RadioError::Timeout { .. }
     ));
     assert_eq!(transport.written_len().await, 3);
 }
