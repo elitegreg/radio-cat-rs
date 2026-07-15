@@ -871,6 +871,7 @@ fn encode_yaesu_code(profile: &KenwoodAsciiProfile, mode: Mode) -> Result<char> 
         }
         Mode::DataUsb => Ok('C'),
         Mode::Psk => Ok('E'),
+        Mode::DigitalVoice if profile.id() == "yaesu-ft991" => Ok('E'),
         _ => Err(RadioError::InvalidValue {
             field: "mode",
             message: format!("mode {mode} is not supported by {}", profile.id()),
@@ -905,6 +906,7 @@ fn decode_yaesu_code(
             command,
             message: "FT-891 does not support mode code 'E'".to_string(),
         }),
+        'E' if profile.id() == "yaesu-ft991" => Ok(Mode::DigitalVoice),
         'E' => Ok(Mode::Psk),
         'F' if profile.id() == "yaesu-ft891" => Err(RadioError::Decode {
             command,
@@ -1074,7 +1076,9 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(decoded.patches.contains(&StatePatch::MainRxMode(Mode::Psk)));
+        assert!(decoded
+            .patches
+            .contains(&StatePatch::MainRxMode(Mode::DigitalVoice)));
     }
 
     #[test]

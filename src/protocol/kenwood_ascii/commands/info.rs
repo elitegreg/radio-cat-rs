@@ -561,7 +561,9 @@ mod tests {
         assert!(decoded
             .patches
             .contains(&StatePatch::SubRxFrequency(Frequency::from_hz(7_074_000))));
-        assert!(decoded.patches.contains(&StatePatch::SubRxMode(Mode::Psk)));
+        assert!(decoded
+            .patches
+            .contains(&StatePatch::SubRxMode(Mode::DigitalVoice)));
         assert!(decoded
             .patches
             .contains(&StatePatch::SubRitOffset(RitXitOffsetHz::new(123).unwrap())));
@@ -590,6 +592,8 @@ mod tests {
         .unwrap();
 
         let decoded = decode_with_default_routing(profile, &frame, &state);
-        assert!(decoded.patches.contains(&StatePatch::MainRxMode(Mode::Psk)));
+        assert!(decoded
+            .patches
+            .contains(&StatePatch::MainRxMode(Mode::DigitalVoice)));
     }
 }

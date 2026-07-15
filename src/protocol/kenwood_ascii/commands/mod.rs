@@ -115,6 +115,9 @@ pub struct VfoRouting {
     pub(crate) tx_vfo: PhysicalVfo,
     pub(crate) switchable: bool,
     pub(crate) main_bandwidth_id: Option<u8>,
+    pub(crate) yaesu_narrow: Option<bool>,
+    pub(crate) ts890_nb: [Option<bool>; 2],
+    pub(crate) ts990_nb: [[Option<bool>; 2]; 2],
 }
 
 impl VfoRouting {
@@ -135,6 +138,9 @@ impl VfoRouting {
                     | "elecraft-k2"
             ),
             main_bandwidth_id: None,
+            yaesu_narrow: None,
+            ts890_nb: [None, None],
+            ts990_nb: [[None, None], [None, None]],
         }
     }
 
@@ -217,6 +223,9 @@ impl Default for VfoRouting {
             tx_vfo: PhysicalVfo::A,
             switchable: false,
             main_bandwidth_id: None,
+            yaesu_narrow: None,
+            ts890_nb: [None, None],
+            ts990_nb: [[None, None], [None, None]],
         }
     }
 }

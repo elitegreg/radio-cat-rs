@@ -96,7 +96,11 @@ pub fn encode_query(
         return Ok(None);
     }
 
-    let matcher = matcher_for_semantic(semantic);
+    let matcher = if profile.id() == "kenwood-ts990" && semantic.starts_with("NT") {
+        ResponseMatcher::Prefix("NT")
+    } else {
+        matcher_for_semantic(semantic)
+    };
     let frame = AsciiFrame::new(format!("{semantic};"))?;
 
     // Keep this conservative: if no RF/DSP feature is readable, ignore RF semantic queries.
@@ -119,20 +123,20 @@ pub fn encode_query(
 }
 
 pub fn decode(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result<Option<DecodedFrame>> {
-    decode_with_routing(profile, frame, VfoRouting::for_profile(profile))
+    decode_with_routing(profile, frame, &mut VfoRouting::for_profile(profile))
 }
 
 pub fn decode_with_routing(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
-    vfo_routing: VfoRouting,
+    vfo_routing: &mut VfoRouting,
 ) -> Result<Option<DecodedFrame>> {
     let patches = match frame.command() {
-        "PA" | "PA$" | "PAX" => decode_preamp(profile, frame, vfo_routing)?,
-        "RA" | "RA$" | "RAX" => decode_attenuator(profile, frame, vfo_routing)?,
+        "PA" | "PA$" | "PAX" => decode_preamp(profile, frame, *vfo_routing)?,
+        "RA" | "RA$" | "RAX" => decode_attenuator(profile, frame, *vfo_routing)?,
         "NB" | "NB$" => decode_noise_blanker(profile, frame, vfo_routing)?,
-        "NR" | "NR$" | "NRX" => decode_noise_reduction(profile, frame, vfo_routing)?,
-        "NT" | "NTX" | "NA" | "NA$" | "BC" => decode_auto_notch(profile, frame, vfo_routing)?,
+        "NR" | "NR$" | "NRX" => decode_noise_reduction(profile, frame, *vfo_routing)?,
+        "NT" | "NTX" | "NA" | "NA$" | "BC" => decode_auto_notch(profile, frame, *vfo_routing)?,
         _ => return Ok(None),
     };
 
@@ -342,10 +346,11 @@ fn encode_noise_blanker(
             vec![AsciiFrame::new(format!("NB{};", bool_digit(index > 0)))?],
             ResponseMatcher::Prefix("NB"),
         ),
-        "elecraft-k2" => (
-            vec![AsciiFrame::new("NB1;")?],
-            ResponseMatcher::Prefix("NB"),
-        ),
+        "elecraft-k2" => {
+            return Err(RadioError::UnsupportedCapability {
+                capability: "receiver.noise_blanker",
+            });
+        }
         _ => {
             return Err(RadioError::UnsupportedCapability {
                 capability: "receiver.noise_blanker",
@@ -384,6 +389,13 @@ fn encode_noise_reduction(
 ) -> Result<EncodedCommand> {
     let index = normalize_index(setting, 1)?;
 
+    if profile.id() == "elecraft-k4" && index > 10 {
+        return Err(RadioError::InvalidValue {
+            field: "receiver.noise_reduction",
+            message: "K4 noise-reduction level must be 0..=10".to_string(),
+        });
+    }
+
     let frame = match profile.id() {
         "kenwood-ts990" => format!("NR{}{index};", target_digit(receiver)),
         "elecraft-k4" => {
@@ -395,7 +407,7 @@ fn encode_noise_reduction(
                 } else {
                     ""
                 },
-                index.min(10)
+                index
             )
         }
         "yaesu-ftdx101" => format!(
@@ -560,7 +572,7 @@ fn decode_attenuator(
 fn decode_noise_blanker(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
-    _vfo_routing: VfoRouting,
+    vfo_routing: &mut VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if frame.command() == "NB$" {
         let enabled = parse_flag("NB", frame.payload())?;
@@ -581,18 +593,18 @@ fn decode_noise_blanker(
             });
         }
         let family = payload.as_bytes()[0];
+        if !matches!(family, b'1' | b'2') {
+            return Err(RadioError::Decode {
+                command: "NB",
+                message: format!("expected TS-890 NB1/NB2 response, got {family:?}"),
+            });
+        }
         let enabled = parse_flag("NB", &payload[1..2])?;
-        let current = 0u8;
-        let index = match (family, enabled, current) {
-            (b'1', false, 0 | 2) => 0,
-            (b'1', true, 0 | 2) => 1,
-            (b'2', false, 0 | 1) => 0,
-            (b'2', true, 0 | 1) => 2,
-            (b'1', false, 3) => 2,
-            (b'1', true, 3) => 3,
-            (b'2', false, 3) => 1,
-            (b'2', true, 3) => 3,
-            _ => return Ok(vec![StatePatch::MainRxNoiseBlanker(setting_from_index(0))]),
+        let slot = (family - b'1') as usize;
+        vfo_routing.ts890_nb[slot] = Some(enabled);
+        let index = match vfo_routing.ts890_nb {
+            [Some(nb1), Some(nb2)] => bool_digit_value(nb1) + 2 * bool_digit_value(nb2),
+            _ => return Ok(Vec::new()),
         };
         return Ok(vec![StatePatch::MainRxNoiseBlanker(setting_from_index(
             index,
@@ -608,12 +620,23 @@ fn decode_noise_blanker(
             });
         }
         let family = payload.as_bytes()[0];
+        if !matches!(family, b'1' | b'2') {
+            return Err(RadioError::Decode {
+                command: "NB",
+                message: format!("expected TS-990 NB1/NB2 response, got {family:?}"),
+            });
+        }
         let receiver = decode_target("NB", payload.as_bytes()[1])?;
         let enabled = parse_flag("NB", &payload[2..3])?;
-        let index = match (family, enabled) {
-            (b'1', true) => 1,
-            (b'2', true) => 2,
-            _ => 0,
+        let receiver_index = match receiver {
+            ReceiverPath::Main => 0,
+            ReceiverPath::Sub => 1,
+        };
+        let slot = (family - b'1') as usize;
+        vfo_routing.ts990_nb[receiver_index][slot] = Some(enabled);
+        let index = match vfo_routing.ts990_nb[receiver_index] {
+            [Some(nb1), Some(nb2)] => bool_digit_value(nb1) + 2 * bool_digit_value(nb2),
+            _ => return Ok(Vec::new()),
         };
         return Ok(vec![setting_patch(receiver, Feature::NoiseBlanker, index)]);
     }
@@ -712,7 +735,7 @@ fn decode_auto_notch(
             }
             (
                 decode_target("NT", payload.as_bytes()[0])?,
-                parse_u8("NT", &payload[1..2])? > 0,
+                parse_u8("NT", &payload[1..2])? == 1,
             )
         }
         "BC" => {
@@ -730,6 +753,17 @@ fn decode_auto_notch(
             (receiver, parse_flag("BC", &payload[payload.len() - 1..])?)
         }
         "NT" => {
+            if profile.id() == "kenwood-ts990" {
+                if payload.len() != 2 {
+                    return Err(RadioError::Decode {
+                        command: "NT",
+                        message: format!("expected TS-990 NT payload len 2, got {}", payload.len()),
+                    });
+                }
+                let receiver = decode_target("NT", payload.as_bytes()[0])?;
+                let mode = parse_u8("NT", &payload[1..2])?;
+                return Ok(vec![auto_notch_patch(receiver, mode == 1)]);
+            }
             let enabled = if profile.id() == "kenwood-ts590" {
                 if payload.len() != 1 {
                     return Err(RadioError::Decode {
@@ -874,6 +908,10 @@ fn bool_digit(value: bool) -> char {
     }
 }
 
+fn bool_digit_value(value: bool) -> u8 {
+    u8::from(value)
+}
+
 fn parse_flag(command: &'static str, payload: &str) -> Result<bool> {
     match payload {
         "0" => Ok(false),
@@ -1016,7 +1054,7 @@ fn auto_notch_matcher(profile: &KenwoodAsciiProfile, receiver: ReceiverPath) -> 
         "yaesu-ftdx101" | "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft891" | "yaesu-ft991" => {
             ResponseMatcher::Prefix("BC")
         }
-        "kenwood-ts990" => ResponseMatcher::Prefix("NTX"),
+        "kenwood-ts990" => ResponseMatcher::Prefix("NT"),
         _ => ResponseMatcher::Prefix("NT"),
     }
 }
@@ -1086,6 +1124,40 @@ mod tests {
             assert!(result.is_ok());
             assert!(result.unwrap().is_err());
         }
+    }
+
+    #[test]
+    fn ts990_auto_notch_reports_only_auto_mode_as_enabled() {
+        let profile = profile_by_id("kenwood-ts990").unwrap();
+        for (mode, enabled) in [('0', false), ('1', true), ('2', false), ('3', false)] {
+            let frame = AsciiFrame::new(format!("NT0{mode};")).unwrap();
+            let decoded = decode(profile, &frame).unwrap().unwrap();
+            assert!(decoded
+                .patches
+                .contains(&StatePatch::MainRxAutoNotch(enabled)));
+        }
+
+        let query = encode_query(profile, "NT0").unwrap().unwrap();
+        assert_eq!(query.frames[0].as_str(), "NT0;");
+        assert_eq!(query.matcher, ResponseMatcher::Prefix("NT"));
+    }
+
+    #[test]
+    fn k2_noise_blanker_is_not_an_exact_setter() {
+        let profile = profile_by_id("elecraft-k2").unwrap();
+        let result = encode(
+            profile,
+            &RadioCommand::SetReceiverNoiseBlanker {
+                receiver: ReceiverPath::Main,
+                setting: LeveledSetting::disabled(),
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(RadioError::UnsupportedCapability {
+                capability: "receiver.noise_blanker"
+            })
+        ));
     }
 
     #[test]

@@ -143,13 +143,31 @@ const NO_RF: ReceiverRfCapabilities = ReceiverRfCapabilities::new(
 );
 
 const FULL_RX: ReceiverCapabilities = ReceiverCapabilities::new(RW, RW, RW, RW, FULL_RF);
+const YAESU_FT891_991_SUB_RX: ReceiverCapabilities = ReceiverCapabilities::new(
+    RW,
+    RW,
+    RW,
+    RW,
+    ReceiverRfCapabilities::new(
+        UNSUPPORTED,
+        UNSUPPORTED,
+        UNSUPPORTED,
+        UNSUPPORTED,
+        UNSUPPORTED,
+    ),
+);
 const K3_RX: ReceiverCapabilities = ReceiverCapabilities::new(RW, RW, RW, RW, NB_ONLY_RF);
 const NO_AUTO_NOTCH_RX: ReceiverCapabilities =
     ReceiverCapabilities::new(RW, RW, RW, RW, NO_AUTO_NOTCH_RF);
 const NO_FILTER_NO_AUTO_NOTCH_RX: ReceiverCapabilities =
     ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, NO_AUTO_NOTCH_RF);
-const BW_ONLY_RX: ReceiverCapabilities =
-    ReceiverCapabilities::new(RW, RW, RW, UNSUPPORTED, NB_ONLY_RF);
+const K2_RX: ReceiverCapabilities = ReceiverCapabilities::new(
+    RW,
+    RW,
+    RW,
+    UNSUPPORTED,
+    ReceiverRfCapabilities::new(RW, RW, RO, UNSUPPORTED, UNSUPPORTED),
+);
 const NO_FILTER_NO_RF_RX: ReceiverCapabilities =
     ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, NO_RF);
 const VFO_ONLY_RX: ReceiverCapabilities =
@@ -779,7 +797,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         frequency_format: FrequencyFormat::Hertz11Digit,
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
-            BW_ONLY_RX,
+            K2_RX,
             FULL_TX,
             K2_RIT_XIT,
             Some(FULL_KEYER),
@@ -859,9 +877,10 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Yaesu,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        capabilities: dual_capabilities(
+        capabilities: asymmetric_dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
+            YAESU_FT891_991_SUB_RX,
             FULL_TX,
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
@@ -879,9 +898,10 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Yaesu,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        capabilities: dual_capabilities(
+        capabilities: asymmetric_dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
+            YAESU_FT891_991_SUB_RX,
             FULL_TX,
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),

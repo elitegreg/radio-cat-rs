@@ -1836,7 +1836,7 @@ fn decode_kenwood_frame(
     {
         return Ok(Some(decoded));
     }
-    if let Some(decoded) = kenwood_ascii::rf::decode_with_routing(profile, frame, *vfo_routing)? {
+    if let Some(decoded) = kenwood_ascii::rf::decode_with_routing(profile, frame, vfo_routing)? {
         return Ok(Some(decoded));
     }
     if let Some(decoded) = kenwood_ascii::tx::decode(profile, frame)? {
