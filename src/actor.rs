@@ -11,7 +11,8 @@ use crate::{
     keyer_emulation,
     transport::BoxedCatTransport,
     update::{SharedRadioState, StateReducer, StateUpdate},
-    Capability, ConnectionState, RadioCommand, RadioState, StatePatch, UpdateSource,
+    Capability, CommandOutcome, ConnectionState, RadioCommand, RadioState, StatePatch,
+    UpdateSource,
 };
 
 const COMMAND_LOOP_IDLE_TICK: Duration = Duration::from_millis(50);
@@ -22,7 +23,7 @@ const MAX_URGENT_BURST: u8 = 4;
 
 pub(crate) struct CommandEnvelope {
     pub command: RadioCommand,
-    pub result_tx: oneshot::Sender<Result<()>>,
+    pub result_tx: oneshot::Sender<Result<CommandOutcome>>,
 }
 
 pub(crate) struct RadioTask {
@@ -218,10 +219,10 @@ impl RadioTask {
         );
     }
 
-    async fn handle_command(&mut self, command: RadioCommand) -> Result<()> {
+    async fn handle_command(&mut self, command: RadioCommand) -> Result<CommandOutcome> {
         if matches!(command, RadioCommand::Refresh) {
             self.run_session_refresh().await?;
-            return Ok(());
+            return Ok(CommandOutcome::Completed);
         }
 
         let command_for_emulation = command.clone();
@@ -231,7 +232,17 @@ impl RadioTask {
         tracing::debug!(?completion, "radio task command completed");
         self.apply_emulated_keyer_command(&command_for_emulation);
 
-        Ok(())
+        match command_for_emulation {
+            RadioCommand::SetTxPower(_) => self
+                .reducer
+                .state()
+                .tx
+                .as_ref()
+                .and_then(|tx| tx.power)
+                .map(|accepted| CommandOutcome::TxPower { accepted })
+                .ok_or(RadioError::ProtocolCommunication),
+            _ => Ok(CommandOutcome::Completed),
+        }
     }
 
     fn command_wait_timeout(&self) -> Duration {
@@ -529,7 +540,7 @@ impl StateSink for RadioTask {
 pub(crate) async fn send_command(
     command_tx: &mpsc::Sender<CommandEnvelope>,
     command: RadioCommand,
-) -> Result<()> {
+) -> Result<CommandOutcome> {
     let (result_tx, result_rx) = oneshot::channel();
     tracing::trace!(?command, "sending command envelope to radio task");
     command_tx

@@ -109,7 +109,11 @@ async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
 
     let baseline = transport.written_len().await;
     transport.push_read(lines(["R4|0||"])).await;
-    radio.set_tx_power(Power::from_watts(50)).await.unwrap();
+    let accepted_power = radio
+        .set_tx_power(Power::from_microwatts(50_500_000))
+        .await
+        .unwrap();
+    assert_eq!(accepted_power, Power::from_watts(51));
 
     transport.push_read(lines(["R5|0||"])).await;
     radio
@@ -144,7 +148,7 @@ async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
             state.main_rx.frequency == Some(Frequency::from_hz(7_030_000))
                 && state.main_rx.rf.noise_reduction == Some(LeveledSetting::enabled(37))
                 && state.keyer.as_ref().and_then(|keyer| keyer.speed_wpm) == Some(30)
-                && state.tx.as_ref().and_then(|tx| tx.power) == Some(Power::from_watts(50))
+                && state.tx.as_ref().and_then(|tx| tx.power) == Some(Power::from_watts(51))
                 && state.tx.as_ref().and_then(|tx| tx.transmitting) == Some(true)
         }
     })
@@ -156,7 +160,7 @@ async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
     assert_eq!(
         additional,
         &[
-            b"C4|transmit set rfpower=50\n".to_vec(),
+            b"C4|transmit set rfpower=51\n".to_vec(),
             b"C5|slice t 0 7.030000 autopan=1\n".to_vec(),
             b"C6|slice s 0 nr=on nr_level=37\n".to_vec(),
             b"C7|cwx wpm 30\n".to_vec(),

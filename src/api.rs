@@ -12,7 +12,8 @@ use crate::{
         boxed_transport, open_transport, BoxedCatTransport, CatTransport, TransportConfig,
     },
     update::{SharedRadioState, StateUpdate},
-    DriverDescriptor, Frequency, LeveledSetting, Mode, Power, RadioCapabilities, RitXitOffsetHz,
+    CommandOutcome, DriverDescriptor, Frequency, LeveledSetting, Mode, Power, RadioCapabilities,
+    RitXitOffsetHz,
 };
 
 #[derive(Debug, Clone)]
@@ -258,11 +259,13 @@ impl Radio {
     /// supported completion stage: written, acknowledged, or decoded state.
     /// A successful call never publishes a predicted state before that stage;
     /// use state updates to observe the resulting accepted radio state.
-    pub async fn command(&self, command: RadioCommand) -> Result<()> {
+    pub async fn command(&self, command: RadioCommand) -> Result<CommandOutcome> {
         tracing::debug!(driver = %self.driver.id, ?command, "queueing radio command");
         let result = send_command(&self.command_tx, command).await;
         match &result {
-            Ok(()) => tracing::trace!(driver = %self.driver.id, "radio command completed"),
+            Ok(outcome) => {
+                tracing::trace!(driver = %self.driver.id, ?outcome, "radio command completed")
+            }
             Err(error) => {
                 tracing::debug!(driver = %self.driver.id, ?error, "radio command failed")
             }
@@ -273,7 +276,7 @@ impl Radio {
     /// Reissue the connected radio's startup queries and wait for their protocol completion.
     /// Decoded state changes are published with [`UpdateSource::ManualRefresh`].
     pub async fn refresh(&self) -> Result<()> {
-        self.command(RadioCommand::Refresh).await
+        self.command(RadioCommand::Refresh).await.map(|_| ())
     }
 
     pub async fn set_receiver_frequency(
@@ -286,6 +289,7 @@ impl Radio {
             frequency,
         })
         .await
+        .map(|_| ())
     }
 
     pub async fn set_main_frequency(&self, frequency: Frequency) -> Result<()> {
@@ -301,6 +305,7 @@ impl Radio {
     pub async fn set_receiver_mode(&self, receiver: ReceiverPath, mode: Mode) -> Result<()> {
         self.command(RadioCommand::SetReceiverMode { receiver, mode })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_mode(&self, mode: Mode) -> Result<()> {
@@ -321,6 +326,7 @@ impl Radio {
             bandwidth_hz,
         })
         .await
+        .map(|_| ())
     }
 
     pub async fn set_main_filter_bandwidth(&self, bandwidth_hz: u16) -> Result<()> {
@@ -340,6 +346,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetReceiverFilterShift { receiver, shift_hz })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_filter_shift(&self, shift_hz: i16) -> Result<()> {
@@ -359,6 +366,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetReceiverPreamp { receiver, setting })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_preamp(&self, setting: LeveledSetting) -> Result<()> {
@@ -376,6 +384,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetReceiverAttenuator { receiver, setting })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_attenuator(&self, setting: LeveledSetting) -> Result<()> {
@@ -395,6 +404,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetReceiverNoiseBlanker { receiver, setting })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_noise_blanker(&self, setting: LeveledSetting) -> Result<()> {
@@ -414,6 +424,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetReceiverNoiseReduction { receiver, setting })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_noise_reduction(&self, setting: LeveledSetting) -> Result<()> {
@@ -433,6 +444,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetReceiverAutoNotch { receiver, enabled })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_auto_notch(&self, enabled: bool) -> Result<()> {
@@ -446,32 +458,46 @@ impl Radio {
     }
 
     pub async fn set_tx_frequency(&self, frequency: Frequency) -> Result<()> {
-        self.command(RadioCommand::SetTxFrequency(frequency)).await
+        self.command(RadioCommand::SetTxFrequency(frequency))
+            .await
+            .map(|_| ())
     }
 
     pub async fn set_tx_mode(&self, mode: Mode) -> Result<()> {
-        self.command(RadioCommand::SetTxMode(mode)).await
+        self.command(RadioCommand::SetTxMode(mode))
+            .await
+            .map(|_| ())
     }
 
-    pub async fn set_tx_power(&self, power: Power) -> Result<()> {
-        self.command(RadioCommand::SetTxPower(power)).await
+    pub async fn set_tx_power(&self, power: Power) -> Result<Power> {
+        match self.command(RadioCommand::SetTxPower(power)).await? {
+            CommandOutcome::TxPower { accepted } => Ok(accepted),
+            CommandOutcome::Completed => Err(crate::RadioError::ProtocolCommunication),
+        }
     }
 
     pub async fn set_ptt(&self, transmitting: bool) -> Result<()> {
-        self.command(RadioCommand::SetPtt(transmitting)).await
+        self.command(RadioCommand::SetPtt(transmitting))
+            .await
+            .map(|_| ())
     }
 
     pub async fn set_data_ptt(&self, transmitting: bool) -> Result<()> {
-        self.command(RadioCommand::SetDataPtt(transmitting)).await
+        self.command(RadioCommand::SetDataPtt(transmitting))
+            .await
+            .map(|_| ())
     }
 
     pub async fn set_split(&self, split: bool) -> Result<()> {
-        self.command(RadioCommand::SetSplit(split)).await
+        self.command(RadioCommand::SetSplit(split))
+            .await
+            .map(|_| ())
     }
 
     pub async fn set_rit_enabled(&self, receiver: ReceiverPath, enabled: bool) -> Result<()> {
         self.command(RadioCommand::SetRitEnabled { receiver, enabled })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_rit_enabled(&self, enabled: bool) -> Result<()> {
@@ -483,7 +509,9 @@ impl Radio {
     }
 
     pub async fn set_xit_enabled(&self, enabled: bool) -> Result<()> {
-        self.command(RadioCommand::SetXitEnabled(enabled)).await
+        self.command(RadioCommand::SetXitEnabled(enabled))
+            .await
+            .map(|_| ())
     }
 
     pub async fn set_rit_offset(
@@ -493,6 +521,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetRitOffset { receiver, offset })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_rit_offset(&self, offset: RitXitOffsetHz) -> Result<()> {
@@ -504,19 +533,25 @@ impl Radio {
     }
 
     pub async fn set_main_xit_offset(&self, offset: RitXitOffsetHz) -> Result<()> {
-        self.command(RadioCommand::SetXitOffset(offset)).await
+        self.command(RadioCommand::SetXitOffset(offset))
+            .await
+            .map(|_| ())
     }
 
     pub async fn set_keyer_speed(&self, wpm: u8) -> Result<()> {
-        self.command(RadioCommand::SetKeyerSpeed(wpm)).await
+        self.command(RadioCommand::SetKeyerSpeed(wpm))
+            .await
+            .map(|_| ())
     }
 
     pub async fn send_cw(&self, text: impl Into<String>) -> Result<()> {
-        self.command(RadioCommand::SendCw(text.into())).await
+        self.command(RadioCommand::SendCw(text.into()))
+            .await
+            .map(|_| ())
     }
 
     pub async fn stop_cw(&self) -> Result<()> {
-        self.command(RadioCommand::StopCw).await
+        self.command(RadioCommand::StopCw).await.map(|_| ())
     }
 }
 
@@ -589,6 +624,32 @@ mod tests {
         assert_eq!(
             radio.latest_state().main_rx.frequency,
             Some(Frequency::from_hz(7_030_000))
+        );
+
+        let accepted = radio
+            .set_tx_power(Power::from_microwatts(50_500_000))
+            .await
+            .unwrap();
+        assert_eq!(accepted, Power::from_watts(51));
+        assert_eq!(
+            radio.latest_state().tx.as_ref().and_then(|tx| tx.power),
+            Some(accepted)
+        );
+
+        let error = radio
+            .set_tx_power(Power::from_watts(101))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RadioError::InvalidValue {
+                field: "tx.power",
+                ..
+            }
+        ));
+        assert_eq!(
+            radio.latest_state().tx.as_ref().and_then(|tx| tx.power),
+            Some(accepted)
         );
     }
 

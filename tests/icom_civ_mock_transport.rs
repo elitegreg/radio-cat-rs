@@ -3,7 +3,8 @@ use std::{collections::VecDeque, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use radio_cat_rs::{
     protocol::icom_civ::{profile_by_id, CivFrame},
-    CatTransport, Frequency, Mode, Radio, RadioConfig, RadioError, Result, StateUpdateCapability,
+    CatTransport, Frequency, Mode, Power, Radio, RadioConfig, RadioError, Result,
+    StateUpdateCapability,
 };
 use tokio::sync::Mutex;
 
@@ -127,6 +128,45 @@ async fn ic705_actor_reports_startup_eof() {
         .unwrap_err();
 
     assert!(matches!(error, RadioError::Transport(message) if message.contains("closed by peer")));
+}
+
+#[tokio::test]
+async fn ic705_power_rejects_out_of_range_without_io_and_returns_quantized_value() {
+    let transport = SharedMockTransport::default();
+    transport
+        .push_read(response([0x25, 0x00, 0x00, 0x40, 0x07, 0x14, 0x00]))
+        .await;
+    let radio = Radio::connect_with_transport(
+        RadioConfig::new("icom-ic705").with_options("poll_interval=5"),
+        transport.clone(),
+    )
+    .await
+    .unwrap();
+
+    let baseline = transport.written_len().await;
+    let error = radio.set_tx_power(Power::from_watts(11)).await.unwrap_err();
+    assert!(matches!(
+        error,
+        RadioError::InvalidValue {
+            field: "tx.power",
+            ..
+        }
+    ));
+    assert_eq!(transport.written_len().await, baseline);
+    assert_eq!(
+        radio.latest_state().tx.as_ref().and_then(|tx| tx.power),
+        None
+    );
+
+    transport.push_read(response([0xfb])).await;
+    let accepted = radio.set_tx_power(Power::from_watts(5)).await.unwrap();
+    assert_eq!(accepted, Power::from_microwatts(5_019_608));
+    assert_eq!(
+        radio.latest_state().tx.as_ref().and_then(|tx| tx.power),
+        Some(accepted)
+    );
+    let written = transport.written_frames().await;
+    assert_eq!(&written[baseline..], &[command([0x14, 0x0a, 0x01, 0x28])]);
 }
 
 #[tokio::test]

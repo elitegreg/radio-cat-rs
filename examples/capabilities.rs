@@ -160,7 +160,16 @@ fn print_optional_tx(caps: Option<&TransmitterCapabilities>) {
             println!("tx:");
             println!("  frequency: {}", describe_capability(caps.frequency));
             println!("  mode: {}", describe_capability(caps.mode));
-            println!("  power: {}", describe_capability(caps.power));
+            println!("  power: {}", describe_capability(caps.power.access));
+            for range in caps.power.ranges {
+                let step = match range.step {
+                    radio_cat_rs::PowerStep::Fixed(step) => step.to_string(),
+                    radio_cat_rs::PowerStep::Linear { intervals } => {
+                        format!("{intervals} linear intervals")
+                    }
+                };
+                println!("    {}..={} ({step})", range.min, range.max);
+            }
             println!("  ptt: {}", describe_capability(caps.ptt));
             println!("  split: {}", describe_capability(caps.split));
             println!();

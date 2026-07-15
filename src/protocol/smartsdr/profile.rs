@@ -1,11 +1,12 @@
 use crate::{
     capabilities::{
-        Capability, KeyerCapabilities, RadioCapabilities, ReceiverCapabilities, ReceiverKind,
-        ReceiverRfCapabilities, RitXitCapabilities, RitXitOffsetType, StateUpdateCapability,
-        TransmitterCapabilities,
+        Capability, KeyerCapabilities, PowerCapability, PowerRange, RadioCapabilities,
+        ReceiverCapabilities, ReceiverKind, ReceiverRfCapabilities, RitXitCapabilities,
+        RitXitOffsetType, StateUpdateCapability, TransmitterCapabilities,
     },
     driver::{DriverDescriptor, TransportRequirement},
     error::{RadioError, Result},
+    Power,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,8 +83,18 @@ const UNSUPPORTED: Capability = Capability::Unsupported;
 const SMARTSDR_RX_RF: ReceiverRfCapabilities =
     ReceiverRfCapabilities::new(UNSUPPORTED, UNSUPPORTED, RW, RW, RW);
 const SMARTSDR_RX: ReceiverCapabilities = ReceiverCapabilities::new(RW, RW, RW, RW, SMARTSDR_RX_RF);
-const SMARTSDR_TX: TransmitterCapabilities =
-    TransmitterCapabilities::new(RW, RW, RW, RW, UNSUPPORTED);
+const SMARTSDR_POWER: &[PowerRange] = &[PowerRange::fixed(
+    Power::from_microwatts(0),
+    Power::from_microwatts(100_000_000),
+    Power::from_microwatts(1_000_000),
+)];
+const SMARTSDR_TX: TransmitterCapabilities = TransmitterCapabilities::new(
+    RW,
+    RW,
+    PowerCapability::new(RW, SMARTSDR_POWER),
+    RW,
+    UNSUPPORTED,
+);
 const SMARTSDR_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
     RW,
     UNSUPPORTED,

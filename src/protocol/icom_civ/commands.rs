@@ -2,7 +2,7 @@ use crate::{
     command::{RadioCommand, ReceiverPath},
     error::RadioError,
     update::StatePatch,
-    Frequency, LeveledSetting, Mode, Power, PowerUnit, RadioState, Result, RitXitOffsetHz,
+    Frequency, LeveledSetting, Mode, Power, RadioState, Result, RitXitOffsetHz,
 };
 
 use super::{CivFrame, IcomCivOptions, IcomCivProfile, ResponseMatcher};
@@ -687,14 +687,22 @@ fn set_tx_power(
     options: IcomCivOptions,
     power: Power,
 ) -> Result<EncodedCommand> {
-    let raw = power_to_raw(profile, power);
+    let accepted = profile
+        .capabilities
+        .tx
+        .and_then(|tx| tx.power.quantize(power))
+        .ok_or_else(|| RadioError::InvalidValue {
+            field: "tx.power",
+            message: format!("{power} is outside the supported power ranges"),
+        })?;
+    let raw = power_to_raw(profile, accepted);
     let mut payload = vec![0x14, 0x0a];
     payload.extend_from_slice(&encode_bcd_decimal_0000_0255(raw)?);
     Ok(EncodedCommand::new(
         vec![frame(options, payload)?],
         ResponseMatcher::Ack,
         None,
-        vec![StatePatch::TxPower(raw_to_power(profile, raw))],
+        vec![StatePatch::TxPower(accepted)],
     ))
 }
 
@@ -1253,18 +1261,12 @@ fn invalid_filter_code(code: u8, mode: Mode) -> RadioError {
 
 fn power_to_raw(profile: &IcomCivProfile, power: Power) -> u16 {
     let max_microwatts = profile.max_tx_power_watts as u64 * 1_000_000;
-    let requested = power.as_microwatts().min(max_microwatts);
-    ((requested * 255 + max_microwatts / 2) / max_microwatts) as u16
+    ((power.as_microwatts() * 255 + max_microwatts / 2) / max_microwatts) as u16
 }
 
 fn raw_to_power(profile: &IcomCivProfile, raw: u16) -> Power {
-    let max_milliwatts = profile.max_tx_power_watts as u64 * 1_000;
-    let milliwatts = (raw as u64 * max_milliwatts + 127) / 255;
-    if milliwatts.is_multiple_of(1_000) || milliwatts > u16::MAX as u64 {
-        Power::from_watts(((milliwatts + 500) / 1_000) as u16)
-    } else {
-        Power::new(milliwatts as u16, PowerUnit::Milliwatts)
-    }
+    let max_microwatts = u64::from(profile.max_tx_power_watts) * Power::MICROWATTS_PER_WATT;
+    Power::from_microwatts((u64::from(raw) * max_microwatts + 127) / 255)
 }
 
 fn wpm_to_raw(wpm: u8) -> Result<u16> {
@@ -1622,10 +1624,31 @@ mod tests {
     fn tx_power_maps_over_ic705_ten_watt_scale() {
         assert_eq!(power_to_raw(profile(), Power::from_watts(10)), 255);
         assert_eq!(raw_to_power(profile(), 255), Power::from_watts(10));
-        assert_eq!(raw_to_power(profile(), 128).unit(), PowerUnit::Milliwatts);
+        assert_eq!(
+            raw_to_power(profile(), 128),
+            Power::from_microwatts(5_019_608)
+        );
 
         let ic7760 = crate::protocol::icom_civ::profile_by_id("icom-ic7760").unwrap();
         assert_eq!(raw_to_power(ic7760, 255), Power::from_watts(200));
+    }
+
+    #[test]
+    fn tx_power_reports_quantization_and_rejects_values_above_profile_maximum() {
+        let encoded = set_tx_power(profile(), options(), Power::from_watts(5)).unwrap();
+        assert_eq!(
+            encoded.completion_patches,
+            vec![StatePatch::TxPower(Power::from_microwatts(5_019_608))]
+        );
+
+        let error = set_tx_power(profile(), options(), Power::from_watts(11)).unwrap_err();
+        assert!(matches!(
+            error,
+            RadioError::InvalidValue {
+                field: "tx.power",
+                ..
+            }
+        ));
     }
 
     #[test]

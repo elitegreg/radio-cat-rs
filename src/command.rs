@@ -70,3 +70,9 @@ pub enum RadioCommand {
 
     Refresh,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandOutcome {
+    Completed,
+    TxPower { accepted: Power },
+}

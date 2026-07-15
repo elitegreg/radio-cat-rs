@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::{error::RangeError, Frequency, Mode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,58 +66,82 @@ pub struct TransmitterState {
     pub split: Option<bool>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PowerUnit {
-    Watts,
-    Milliwatts,
-    Microwatts,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Power {
-    value: u16,
-    unit: PowerUnit,
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Power(u64);
 
 impl Power {
-    pub const fn new(value: u16, unit: PowerUnit) -> Self {
-        Self { value, unit }
+    pub const MICROWATTS_PER_MILLIWATT: u64 = 1_000;
+    pub const MICROWATTS_PER_WATT: u64 = 1_000_000;
+
+    pub const fn from_microwatts(value: u64) -> Self {
+        Self(value)
     }
 
-    pub const fn from_watts(value: u16) -> Self {
-        Self::new(value, PowerUnit::Watts)
+    pub const fn from_milliwatts(value: u32) -> Self {
+        Self(value as u64 * Self::MICROWATTS_PER_MILLIWATT)
     }
 
-    pub const fn from_milliwatts(value: u16) -> Self {
-        Self::new(value, PowerUnit::Milliwatts)
+    pub const fn from_watts(value: u32) -> Self {
+        Self(value as u64 * Self::MICROWATTS_PER_WATT)
     }
 
-    pub const fn from_microwatts(value: u16) -> Self {
-        Self::new(value, PowerUnit::Microwatts)
-    }
-
-    pub const fn value(self) -> u16 {
-        self.value
-    }
-
-    pub const fn unit(self) -> PowerUnit {
-        self.unit
-    }
-
-    pub const fn as_microwatts(self) -> u64 {
-        match self.unit {
-            PowerUnit::Watts => self.value as u64 * 1_000_000,
-            PowerUnit::Milliwatts => self.value as u64 * 1_000,
-            PowerUnit::Microwatts => self.value as u64,
+    pub const fn checked_from_milliwatts(value: u64) -> Option<Self> {
+        match value.checked_mul(Self::MICROWATTS_PER_MILLIWATT) {
+            Some(value) => Some(Self(value)),
+            None => None,
         }
     }
 
+    pub const fn checked_from_watts(value: u64) -> Option<Self> {
+        match value.checked_mul(Self::MICROWATTS_PER_WATT) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    pub const fn as_microwatts(self) -> u64 {
+        self.0
+    }
+
     pub const fn as_milliwatts(self) -> u64 {
-        self.as_microwatts() / 1_000
+        self.0 / Self::MICROWATTS_PER_MILLIWATT
     }
 
     pub const fn as_watts(self) -> f64 {
-        self.as_microwatts() as f64 / 1_000_000.0
+        self.0 as f64 / Self::MICROWATTS_PER_WATT as f64
+    }
+}
+
+impl fmt::Display for Power {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (whole, remainder, width, suffix) = if self.0 >= Self::MICROWATTS_PER_WATT {
+            (
+                self.0 / Self::MICROWATTS_PER_WATT,
+                self.0 % Self::MICROWATTS_PER_WATT,
+                6,
+                "W",
+            )
+        } else if self.0 >= Self::MICROWATTS_PER_MILLIWATT {
+            (
+                self.0 / Self::MICROWATTS_PER_MILLIWATT,
+                self.0 % Self::MICROWATTS_PER_MILLIWATT,
+                3,
+                "mW",
+            )
+        } else {
+            return write!(formatter, "{}µW", self.0);
+        };
+
+        if remainder == 0 {
+            return write!(formatter, "{whole}{suffix}");
+        }
+
+        let fraction = format!("{remainder:0width$}");
+        write!(
+            formatter,
+            "{whole}.{}{suffix}",
+            fraction.trim_end_matches('0')
+        )
     }
 }
 
@@ -189,7 +215,7 @@ impl LeveledSetting {
 
 #[cfg(test)]
 mod tests {
-    use super::{Power, PowerUnit, RitXitOffsetHz};
+    use super::{Power, RitXitOffsetHz};
 
     #[test]
     fn rit_xit_offset_accepts_normalized_range() {
@@ -206,17 +232,38 @@ mod tests {
 
     #[test]
     fn power_converts_between_supported_units() {
-        let watts = Power::from_watts(5);
-        assert_eq!(watts.value(), 5);
-        assert_eq!(watts.unit(), PowerUnit::Watts);
+        let watts = Power::checked_from_watts(5).unwrap();
         assert_eq!(watts.as_milliwatts(), 5_000);
         assert_eq!(watts.as_microwatts(), 5_000_000);
 
-        let milliwatts = Power::from_milliwatts(250);
+        let milliwatts = Power::checked_from_milliwatts(250).unwrap();
         assert_eq!(milliwatts.as_microwatts(), 250_000);
 
         let microwatts = Power::from_microwatts(125);
         assert_eq!(microwatts.as_microwatts(), 125);
         assert!((microwatts.as_watts() - 0.000_125).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn power_is_canonical_and_checked() {
+        assert_eq!(
+            Power::checked_from_watts(1),
+            Power::checked_from_milliwatts(1_000)
+        );
+        assert_eq!(
+            Power::checked_from_watts(1),
+            Some(Power::from_microwatts(1_000_000))
+        );
+        assert!(Power::checked_from_watts(u64::MAX).is_none());
+        assert!(Power::checked_from_milliwatts(u64::MAX).is_none());
+    }
+
+    #[test]
+    fn power_display_uses_exact_engineering_units() {
+        assert_eq!(Power::from_microwatts(7_500_000).to_string(), "7.5W");
+        assert_eq!(Power::from_microwatts(7_000_001).to_string(), "7.000001W");
+        assert_eq!(Power::from_microwatts(750_000).to_string(), "750mW");
+        assert_eq!(Power::from_microwatts(1_250).to_string(), "1.25mW");
+        assert_eq!(Power::from_microwatts(500).to_string(), "500µW");
     }
 }

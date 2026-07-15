@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::{
     command::{RadioCommand, ReceiverPath},
     driver::{CommandCompletion, DriverDescriptor, RadioSession, StateSink, TransportRequirement},
-    error::Result,
+    error::{RadioError, Result},
     transport::CatTransport,
     update::StatePatch,
     ConnectionState, Frequency, LeveledSetting, Mode, Power, RadioCapabilities, RadioState,
@@ -135,7 +135,16 @@ impl RadioSession for DummyRadioSession {
             ),
             RadioCommand::SetTxFrequency(frequency) => vec![StatePatch::TxFrequency(frequency)],
             RadioCommand::SetTxMode(mode) => vec![StatePatch::TxMode(mode)],
-            RadioCommand::SetTxPower(power) => vec![StatePatch::TxPower(power)],
+            RadioCommand::SetTxPower(power) => {
+                let accepted = RadioCapabilities::dummy_all()
+                    .tx
+                    .and_then(|tx| tx.power.quantize(power))
+                    .ok_or_else(|| RadioError::InvalidValue {
+                        field: "tx.power",
+                        message: format!("{power} is outside the supported power ranges"),
+                    })?;
+                vec![StatePatch::TxPower(accepted)]
+            }
             RadioCommand::SetPtt(transmitting) | RadioCommand::SetDataPtt(transmitting) => {
                 vec![StatePatch::Transmitting(transmitting)]
             }

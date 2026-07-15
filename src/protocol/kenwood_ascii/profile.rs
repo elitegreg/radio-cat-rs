@@ -2,12 +2,13 @@ use std::time::Duration;
 
 use crate::{
     capabilities::{
-        Capability, KeyerCapabilities, RadioCapabilities, ReceiverCapabilities, ReceiverKind,
-        ReceiverRfCapabilities, RitXitCapabilities, RitXitOffsetType, StateUpdateCapability,
-        TransmitterCapabilities,
+        Capability, KeyerCapabilities, PowerCapability, PowerRange, RadioCapabilities,
+        ReceiverCapabilities, ReceiverKind, ReceiverRfCapabilities, RitXitCapabilities,
+        RitXitOffsetType, StateUpdateCapability, TransmitterCapabilities,
     },
     driver::{DriverDescriptor, TransportRequirement},
     error::{RadioError, Result},
+    Power,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -173,8 +174,38 @@ const NO_FILTER_NO_RF_RX: ReceiverCapabilities =
 const VFO_ONLY_RX: ReceiverCapabilities =
     ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, NO_RF);
 
-const FULL_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, RW, RW, RW);
-const IF232_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, UNSUPPORTED, RW, RW);
+const fn watts(value: u64) -> Power {
+    Power::from_microwatts(value * Power::MICROWATTS_PER_WATT)
+}
+
+const fn milliwatts(value: u64) -> Power {
+    Power::from_microwatts(value * Power::MICROWATTS_PER_MILLIWATT)
+}
+
+const fn fixed_watts(min: u64, max: u64) -> PowerRange {
+    PowerRange::fixed(watts(min), watts(max), watts(1))
+}
+
+const POWER_5_100: &[PowerRange] = &[fixed_watts(5, 100)];
+const POWER_5_200: &[PowerRange] = &[fixed_watts(5, 200)];
+const POWER_0_110: &[PowerRange] = &[fixed_watts(0, 110)];
+const POWER_0_150: &[PowerRange] = &[fixed_watts(0, 150)];
+const K4_POWER: &[PowerRange] = &[
+    PowerRange::fixed(
+        Power::from_microwatts(100),
+        milliwatts(10),
+        Power::from_microwatts(100),
+    ),
+    PowerRange::fixed(milliwatts(100), watts(10), milliwatts(100)),
+    PowerRange::fixed(watts(1), watts(110), watts(1)),
+];
+
+const fn full_tx(ranges: &'static [PowerRange]) -> TransmitterCapabilities {
+    TransmitterCapabilities::new(RW, RW, PowerCapability::new(RW, ranges), RW, RW)
+}
+
+const IF232_TX: TransmitterCapabilities =
+    TransmitterCapabilities::new(RW, RW, PowerCapability::unsupported(), RW, RW);
 
 const MAIN_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
     RW,
@@ -593,7 +624,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
-            FULL_TX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
@@ -613,7 +644,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
-            FULL_TX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
@@ -633,7 +664,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualRx,
             FULL_RX,
-            FULL_TX,
+            full_tx(POWER_5_200),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
@@ -653,7 +684,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
-            FULL_TX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
@@ -673,7 +704,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
             NO_AUTO_NOTCH_RX,
-            FULL_TX,
+            full_tx(POWER_5_200),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
@@ -693,7 +724,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
             NO_FILTER_NO_AUTO_NOTCH_RX,
-            FULL_TX,
+            full_tx(POWER_5_200),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
@@ -713,7 +744,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
             NO_FILTER_NO_AUTO_NOTCH_RX,
-            FULL_TX,
+            full_tx(POWER_5_200),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
@@ -758,7 +789,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualRx,
             FULL_RX,
-            FULL_TX,
+            full_tx(K4_POWER),
             K4_RIT_XIT,
             Some(FULL_KEYER),
         ),
@@ -778,7 +809,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualRx,
             K3_RX,
-            FULL_TX,
+            full_tx(POWER_0_110),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
@@ -798,7 +829,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
             K2_RX,
-            FULL_TX,
+            full_tx(POWER_0_150),
             K2_RIT_XIT,
             Some(FULL_KEYER),
         ),
@@ -818,7 +849,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualRx,
             FULL_RX,
-            FULL_TX,
+            full_tx(POWER_5_200),
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
@@ -839,7 +870,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             ReceiverKind::DualVfo,
             FULL_RX,
             VFO_ONLY_RX,
-            FULL_TX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
@@ -860,7 +891,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             ReceiverKind::DualVfo,
             FULL_RX,
             VFO_ONLY_RX,
-            FULL_TX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
@@ -881,7 +912,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             ReceiverKind::DualVfo,
             FULL_RX,
             YAESU_FT891_991_SUB_RX,
-            FULL_TX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
@@ -902,7 +933,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             ReceiverKind::DualVfo,
             FULL_RX,
             YAESU_FT891_991_SUB_RX,
-            FULL_TX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
@@ -947,7 +978,7 @@ mod tests {
             Capability::Unsupported
         );
         assert_eq!(
-            if232.capabilities.tx.unwrap().power,
+            if232.capabilities.tx.unwrap().power.access,
             Capability::Unsupported
         );
         assert!(if232.capabilities.keyer.is_none());

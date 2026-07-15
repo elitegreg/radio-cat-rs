@@ -257,10 +257,18 @@ pub fn encode(
             mode_patches(*mode),
         ))),
         RadioCommand::SetTxPower(power) => {
-            let watts = encode_rfpower(*power)?;
+            let accepted = profile
+                .capabilities
+                .tx
+                .and_then(|tx| tx.power.quantize(*power))
+                .ok_or_else(|| RadioError::InvalidValue {
+                    field: "tx.power",
+                    message: format!("{power} is outside the supported power ranges"),
+                })?;
+            let watts = encode_rfpower(accepted)?;
             Ok(Some(EncodedCommand::new(
                 vec![format!("transmit set rfpower={watts}")],
-                vec![StatePatch::TxPower(Power::from_watts(watts))],
+                vec![StatePatch::TxPower(accepted)],
             )))
         }
         RadioCommand::SetPtt(enabled) | RadioCommand::SetDataPtt(enabled) => {
@@ -772,7 +780,7 @@ fn parse_rfpower(value: &str) -> Result<Power> {
         command: "rfpower",
         message: error.to_string(),
     })?;
-    Ok(Power::from_watts(watts))
+    Ok(Power::from_watts(u32::from(watts)))
 }
 
 fn encode_rfpower(power: Power) -> Result<u16> {
@@ -784,7 +792,10 @@ fn encode_rfpower(power: Power) -> Result<u16> {
         });
     }
 
-    Ok((microwatts / 1_000_000) as u16)
+    u16::try_from(microwatts / Power::MICROWATTS_PER_WATT).map_err(|_| RadioError::InvalidValue {
+        field: "tx.power",
+        message: format!("{power} cannot be encoded as SmartSDR rfpower"),
+    })
 }
 
 fn parse_bool_text(value: &str, command: &'static str) -> Result<bool> {
@@ -950,6 +961,22 @@ mod tests {
         assert_eq!(
             encoded.completion_patches,
             vec![StatePatch::TxPower(Power::from_watts(50))]
+        );
+    }
+
+    #[test]
+    fn tx_power_quantizes_and_reports_the_accepted_whole_watt_value() {
+        let encoded = encode(
+            profile(),
+            &RadioCommand::SetTxPower(Power::from_microwatts(50_500_000)),
+            &RadioState::default(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(encoded.commands, vec!["transmit set rfpower=51"]);
+        assert_eq!(
+            encoded.completion_patches,
+            vec![StatePatch::TxPower(Power::from_watts(51))]
         );
     }
 

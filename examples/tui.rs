@@ -436,7 +436,7 @@ fn format_state(state: &RadioState) -> String {
         "connection: {:?}\n\
 main rx: freq={} mode={} filter_bw={:?} filter_shift={:?} preamp={} attn={} nb={} nr={} autonotch={:?}\n\
 sub rx:  freq={} mode={} filter_bw={:?} filter_shift={:?} preamp={} attn={} nb={} nr={} autonotch={:?}\n\
-tx:      freq={} mode={} power={:?} ptt={:?} split={:?}\n\
+tx:      freq={} mode={} power={} ptt={:?} split={:?}\n\
 rit/xit: main_rit={:?} sub_rit={:?} xit={:?} main_offset={:?} xit_offset={:?} sub_offset={:?}\n\
 keyer:   speed_wpm={:?} sending={:?}",
         state.connection,
@@ -460,7 +460,7 @@ keyer:   speed_wpm={:?} sending={:?}",
         sub.and_then(|rx| rx.rf.auto_notch),
         opt_freq(tx.and_then(|tx| tx.frequency)),
         opt_mode(tx.and_then(|tx| tx.mode)),
-        tx.and_then(|tx| tx.power),
+        opt_power(tx.and_then(|tx| tx.power)),
         tx.and_then(|tx| tx.transmitting),
         tx.and_then(|tx| tx.split),
         state.rit_xit.main_rit_enabled,
@@ -472,6 +472,10 @@ keyer:   speed_wpm={:?} sending={:?}",
         keyer.and_then(|keyer| keyer.speed_wpm),
         keyer.and_then(|keyer| keyer.sending),
     )
+}
+
+fn opt_power(power: Option<Power>) -> String {
+    power.map_or_else(|| "?".to_string(), |power| power.to_string())
 }
 
 fn opt_freq(frequency: Option<Frequency>) -> String {
@@ -629,7 +633,9 @@ async fn execute_command(
         }
         "set-power" | "set-tx-power" => {
             let value = parse_u16_arg(parts.next(), "watts")?;
-            radio.set_tx_power(Power::from_watts(value)).await?;
+            radio
+                .set_tx_power(Power::from_watts(u32::from(value)))
+                .await?;
             Ok(format!("tx power -> {value} W"))
         }
         "set-ptt" => {

@@ -27,18 +27,18 @@ pub mod update;
 
 pub use api::{supported_drivers, Radio, RadioConfig};
 pub use capabilities::{
-    Capability, KeyerCapabilities, RadioCapabilities, ReceiverCapabilities, ReceiverKind,
-    ReceiverRfCapabilities, RitXitCapabilities, RitXitOffsetType, StateUpdateCapability,
-    TransmitterCapabilities,
+    Capability, KeyerCapabilities, PowerCapability, PowerRange, PowerStep, RadioCapabilities,
+    ReceiverCapabilities, ReceiverKind, ReceiverRfCapabilities, RitXitCapabilities,
+    RitXitOffsetType, StateUpdateCapability, TransmitterCapabilities,
 };
-pub use command::{RadioCommand, ReceiverPath};
+pub use command::{CommandOutcome, RadioCommand, ReceiverPath};
 pub use driver::{DriverDescriptor, TransportRequirement};
 pub use error::{RadioError, RangeError, Result};
 pub use frequency::Frequency;
 pub use mode::{Mode, ParseModeError};
 pub use serial_ports::{list_serial_ports, SerialPortListEntry, SerialPortListError};
 pub use state::{
-    ConnectionState, KeyerState, LeveledSetting, Power, PowerUnit, RadioState, ReceiverFilterState,
+    ConnectionState, KeyerState, LeveledSetting, Power, RadioState, ReceiverFilterState,
     ReceiverRfState, ReceiverState, RitXitOffsetHz, RitXitState, TransmitterState,
 };
 pub use transport::{

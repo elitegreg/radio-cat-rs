@@ -2,12 +2,13 @@ use std::time::Duration;
 
 use crate::{
     capabilities::{
-        Capability, KeyerCapabilities, RadioCapabilities, ReceiverCapabilities, ReceiverKind,
-        ReceiverRfCapabilities, RitXitCapabilities, RitXitOffsetType, StateUpdateCapability,
-        TransmitterCapabilities,
+        Capability, KeyerCapabilities, PowerCapability, PowerRange, RadioCapabilities,
+        ReceiverCapabilities, ReceiverKind, ReceiverRfCapabilities, RitXitCapabilities,
+        RitXitOffsetType, StateUpdateCapability, TransmitterCapabilities,
     },
     driver::{DriverDescriptor, TransportRequirement},
     error::{RadioError, Result},
+    Power,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -143,7 +144,25 @@ const NO_RF: ReceiverRfCapabilities = ReceiverRfCapabilities::new(
 
 const IC705_MAIN_RX: ReceiverCapabilities = RX_WITH_RF_NO_FILTER_SHIFT;
 const IC705_SUB_RX: ReceiverCapabilities = RX_FREQ_MODE_ONLY;
-const IC705_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, RW, RW, RW);
+const ICOM_POWER_10W: &[PowerRange] = &[PowerRange::linear(
+    Power::from_microwatts(0),
+    Power::from_microwatts(10_000_000),
+    255,
+)];
+const ICOM_POWER_100W: &[PowerRange] = &[PowerRange::linear(
+    Power::from_microwatts(0),
+    Power::from_microwatts(100_000_000),
+    255,
+)];
+const ICOM_POWER_200W: &[PowerRange] = &[PowerRange::linear(
+    Power::from_microwatts(0),
+    Power::from_microwatts(200_000_000),
+    255,
+)];
+
+const fn icom_tx(ranges: &'static [PowerRange]) -> TransmitterCapabilities {
+    TransmitterCapabilities::new(RW, RW, PowerCapability::new(RW, ranges), RW, RW)
+}
 const ICOM_SHARED_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
     RW,
     UNSUPPORTED,
@@ -437,7 +456,7 @@ pub const SUPPORTED_PROFILES: &[IcomCivProfile] = &[
             ReceiverKind::DualVfo,
             IC705_MAIN_RX,
             Some(IC705_SUB_RX),
-            Some(IC705_TX),
+            Some(icom_tx(ICOM_POWER_10W)),
             ICOM_SHARED_RIT_XIT,
             Some(IC705_KEYER),
             StateUpdateCapability::Polling,
@@ -464,7 +483,7 @@ pub const SUPPORTED_PROFILES: &[IcomCivProfile] = &[
             ReceiverKind::DualVfo,
             IC705_MAIN_RX,
             Some(IC705_SUB_RX),
-            Some(IC705_TX),
+            Some(icom_tx(ICOM_POWER_100W)),
             ICOM_SHARED_RIT_XIT,
             Some(IC705_KEYER),
             StateUpdateCapability::Polling,
@@ -491,7 +510,7 @@ pub const SUPPORTED_PROFILES: &[IcomCivProfile] = &[
             ReceiverKind::DualVfo,
             IC705_MAIN_RX,
             Some(IC705_SUB_RX),
-            Some(IC705_TX),
+            Some(icom_tx(ICOM_POWER_100W)),
             ICOM_SHARED_RIT_ONLY,
             Some(IC705_KEYER),
             StateUpdateCapability::Polling,
@@ -518,7 +537,7 @@ pub const SUPPORTED_PROFILES: &[IcomCivProfile] = &[
             ReceiverKind::DualRx,
             RX_WITH_RF_NO_FILTER_SHIFT,
             Some(RX_FREQ_MODE_ONLY),
-            Some(IC705_TX),
+            Some(icom_tx(ICOM_POWER_100W)),
             ICOM_SHARED_RIT_XIT,
             Some(IC705_KEYER),
             StateUpdateCapability::Polling,
@@ -545,7 +564,7 @@ pub const SUPPORTED_PROFILES: &[IcomCivProfile] = &[
             ReceiverKind::DualRx,
             RX_WITH_RF_NO_FILTER_SHIFT,
             Some(RX_WITH_RF_NO_BANDWIDTH),
-            Some(IC705_TX),
+            Some(icom_tx(ICOM_POWER_200W)),
             ICOM_SHARED_RIT_XIT,
             Some(IC705_KEYER),
             StateUpdateCapability::Polling,
