@@ -251,7 +251,7 @@ pub fn encode_query(
             vec![0x1a, 0x03],
             ResponseMatcher::PayloadPrefix(vec![0x1a, 0x03]),
         ),
-        "preamp-main" if profile.capabilities.main_rx.rf.preamp.can_read() => {
+        "preamp" | "preamp-main" if profile.capabilities.main_rx.rf.preamp.can_read() => {
             receiver_query(profile, options, ReceiverPath::Main, vec![0x16, 0x02])
         }
         "preamp-sub"
@@ -262,7 +262,9 @@ pub fn encode_query(
         {
             receiver_query(profile, options, ReceiverPath::Sub, vec![0x16, 0x02])
         }
-        "attenuator-main" if profile.capabilities.main_rx.rf.attenuator.can_read() => {
+        "attenuator" | "attenuator-main"
+            if profile.capabilities.main_rx.rf.attenuator.can_read() =>
+        {
             receiver_query(profile, options, ReceiverPath::Main, vec![0x11])
         }
         "attenuator-sub"
@@ -273,7 +275,9 @@ pub fn encode_query(
         {
             receiver_query(profile, options, ReceiverPath::Sub, vec![0x11])
         }
-        "noise-blanker-main" if profile.capabilities.main_rx.rf.noise_blanker.can_read() => {
+        "noise-blanker" | "noise-blanker-main"
+            if profile.capabilities.main_rx.rf.noise_blanker.can_read() =>
+        {
             receiver_query(profile, options, ReceiverPath::Main, vec![0x16, 0x22])
         }
         "noise-blanker-sub"
@@ -284,7 +288,9 @@ pub fn encode_query(
         {
             receiver_query(profile, options, ReceiverPath::Sub, vec![0x16, 0x22])
         }
-        "noise-reduction-main" if profile.capabilities.main_rx.rf.noise_reduction.can_read() => {
+        "noise-reduction" | "noise-reduction-main"
+            if profile.capabilities.main_rx.rf.noise_reduction.can_read() =>
+        {
             receiver_query(profile, options, ReceiverPath::Main, vec![0x16, 0x40])
         }
         "noise-reduction-sub"
@@ -295,7 +301,9 @@ pub fn encode_query(
         {
             receiver_query(profile, options, ReceiverPath::Sub, vec![0x16, 0x40])
         }
-        "auto-notch-main" if profile.capabilities.main_rx.rf.auto_notch.can_read() => {
+        "auto-notch" | "auto-notch-main"
+            if profile.capabilities.main_rx.rf.auto_notch.can_read() =>
+        {
             receiver_query(profile, options, ReceiverPath::Main, vec![0x16, 0x41])
         }
         "auto-notch-sub"

@@ -28,32 +28,90 @@ const TRANSPORT_IO_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(crate) fn kenwood_session(
     profile: &'static KenwoodAsciiProfile,
-    options: &str,
+    options: KenwoodAsciiOptions,
 ) -> Result<Box<dyn RadioSession>> {
-    Ok(Box::new(KenwoodAsciiRuntime::new(
-        profile,
-        KenwoodAsciiOptions::parse(options)?,
-    )))
+    Ok(Box::new(KenwoodAsciiRuntime::new(profile, options)))
 }
 
 pub(crate) fn icom_session(
     profile: &'static IcomCivProfile,
-    options: &str,
+    options: IcomCivOptions,
 ) -> Result<Box<dyn RadioSession>> {
-    Ok(Box::new(IcomCivRuntime::new(
-        profile,
-        IcomCivOptions::parse(profile, options)?,
-    )))
+    Ok(Box::new(IcomCivRuntime::new(profile, options)))
 }
 
 pub(crate) fn smartsdr_session(
     profile: &'static SmartSdrProfile,
-    options: &str,
+    options: smartsdr::SmartSdrOptions,
 ) -> Result<Box<dyn RadioSession>> {
-    let options = smartsdr::SmartSdrOptions::parse(profile, options)?;
     let mut profile = *profile;
     profile.slice = options.slice;
     Ok(Box::new(SmartSdrRuntime::new(profile)))
+}
+
+/// Validate declarative query plans when built-in profiles are registered.
+/// A `None` query encoder result is acceptable for ad-hoc recovery work, but
+/// never for a static startup or poll entry: that would silently omit a
+/// profile typo from a real connection.
+pub(crate) fn validate_kenwood_profile(profile: &'static KenwoodAsciiProfile) -> Result<()> {
+    let routing = kenwood_ascii::VfoRouting::for_profile(profile);
+    for step in profile.startup {
+        if let StartupStep::Query(semantic) = *step {
+            if encode_kenwood_query(profile, semantic, routing)?.is_none() {
+                return Err(RadioError::InvalidValue {
+                    field: "profile.startup",
+                    message: format!("{} has an unencodable query {semantic:?}", profile.id()),
+                });
+            }
+        }
+    }
+    if let Some(plan) = profile.poll {
+        if plan.queries.is_empty() {
+            return Err(RadioError::InvalidValue {
+                field: "profile.poll",
+                message: format!("{} has an empty poll plan", profile.id()),
+            });
+        }
+        for semantic in plan.queries {
+            if encode_kenwood_query(profile, semantic, routing)?.is_none() {
+                return Err(RadioError::InvalidValue {
+                    field: "profile.poll",
+                    message: format!("{} has an unencodable query {semantic:?}", profile.id()),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_icom_profile(profile: &'static IcomCivProfile) -> Result<()> {
+    let options = IcomCivOptions::defaults(profile);
+    for step in profile.startup {
+        let icom_civ::StartupStep::Query(semantic) = *step;
+        if icom_civ::encode_query(profile, options, semantic)?.is_none() {
+            return Err(RadioError::InvalidValue {
+                field: "profile.startup",
+                message: format!("{} has an unencodable query {semantic:?}", profile.id()),
+            });
+        }
+    }
+    if let Some(plan) = profile.poll {
+        if plan.queries.is_empty() {
+            return Err(RadioError::InvalidValue {
+                field: "profile.poll",
+                message: format!("{} has an empty poll plan", profile.id()),
+            });
+        }
+        for semantic in plan.queries {
+            if icom_civ::encode_query(profile, options, semantic)?.is_none() {
+                return Err(RadioError::InvalidValue {
+                    field: "profile.poll",
+                    message: format!("{} has an unencodable query {semantic:?}", profile.id()),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 struct KenwoodAsciiRuntime {
@@ -2298,7 +2356,7 @@ mod tests {
     #[test]
     fn kenwood_session_poll_intervals_match_declared_update_strategy() {
         for profile in crate::protocol::kenwood_ascii::SUPPORTED_PROFILES {
-            let session = kenwood_session(profile, "").unwrap();
+            let session = kenwood_session(profile, KenwoodAsciiOptions::defaults()).unwrap();
             if profile.id() == "kenwood-if232" {
                 assert_eq!(session.poll_interval(), Some(Duration::from_secs(2)));
             } else {

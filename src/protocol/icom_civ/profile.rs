@@ -80,6 +80,7 @@ impl IcomCivOptions {
 
     pub fn parse(profile: &IcomCivProfile, options: &str) -> Result<Self> {
         let mut parsed = Self::defaults(profile);
+        let mut seen = [false; 4];
 
         for part in options.split(',') {
             let part = part.trim();
@@ -98,15 +99,19 @@ impl IcomCivOptions {
 
             match key.as_str() {
                 "radio_address" | "radio_addr" | "addr" => {
+                    reject_duplicate(&mut seen[0], "radio_address")?;
                     parsed.radio_address = parse_u8(value, "radio_address")?;
                 }
                 "controller_address" | "controller_addr" => {
+                    reject_duplicate(&mut seen[1], "controller_address")?;
                     parsed.controller_address = parse_u8(value, "controller_address")?;
                 }
                 "mode_filter" | "filter" => {
+                    reject_duplicate(&mut seen[2], "mode_filter")?;
                     parsed.mode_filter = parse_filter(value)?;
                 }
                 "poll_interval" | "poll_interval_s" | "poll" => {
+                    reject_duplicate(&mut seen[3], "poll_interval")?;
                     parsed.poll_interval = parse_poll_interval(value)?;
                 }
                 _ => {
@@ -120,6 +125,17 @@ impl IcomCivOptions {
 
         Ok(parsed)
     }
+}
+
+fn reject_duplicate(seen: &mut bool, key: &'static str) -> Result<()> {
+    if *seen {
+        return Err(RadioError::InvalidValue {
+            field: "options",
+            message: format!("duplicate ICOM CI-V option {key:?}"),
+        });
+    }
+    *seen = true;
+    Ok(())
 }
 
 const RW: Capability = Capability::ReadWrite;
@@ -679,6 +695,13 @@ mod tests {
             assert!(result.is_ok());
             assert!(result.unwrap().is_err());
         }
+    }
+
+    #[test]
+    fn options_reject_duplicate_canonical_keys() {
+        let profile = profile_by_id("icom-ic705").unwrap();
+        assert!(IcomCivOptions::parse(profile, "addr=0x94,radio_address=0xa4").is_err());
+        assert!(IcomCivOptions::parse(profile, "unknown=value").is_err());
     }
 
     #[test]

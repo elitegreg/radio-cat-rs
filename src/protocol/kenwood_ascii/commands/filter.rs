@@ -61,7 +61,7 @@ pub fn encode_query(
         "filter-hi-lo" => filter_hi_lo_queries(profile, ReceiverPath::Main)?,
         "filter-hi-lo-main" => filter_hi_lo_queries(profile, ReceiverPath::Main)?,
         "filter-hi-lo-sub" => filter_hi_lo_queries(profile, ReceiverPath::Sub)?,
-        "FW" | "BW" | "BW$" | "IS" | "IS$" | "SH0" | "SH1" | "NA0" => {
+        "FW" | "BW" | "BW$" | "IS" | "IS$" | "IS0" | "IS1" | "SH0" | "SH1" | "NA0" => {
             let frame = AsciiFrame::new(format!("{semantic};"))?;
             let matcher = match semantic {
                 "BW$" => ResponseMatcher::Prefix("BW$"),

@@ -18,7 +18,19 @@ use dummy::{DummyRadioSession, DUMMY_DRIVER};
 trait RadioSessionFactory: Sync {
     fn descriptors(&self) -> Vec<DriverDescriptor>;
     fn matches(&self, normalized_id: &str) -> bool;
-    fn create(&self, normalized_id: &str, options: &str) -> Result<Box<dyn RadioSession>>;
+    fn create(&self, normalized_id: &str, options: DriverOptions) -> Result<Box<dyn RadioSession>>;
+}
+
+/// Parsed exactly once by the registry, before a transport is opened.
+///
+/// `RadioConfig` intentionally keeps its convenient string input, while
+/// sessions only ever receive their protocol's typed options.
+#[derive(Debug, Clone)]
+enum DriverOptions {
+    Dummy(String),
+    Kenwood(kenwood_protocol::KenwoodAsciiOptions),
+    Icom(icom_protocol::IcomCivOptions),
+    SmartSdr(smartsdr_protocol::SmartSdrOptions),
 }
 
 struct DummyFactory;
@@ -35,7 +47,14 @@ impl RadioSessionFactory for DummyFactory {
         normalized_id == DUMMY_DRIVER.id
     }
 
-    fn create(&self, _normalized_id: &str, options: &str) -> Result<Box<dyn RadioSession>> {
+    fn create(
+        &self,
+        _normalized_id: &str,
+        options: DriverOptions,
+    ) -> Result<Box<dyn RadioSession>> {
+        let DriverOptions::Dummy(options) = options else {
+            unreachable!("dummy factory received another driver's options")
+        };
         Ok(Box::new(DummyRadioSession::with_options(options)))
     }
 }
@@ -52,7 +71,10 @@ impl RadioSessionFactory for KenwoodFactory {
         kenwood_protocol::profile_by_id(normalized_id).is_some()
     }
 
-    fn create(&self, normalized_id: &str, options: &str) -> Result<Box<dyn RadioSession>> {
+    fn create(&self, normalized_id: &str, options: DriverOptions) -> Result<Box<dyn RadioSession>> {
+        let DriverOptions::Kenwood(options) = options else {
+            unreachable!("Kenwood factory received another driver's options")
+        };
         runtime::kenwood_session(
             kenwood_protocol::profile_by_id(normalized_id).expect("factory matched profile"),
             options,
@@ -72,7 +94,10 @@ impl RadioSessionFactory for IcomFactory {
         icom_protocol::profile_by_id(normalized_id).is_some()
     }
 
-    fn create(&self, normalized_id: &str, options: &str) -> Result<Box<dyn RadioSession>> {
+    fn create(&self, normalized_id: &str, options: DriverOptions) -> Result<Box<dyn RadioSession>> {
+        let DriverOptions::Icom(options) = options else {
+            unreachable!("ICOM factory received another driver's options")
+        };
         runtime::icom_session(
             icom_protocol::profile_by_id(normalized_id).expect("factory matched profile"),
             options,
@@ -92,7 +117,10 @@ impl RadioSessionFactory for SmartSdrFactory {
         smartsdr_protocol::profile_by_id(normalized_id).is_some()
     }
 
-    fn create(&self, normalized_id: &str, options: &str) -> Result<Box<dyn RadioSession>> {
+    fn create(&self, normalized_id: &str, options: DriverOptions) -> Result<Box<dyn RadioSession>> {
+        let DriverOptions::SmartSdr(options) = options else {
+            unreachable!("SmartSDR factory received another driver's options")
+        };
         runtime::smartsdr_session(
             smartsdr_protocol::profile_by_id(normalized_id).expect("factory matched profile"),
             options,
@@ -117,6 +145,14 @@ static SUPPORTED_DRIVERS: OnceLock<Vec<DriverDescriptor>> = OnceLock::new();
 pub(crate) fn supported_drivers() -> &'static [DriverDescriptor] {
     SUPPORTED_DRIVERS
         .get_or_init(|| {
+            for profile in kenwood_protocol::SUPPORTED_PROFILES {
+                runtime::validate_kenwood_profile(profile)
+                    .expect("registered Kenwood profile query plan must be valid");
+            }
+            for profile in icom_protocol::SUPPORTED_PROFILES {
+                runtime::validate_icom_profile(profile)
+                    .expect("registered ICOM profile query plan must be valid");
+            }
             let descriptors: Vec<_> = FACTORIES
                 .iter()
                 .flat_map(|factory| factory.descriptors())
@@ -574,7 +610,32 @@ pub(crate) fn create_session(
         caller_provided_transport,
     )?;
     capabilities_for(descriptor.id, region)?;
+    let options = parse_options(&normalized_id, options)?;
     factory.create(&normalized_id, options)
+}
+
+fn parse_options(id: &str, options: &str) -> Result<DriverOptions> {
+    if id == DUMMY_DRIVER.id {
+        return Ok(DriverOptions::Dummy(options.to_owned()));
+    }
+    if kenwood_protocol::profile_by_id(id).is_some() {
+        return Ok(DriverOptions::Kenwood(
+            kenwood_protocol::KenwoodAsciiOptions::parse(options)?,
+        ));
+    }
+    if let Some(profile) = icom_protocol::profile_by_id(id) {
+        return Ok(DriverOptions::Icom(icom_protocol::IcomCivOptions::parse(
+            profile, options,
+        )?));
+    }
+    if let Some(profile) = smartsdr_protocol::profile_by_id(id) {
+        return Ok(DriverOptions::SmartSdr(
+            smartsdr_protocol::SmartSdrOptions::parse(profile, options)?,
+        ));
+    }
+    Err(RadioError::UnsupportedDriver {
+        driver: id.to_owned(),
+    })
 }
 
 fn validate_transport(

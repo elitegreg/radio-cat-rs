@@ -82,6 +82,7 @@ impl KenwoodAsciiOptions {
 
     pub fn parse(options: &str) -> Result<Self> {
         let mut parsed = Self::defaults();
+        let mut saw_ptt_source = false;
 
         for part in options.split(',') {
             let part = part.trim();
@@ -100,6 +101,13 @@ impl KenwoodAsciiOptions {
 
             match key.as_str() {
                 "ptt_source" | "ptt" => {
+                    if saw_ptt_source {
+                        return Err(RadioError::InvalidValue {
+                            field: "options",
+                            message: "duplicate Kenwood ASCII option \"ptt_source\"".to_string(),
+                        });
+                    }
+                    saw_ptt_source = true;
                     parsed.ptt_source = match value.to_ascii_lowercase().as_str() {
                         "front" => KenwoodPttSource::Front,
                         "usb" | "data" => KenwoodPttSource::Usb,
@@ -1092,5 +1100,11 @@ mod tests {
                 .ptt_source,
             KenwoodPttSource::Usb
         );
+    }
+
+    #[test]
+    fn kenwood_options_reject_duplicate_canonical_keys() {
+        assert!(KenwoodAsciiOptions::parse("ptt=front,ptt_source=usb").is_err());
+        assert!(KenwoodAsciiOptions::parse("unknown=value").is_err());
     }
 }

@@ -36,6 +36,7 @@ impl SmartSdrOptions {
 
     pub fn parse(profile: &SmartSdrProfile, options: &str) -> Result<Self> {
         let mut parsed = Self::defaults(profile);
+        let mut saw_slice = false;
 
         for part in options.split(',') {
             let part = part.trim();
@@ -54,6 +55,13 @@ impl SmartSdrOptions {
 
             match key.as_str() {
                 "slice" | "slice_index" => {
+                    if saw_slice {
+                        return Err(RadioError::InvalidValue {
+                            field: "options",
+                            message: "duplicate SmartSDR option \"slice\"".to_string(),
+                        });
+                    }
+                    saw_slice = true;
                     parsed.slice =
                         value
                             .parse::<u8>()
@@ -128,9 +136,9 @@ pub const FLEXRADIO_SMARTSDR: SmartSdrProfile = SmartSdrProfile {
 pub const SUPPORTED_PROFILES: &[SmartSdrProfile] = &[FLEXRADIO_SMARTSDR];
 
 pub fn profile_by_id(id: &str) -> Option<&'static SmartSdrProfile> {
-    SUPPORTED_PROFILES.iter().find(|profile| {
-        profile.id().eq_ignore_ascii_case(id) || id.eq_ignore_ascii_case("flexradio-smarthdr")
-    })
+    SUPPORTED_PROFILES
+        .iter()
+        .find(|profile| profile.id().eq_ignore_ascii_case(id))
 }
 
 #[cfg(test)]
@@ -162,5 +170,12 @@ mod tests {
         let options = SmartSdrOptions::parse(profile, "slice=2").unwrap();
 
         assert_eq!(options.slice, 2);
+    }
+
+    #[test]
+    fn smartsdr_options_reject_duplicates_and_the_legacy_typo_alias() {
+        let profile = profile_by_id("flexradio-smartsdr").unwrap();
+        assert!(SmartSdrOptions::parse(profile, "slice=1,slice_index=2").is_err());
+        assert!(profile_by_id("flexradio-smarthdr").is_none());
     }
 }
