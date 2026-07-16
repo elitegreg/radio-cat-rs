@@ -95,12 +95,12 @@ async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
         let radio = radio.clone();
         async move {
             let state = radio.latest_state();
-            state.connection == radio_cat_rs::ConnectionState::Ready
-                && state.main_rx.frequency == Some(Frequency::from_hz(14_074_000))
-                && state.main_rx.mode == Some(Mode::DataUsb)
-                && state.main_rx.rf.noise_reduction == Some(LeveledSetting::enabled(25))
-                && state.keyer.as_ref().and_then(|keyer| keyer.speed_wpm) == Some(25)
-                && state.tx.as_ref().and_then(|tx| tx.power)
+            state.connection() == radio_cat_rs::ConnectionState::Ready
+                && state.main_rx().frequency() == Some(Frequency::from_hz(14_074_000))
+                && state.main_rx().mode() == Some(Mode::DataUsb)
+                && state.main_rx().rf().noise_reduction() == Some(LeveledSetting::enabled(25))
+                && state.keyer().and_then(|keyer| keyer.speed_wpm()) == Some(25)
+                && state.tx().and_then(|tx| tx.power())
                     == Some(radio_cat_rs::Power::from_watts(100))
         }
     })
@@ -145,11 +145,11 @@ async fn flexradio_actor_bootstraps_and_sends_expected_commands() {
         let radio = radio.clone();
         async move {
             let state = radio.latest_state();
-            state.main_rx.frequency == Some(Frequency::from_hz(7_030_000))
-                && state.main_rx.rf.noise_reduction == Some(LeveledSetting::enabled(37))
-                && state.keyer.as_ref().and_then(|keyer| keyer.speed_wpm) == Some(30)
-                && state.tx.as_ref().and_then(|tx| tx.power) == Some(Power::from_watts(51))
-                && state.tx.as_ref().and_then(|tx| tx.transmitting) == Some(true)
+            state.main_rx().frequency() == Some(Frequency::from_hz(7_030_000))
+                && state.main_rx().rf().noise_reduction() == Some(LeveledSetting::enabled(37))
+                && state.keyer().and_then(|keyer| keyer.speed_wpm()) == Some(30)
+                && state.tx().and_then(|tx| tx.power()) == Some(Power::from_watts(51))
+                && state.tx().and_then(|tx| tx.transmitting()) == Some(true)
         }
     })
     .await
@@ -238,7 +238,7 @@ async fn flexradio_refresh_reissues_subscriptions_and_preserves_connection_state
             .unwrap();
     wait_for(Duration::from_secs(2), || {
         let radio = radio.clone();
-        async move { radio.latest_state().connection == radio_cat_rs::ConnectionState::Ready }
+        async move { radio.latest_state().connection() == radio_cat_rs::ConnectionState::Ready }
     })
     .await
     .unwrap();
@@ -256,11 +256,11 @@ async fn flexradio_refresh_reissues_subscriptions_and_preserves_connection_state
     radio.refresh().await.unwrap();
 
     assert_eq!(
-        radio.latest_state().connection,
+        radio.latest_state().connection(),
         radio_cat_rs::ConnectionState::Ready
     );
     assert_eq!(
-        radio.latest_state().main_rx.frequency,
+        radio.latest_state().main_rx().frequency(),
         Some(Frequency::from_hz(7_030_000))
     );
 
@@ -300,7 +300,7 @@ async fn flexradio_uses_configured_slice_option() {
 
     wait_for(Duration::from_secs(2), || {
         let radio = radio.clone();
-        async move { radio.latest_state().connection == radio_cat_rs::ConnectionState::Ready }
+        async move { radio.latest_state().connection() == radio_cat_rs::ConnectionState::Ready }
     })
     .await
     .unwrap();
@@ -323,7 +323,7 @@ async fn flexradio_uses_configured_slice_option() {
 
     wait_for(Duration::from_secs(2), || {
         let radio = radio.clone();
-        async move { radio.latest_state().main_rx.frequency == Some(Frequency::from_hz(7_030_000)) }
+        async move { radio.latest_state().main_rx().frequency() == Some(Frequency::from_hz(7_030_000)) }
     })
     .await
     .unwrap();
@@ -355,7 +355,7 @@ async fn flexradio_command_error_does_not_stop_connection() {
 
     wait_for(Duration::from_secs(2), || {
         let radio = radio.clone();
-        async move { radio.latest_state().connection == radio_cat_rs::ConnectionState::Ready }
+        async move { radio.latest_state().connection() == radio_cat_rs::ConnectionState::Ready }
     })
     .await
     .unwrap();
@@ -365,9 +365,9 @@ async fn flexradio_command_error_does_not_stop_connection() {
         .await;
     assert!(radio.set_tx_power(Power::from_watts(50)).await.is_err());
     let state = radio.latest_state();
-    assert_eq!(state.connection, radio_cat_rs::ConnectionState::Ready);
+    assert_eq!(state.connection(), radio_cat_rs::ConnectionState::Ready);
     assert_eq!(
-        state.tx.as_ref().and_then(|tx| tx.power),
+        state.tx().and_then(|tx| tx.power()),
         Some(Power::from_watts(100))
     );
 
@@ -381,7 +381,7 @@ async fn flexradio_command_error_does_not_stop_connection() {
 
     wait_for(Duration::from_secs(2), || {
         let radio = radio.clone();
-        async move { radio.latest_state().main_rx.frequency == Some(Frequency::from_hz(7_030_000)) }
+        async move { radio.latest_state().main_rx().frequency() == Some(Frequency::from_hz(7_030_000)) }
     })
     .await
     .unwrap();

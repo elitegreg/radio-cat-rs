@@ -154,14 +154,26 @@ impl RadioSession for DummyRadioSession {
                 StatePatch::MainRitEnabled(enabled),
                 StatePatch::SubRitEnabled(enabled),
             ),
-            RadioCommand::SetXitEnabled(enabled) => vec![StatePatch::XitEnabled(enabled)],
-            RadioCommand::SetRitXitOffset(offset) => vec![StatePatch::RitXitOffset(offset)],
+            RadioCommand::SetXitEnabled { receiver, enabled } => match receiver {
+                ReceiverPath::Main => vec![StatePatch::XitEnabled(enabled)],
+                ReceiverPath::Sub => vec![StatePatch::SubXitEnabled(enabled)],
+            },
+            RadioCommand::SetRitXitOffset { receiver, offset } => match receiver {
+                ReceiverPath::Main => vec![StatePatch::RitXitOffset(offset)],
+                ReceiverPath::Sub => vec![
+                    StatePatch::SubRitOffset(offset),
+                    StatePatch::SubXitOffset(offset),
+                ],
+            },
             RadioCommand::SetRitOffset { receiver, offset } => receiver_patch(
                 receiver,
                 StatePatch::RitOffset(offset),
                 StatePatch::SubRitOffset(offset),
             ),
-            RadioCommand::SetXitOffset(offset) => vec![StatePatch::XitOffset(offset)],
+            RadioCommand::SetXitOffset { receiver, offset } => match receiver {
+                ReceiverPath::Main => vec![StatePatch::XitOffset(offset)],
+                ReceiverPath::Sub => vec![StatePatch::SubXitOffset(offset)],
+            },
             RadioCommand::SetKeyerSpeed(wpm) => vec![StatePatch::KeyerSpeed(wpm)],
             RadioCommand::SendCw(_) => vec![StatePatch::KeyerSending(true)],
             RadioCommand::StopCw => vec![StatePatch::KeyerSending(false)],

@@ -21,6 +21,25 @@ pub enum Mode {
 }
 
 impl Mode {
+    pub const ALL: &'static [Self] = &[
+        Self::Lsb,
+        Self::Usb,
+        Self::Cw,
+        Self::CwReverse,
+        Self::Am,
+        Self::Fm,
+        Self::Wfm,
+        Self::Rtty,
+        Self::RttyReverse,
+        Self::Psk,
+        Self::PskReverse,
+        Self::DataLsb,
+        Self::DataUsb,
+        Self::DataFm,
+        Self::DataAm,
+        Self::DigitalVoice,
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Lsb => "LSB",

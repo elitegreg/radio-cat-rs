@@ -86,7 +86,7 @@ async fn startup_sends_auto_info_and_explicit_query_plan() {
 #[tokio::test]
 async fn kenwood_actor_reports_startup_eof() {
     let error = Radio::connect_with_transport(
-        RadioConfig::new("kenwood-ts590"),
+        RadioConfig::new("kenwood-ts590").with_region(radio_cat_rs::RadioRegion::IaruRegion2),
         MockTransport::default().with_eof(),
     )
     .await

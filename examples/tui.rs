@@ -6,8 +6,8 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use radio_cat_rs::{
-    supported_drivers, Frequency, LeveledSetting, Mode, Power, Radio, RadioConfig, RadioState,
-    RitXitOffsetHz, StateUpdate, TransportConfig,
+    supported_drivers, Frequency, LeveledSetting, Mode, Power, Radio, RadioConfig, RadioRegion,
+    RadioState, ReceiverPath, RitXitOffsetHz, StateUpdate, TransportConfig,
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -112,6 +112,7 @@ fn parse_launch_config() -> Result<Option<LaunchConfig>, CliError> {
     let mut log_level = parse_log_level(DEFAULT_LOG_LEVEL)?;
     let mut log_level_label = DEFAULT_LOG_LEVEL.to_string();
     let mut log_file: Option<String> = None;
+    let mut region: Option<RadioRegion> = None;
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -143,6 +144,14 @@ fn parse_launch_config() -> Result<Option<LaunchConfig>, CliError> {
                 );
             }
             "--options" => options = next_arg_value(&mut args, "--options")?,
+            "--region" => {
+                let value = next_arg_value(&mut args, "--region")?;
+                region = Some(
+                    value
+                        .parse()
+                        .map_err(|error| CliError(format!("{error}")))?,
+                );
+            }
             "--log-level" => {
                 let value = next_arg_value(&mut args, "--log-level")?;
                 log_level = parse_log_level(&value)?;
@@ -160,6 +169,9 @@ fn parse_launch_config() -> Result<Option<LaunchConfig>, CliError> {
     let transport = resolve_transport(serial_path, baud_rate, tcp_address, tcp_host, tcp_port)?;
 
     let mut radio_config = RadioConfig::new(driver.clone()).with_transport(transport.clone());
+    if let Some(region) = region {
+        radio_config = radio_config.with_region(region);
+    }
     if !options.is_empty() {
         radio_config = radio_config.with_options(options);
     }
@@ -293,6 +305,7 @@ fn print_usage() {
     println!("      --host <host>       TCP host (use with --port)");
     println!("      --port <port>       TCP port (use with --host)");
     println!("      --options <text>    Driver options string");
+    println!("      --region <1|2|3>    IARU region for physical radios");
     println!("      --log-level <lvl>   Log level: trace|debug|info|warn|error (default: {DEFAULT_LOG_LEVEL})");
     println!("      --log-file <path>   Append logs to file instead of stderr");
     println!("      --list-radios       Show supported radio ids and exit");
@@ -428,9 +441,11 @@ fn draw(
 }
 
 fn format_state(state: &RadioState) -> String {
-    let tx = state.tx.as_ref();
-    let keyer = state.keyer.as_ref();
-    let sub = state.sub_rx.as_ref();
+    let tx = state.tx();
+    let keyer = state.keyer();
+    let sub = state.sub_rx();
+    let main = state.main_rx();
+    let rit_xit = state.rit_xit();
 
     format!(
         "connection: {:?}\n\
@@ -439,38 +454,38 @@ sub rx:  freq={} mode={} filter_bw={:?} filter_shift={:?} preamp={} attn={} nb={
 tx:      freq={} mode={} power={} ptt={:?} split={:?}\n\
 rit/xit: main_rit={:?} sub_rit={:?} xit={:?} main_offset={:?} xit_offset={:?} sub_offset={:?}\n\
 keyer:   speed_wpm={:?} sending={:?}",
-        state.connection,
-        opt_freq(state.main_rx.frequency),
-        opt_mode(state.main_rx.mode),
-        state.main_rx.filter.bandwidth_hz,
-        state.main_rx.filter.shift_hz,
-        opt_setting(state.main_rx.rf.preamp),
-        opt_setting(state.main_rx.rf.attenuator),
-        opt_setting(state.main_rx.rf.noise_blanker),
-        opt_setting(state.main_rx.rf.noise_reduction),
-        state.main_rx.rf.auto_notch,
-        opt_freq(sub.and_then(|rx| rx.frequency)),
-        opt_mode(sub.and_then(|rx| rx.mode)),
-        sub.and_then(|rx| rx.filter.bandwidth_hz),
-        sub.and_then(|rx| rx.filter.shift_hz),
-        opt_setting(sub.and_then(|rx| rx.rf.preamp)),
-        opt_setting(sub.and_then(|rx| rx.rf.attenuator)),
-        opt_setting(sub.and_then(|rx| rx.rf.noise_blanker)),
-        opt_setting(sub.and_then(|rx| rx.rf.noise_reduction)),
-        sub.and_then(|rx| rx.rf.auto_notch),
-        opt_freq(tx.and_then(|tx| tx.frequency)),
-        opt_mode(tx.and_then(|tx| tx.mode)),
-        opt_power(tx.and_then(|tx| tx.power)),
-        tx.and_then(|tx| tx.transmitting),
-        tx.and_then(|tx| tx.split),
-        state.rit_xit.main_rit_enabled,
-        state.rit_xit.sub_rit_enabled,
-        state.rit_xit.xit_enabled,
-        state.rit_xit.offset_hz.map(|offset| offset.as_hz()),
-        state.rit_xit.xit_offset_hz.map(|offset| offset.as_hz()),
-        state.rit_xit.sub_offset_hz.map(|offset| offset.as_hz()),
-        keyer.and_then(|keyer| keyer.speed_wpm),
-        keyer.and_then(|keyer| keyer.sending),
+        state.connection(),
+        opt_freq(main.frequency()),
+        opt_mode(main.mode()),
+        main.filter().bandwidth_hz(),
+        main.filter().shift_hz(),
+        opt_setting(main.rf().preamp()),
+        opt_setting(main.rf().attenuator()),
+        opt_setting(main.rf().noise_blanker()),
+        opt_setting(main.rf().noise_reduction()),
+        main.rf().auto_notch(),
+        opt_freq(sub.and_then(|rx| rx.frequency())),
+        opt_mode(sub.and_then(|rx| rx.mode())),
+        sub.and_then(|rx| rx.filter().bandwidth_hz()),
+        sub.and_then(|rx| rx.filter().shift_hz()),
+        opt_setting(sub.and_then(|rx| rx.rf().preamp())),
+        opt_setting(sub.and_then(|rx| rx.rf().attenuator())),
+        opt_setting(sub.and_then(|rx| rx.rf().noise_blanker())),
+        opt_setting(sub.and_then(|rx| rx.rf().noise_reduction())),
+        sub.and_then(|rx| rx.rf().auto_notch()),
+        opt_freq(tx.and_then(|tx| tx.frequency())),
+        opt_mode(tx.and_then(|tx| tx.mode())),
+        opt_power(tx.and_then(|tx| tx.power())),
+        tx.and_then(|tx| tx.transmitting()),
+        tx.and_then(|tx| tx.split()),
+        rit_xit.rit_enabled(ReceiverPath::Main),
+        rit_xit.rit_enabled(ReceiverPath::Sub),
+        rit_xit.xit_enabled(ReceiverPath::Main),
+        rit_xit.rit_offset(ReceiverPath::Main).map(|offset| offset.as_hz()),
+        rit_xit.xit_offset(ReceiverPath::Main).map(|offset| offset.as_hz()),
+        rit_xit.rit_offset(ReceiverPath::Sub).map(|offset| offset.as_hz()),
+        keyer.and_then(|keyer| keyer.speed_wpm()),
+        keyer.and_then(|keyer| keyer.sending()),
     )
 }
 
@@ -491,26 +506,8 @@ fn opt_mode(mode: Option<Mode>) -> String {
 
 fn opt_setting(setting: Option<LeveledSetting>) -> String {
     match setting {
-        Some(LeveledSetting {
-            enabled: Some(false),
-            ..
-        }) => "off".to_string(),
-        Some(LeveledSetting {
-            enabled: Some(true),
-            level: Some(level),
-        }) => format!("on@{level}"),
-        Some(LeveledSetting {
-            enabled: Some(true),
-            level: None,
-        }) => "on".to_string(),
-        Some(LeveledSetting {
-            enabled: None,
-            level: Some(level),
-        }) => format!("level={level}"),
-        Some(LeveledSetting {
-            enabled: None,
-            level: None,
-        }) => "unknown".to_string(),
+        Some(setting) if !setting.is_enabled() => "off".to_string(),
+        Some(setting) => format!("on@{}", setting.level().unwrap_or(1)),
         None => "n/a".to_string(),
     }
 }
@@ -665,7 +662,7 @@ async fn execute_command(
         }
         "set-xit" => {
             let value = parse_bool_arg(parts.next(), "enabled")?;
-            radio.set_xit_enabled(value).await?;
+            radio.set_main_xit_enabled(value).await?;
             Ok(format!("xit -> {value}"))
         }
         "set-offset" | "set-offset-main" => {

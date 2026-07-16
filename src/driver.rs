@@ -3,8 +3,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::{
-    error::Result, transport::CatTransport, RadioCapabilities, RadioCommand, RadioState,
-    StatePatch, UpdateSource,
+    error::Result, transport::CatTransport, RadioCapabilities, RadioCommand, RadioRegion,
+    RadioState, StatePatch, UpdateSource,
 };
 
 /// Transport types a driver can use for a direct connection.
@@ -26,9 +26,15 @@ pub struct DriverDescriptor {
 impl DriverDescriptor {
     /// Capability metadata is available without opening a transport or
     /// constructing a radio connection.
-    pub fn capabilities(self) -> RadioCapabilities {
-        crate::drivers::capabilities_for(self.id)
-            .expect("supported driver descriptors always have capabilities")
+    pub fn supported_regions(self) -> &'static [RadioRegion] {
+        match self.transport_requirement {
+            TransportRequirement::SerialOrTcp => RadioRegion::ALL,
+            TransportRequirement::None | TransportRequirement::Tcp => &[],
+        }
+    }
+
+    pub fn capabilities(self, region: Option<RadioRegion>) -> Result<RadioCapabilities> {
+        crate::drivers::capabilities_for(self.id, region)
     }
 }
 

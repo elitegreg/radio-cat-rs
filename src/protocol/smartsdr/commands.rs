@@ -298,14 +298,17 @@ pub fn encode(
                 vec![StatePatch::MainRitEnabled(*enabled)],
             )))
         }
-        RadioCommand::SetXitEnabled(enabled) => Ok(Some(EncodedCommand::new(
-            vec![format!(
-                "slice s {} xit_on={}",
-                profile.slice,
-                bool_digit(*enabled)
-            )],
-            vec![StatePatch::XitEnabled(*enabled)],
-        ))),
+        RadioCommand::SetXitEnabled { receiver, enabled } => {
+            require_main_receiver(*receiver, "xit.enabled")?;
+            Ok(Some(EncodedCommand::new(
+                vec![format!(
+                    "slice s {} xit_on={}",
+                    profile.slice,
+                    bool_digit(*enabled)
+                )],
+                vec![StatePatch::XitEnabled(*enabled)],
+            )))
+        }
         RadioCommand::SetRitOffset { receiver, offset } => {
             require_main_receiver(*receiver, "rit.offset")?;
             Ok(Some(EncodedCommand::new(
@@ -317,26 +320,32 @@ pub fn encode(
                 vec![StatePatch::RitOffset(*offset)],
             )))
         }
-        RadioCommand::SetXitOffset(offset) => Ok(Some(EncodedCommand::new(
-            vec![format!(
-                "slice s {} xit_freq={}",
-                profile.slice,
-                offset.as_hz()
-            )],
-            vec![StatePatch::XitOffset(*offset)],
-        ))),
-        RadioCommand::SetRitXitOffset(offset) => Ok(Some(EncodedCommand::new(
-            vec![format!(
-                "slice s {} rit_freq={} xit_freq={}",
-                profile.slice,
-                offset.as_hz(),
-                offset.as_hz()
-            )],
-            vec![
-                StatePatch::RitXitOffset(*offset),
-                StatePatch::XitOffset(*offset),
-            ],
-        ))),
+        RadioCommand::SetXitOffset { receiver, offset } => {
+            require_main_receiver(*receiver, "xit.offset")?;
+            Ok(Some(EncodedCommand::new(
+                vec![format!(
+                    "slice s {} xit_freq={}",
+                    profile.slice,
+                    offset.as_hz()
+                )],
+                vec![StatePatch::XitOffset(*offset)],
+            )))
+        }
+        RadioCommand::SetRitXitOffset { receiver, offset } => {
+            require_main_receiver(*receiver, "rit_xit.offset")?;
+            Ok(Some(EncodedCommand::new(
+                vec![format!(
+                    "slice s {} rit_freq={} xit_freq={}",
+                    profile.slice,
+                    offset.as_hz(),
+                    offset.as_hz()
+                )],
+                vec![
+                    StatePatch::RitXitOffset(*offset),
+                    StatePatch::XitOffset(*offset),
+                ],
+            )))
+        }
         RadioCommand::SetKeyerSpeed(wpm) => Ok(Some(set_keyer_speed(*wpm)?)),
         RadioCommand::SendCw(text) => Ok(Some(EncodedCommand::new(
             vec![format!("cwx send \"{}\"", encode_cw_text(text)?)],
@@ -599,7 +608,7 @@ fn rf_level_command(
     let enabled = setting_enabled(setting);
     let mut command = format!("slice s {slice} {enabled_field}={}", bool_text(enabled));
     if enabled {
-        if let Some(level) = setting.level {
+        if let Some(level) = setting.level() {
             if level > 100 {
                 return Err(RadioError::InvalidValue {
                     field: level_field,
@@ -817,23 +826,22 @@ fn normalize_setting_update(
     let current = current.unwrap_or_default();
     match enabled {
         Some(false) => LeveledSetting::disabled(),
-        Some(true) => LeveledSetting::enabled(level.or(current.level).unwrap_or(1)),
+        Some(true) => LeveledSetting::enabled(level.or(current.level()).unwrap_or(1)),
         None => {
-            let setting = LeveledSetting::new(current.enabled, level.or(current.level));
+            let setting =
+                LeveledSetting::new(Some(current.is_enabled()), level.or(current.level()));
             bool_level_patch(setting)
         }
     }
 }
 
 fn setting_enabled(setting: LeveledSetting) -> bool {
-    setting
-        .enabled
-        .unwrap_or_else(|| setting.level.is_some_and(|level| level > 0))
+    setting.is_enabled()
 }
 
 fn bool_level_patch(setting: LeveledSetting) -> LeveledSetting {
     if setting_enabled(setting) {
-        LeveledSetting::enabled(setting.level.unwrap_or(1))
+        LeveledSetting::enabled(setting.level().unwrap_or(1))
     } else {
         LeveledSetting::disabled()
     }

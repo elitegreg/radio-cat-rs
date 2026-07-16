@@ -1,16 +1,11 @@
 use std::{env, error::Error, fmt};
 
-use radio_cat_rs::protocol::{
-    icom_civ::profile_by_id as icom_profile_by_id,
-    kenwood_ascii::profile_by_id as kenwood_profile_by_id,
-    smartsdr::profile_by_id as smartsdr_profile_by_id,
-};
 use radio_cat_rs::{
     capabilities::{
         Capability, RadioCapabilities, ReceiverCapabilities, ReceiverRfCapabilities,
         RitXitCapabilities, StateUpdateCapability, TransmitterCapabilities,
     },
-    supported_drivers, ReceiverKind,
+    supported_drivers, RadioRegion, ReceiverKind,
 };
 
 #[derive(Debug)]
@@ -25,7 +20,7 @@ impl fmt::Display for CliError {
 impl Error for CliError {}
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let Some(driver_id) = parse_driver_id()? else {
+    let Some((driver_id, region)) = parse_arguments()? else {
         return Ok(());
     };
 
@@ -34,21 +29,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .find(|driver| driver.id.eq_ignore_ascii_case(&driver_id))
         .ok_or_else(|| CliError(format!("unknown radio id: {driver_id}")))?;
 
-    let capabilities = if descriptor.id.eq_ignore_ascii_case("dummy") {
-        RadioCapabilities::dummy_all()
-    } else if let Some(profile) = kenwood_profile_by_id(descriptor.id) {
-        profile.capabilities
-    } else if let Some(profile) = icom_profile_by_id(descriptor.id) {
-        profile.capabilities
-    } else if let Some(profile) = smartsdr_profile_by_id(descriptor.id) {
-        profile.capabilities
-    } else {
-        return Err(CliError(format!(
-            "no capability profile for radio id: {}",
-            descriptor.id
-        ))
-        .into());
-    };
+    let capabilities = descriptor
+        .capabilities(region)
+        .map_err(|error| CliError(error.to_string()))?;
 
     print_radio_capabilities(
         descriptor.id,
@@ -59,11 +42,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn parse_driver_id() -> Result<Option<String>, CliError> {
-    let args = env::args().skip(1);
+fn parse_arguments() -> Result<Option<(String, Option<RadioRegion>)>, CliError> {
+    let mut args = env::args().skip(1);
 
     let mut driver_id: Option<String> = None;
-    for arg in args {
+    let mut region = None;
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
                 print_usage();
@@ -72,6 +56,16 @@ fn parse_driver_id() -> Result<Option<String>, CliError> {
             "--list-radios" => {
                 print_supported_radios();
                 return Ok(None);
+            }
+            "--region" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| CliError("--region requires a value".to_string()))?;
+                region = Some(
+                    value
+                        .parse()
+                        .map_err(|error: radio_cat_rs::RadioError| CliError(error.to_string()))?,
+                );
             }
             value if value.starts_with('-') => {
                 return Err(CliError(format!(
@@ -89,7 +83,7 @@ fn parse_driver_id() -> Result<Option<String>, CliError> {
         }
     }
 
-    Ok(driver_id)
+    Ok(driver_id.map(|driver| (driver, region)))
 }
 
 fn print_radio_capabilities(
@@ -120,7 +114,20 @@ fn print_radio_capabilities(
 fn print_receiver(title: &str, caps: &ReceiverCapabilities) {
     println!("{title}:");
     println!("  frequency: {}", describe_capability(caps.frequency));
+    for range in caps.frequency_ranges {
+        println!("    {}..={}", range.min, range.max);
+    }
     println!("  mode: {}", describe_capability(caps.mode));
+    if !caps.modes.is_empty() {
+        println!(
+            "    values: {}",
+            caps.modes
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     println!(
         "  filter bandwidth: {}",
         describe_capability(caps.filter_bandwidth)
@@ -142,7 +149,9 @@ fn print_optional_receiver(title: &str, caps: Option<&ReceiverCapabilities>) {
 fn print_rf(caps: &ReceiverRfCapabilities, title: &str) {
     println!("{title}:");
     println!("    preamp: {}", describe_capability(caps.preamp));
+    println!("      values: {:?}", caps.preamp_values);
     println!("    attenuator: {}", describe_capability(caps.attenuator));
+    println!("      values: {:?}", caps.attenuator_values);
     println!(
         "    noise blanker: {}",
         describe_capability(caps.noise_blanker)
@@ -159,7 +168,18 @@ fn print_optional_tx(caps: Option<&TransmitterCapabilities>) {
         Some(caps) => {
             println!("tx:");
             println!("  frequency: {}", describe_capability(caps.frequency));
+            for range in caps.frequency_ranges {
+                println!("    {}..={}", range.min, range.max);
+            }
             println!("  mode: {}", describe_capability(caps.mode));
+            println!(
+                "    values: {}",
+                caps.modes
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             println!("  power: {}", describe_capability(caps.power.access));
             for range in caps.power.ranges {
                 let step = match range.step {
@@ -171,6 +191,11 @@ fn print_optional_tx(caps: Option<&TransmitterCapabilities>) {
                 println!("    {}..={} ({step})", range.min, range.max);
             }
             println!("  ptt: {}", describe_capability(caps.ptt));
+            println!(
+                "  data ptt: {} ({:?})",
+                describe_capability(caps.data_ptt),
+                caps.data_ptt_relationship
+            );
             println!("  split: {}", describe_capability(caps.split));
             println!();
         }
@@ -189,6 +214,10 @@ fn print_rit_xit(caps: &RitXitCapabilities) {
         describe_capability(caps.sub_rit_enabled)
     );
     println!("  xit enabled: {}", describe_capability(caps.xit_enabled));
+    println!(
+        "  sub xit enabled: {}",
+        describe_capability(caps.sub_xit_enabled)
+    );
     println!("  main offset: {}", describe_capability(caps.offset));
     println!("  sub offset: {}", describe_capability(caps.sub_offset));
     println!(
@@ -203,6 +232,7 @@ fn print_optional_keyer(caps: Option<radio_cat_rs::KeyerCapabilities>) {
         Some(caps) => {
             println!("keyer:");
             println!("  speed wpm: {}", describe_capability(caps.speed_wpm));
+            println!("    range: {:?}", caps.speed_range_wpm);
             println!("  sending: {}", describe_capability(caps.sending));
             println!("  send cw: {}", describe_capability(caps.send_cw));
             println!("  stop cw: {}", describe_capability(caps.stop_cw));
@@ -256,9 +286,10 @@ fn print_usage() {
     println!("radio-cat-rs capabilities example");
     println!();
     println!("Usage:");
-    println!("  cargo run --example capabilities -- <radio-id>");
+    println!("  cargo run --example capabilities -- <radio-id> [--region <1|2|3>]");
     println!();
     println!("Options:");
     println!("  --list-radios   Show supported radio ids and exit");
+    println!("  --region <1|2|3> Select the IARU hardware region");
     println!("  -h, --help      Show this help and exit");
 }

@@ -190,6 +190,7 @@ fn encode_mode_for_target(
                 "MD" => ResponseMatcher::Prefix("MD"),
                 "DA" => ResponseMatcher::Prefix("DA"),
                 "MD$" => ResponseMatcher::Prefix("MD$"),
+                "DT" => ResponseMatcher::Prefix("DT"),
                 "DT$" => ResponseMatcher::Prefix("DT$"),
                 command => unreachable!("unexpected multi-frame mode command {command}"),
             };

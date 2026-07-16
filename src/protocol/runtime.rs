@@ -1886,11 +1886,13 @@ fn kenwood_validation_queries(
         RadioCommand::SetPtt(_) | RadioCommand::SetDataPtt(_) => vec!["IF"],
         RadioCommand::SetSplit(_) => split_queries(profile),
         RadioCommand::SetRitEnabled { receiver, .. } => vec![rit_enabled_query(profile, *receiver)],
-        RadioCommand::SetXitEnabled(_) => vec!["XT"],
+        RadioCommand::SetXitEnabled { receiver, .. } => vec![match receiver {
+            ReceiverPath::Main => "XT",
+            ReceiverPath::Sub => "XT$",
+        }],
         RadioCommand::SetRitOffset { receiver, .. } => rit_offset_queries(profile, *receiver),
-        RadioCommand::SetXitOffset(_) | RadioCommand::SetRitXitOffset(_) => {
-            rit_offset_queries(profile, ReceiverPath::Main)
-        }
+        RadioCommand::SetXitOffset { receiver, .. }
+        | RadioCommand::SetRitXitOffset { receiver, .. } => rit_offset_queries(profile, *receiver),
         RadioCommand::SetKeyerSpeed(_) => vec!["KS"],
         RadioCommand::SendCw(_) | RadioCommand::StopCw => vec!["KY"],
         RadioCommand::Refresh => Vec::new(),
@@ -2137,28 +2139,28 @@ fn command_matches_state(command: &RadioCommand, state: &RadioState) -> bool {
             ReceiverPath::Sub => state.rit_xit.sub_rit_enabled,
         }
         .is_some_and(|current| current == *enabled),
-        RadioCommand::SetXitEnabled(enabled) => state
-            .rit_xit
-            .xit_enabled
-            .is_some_and(|current| current == *enabled),
+        RadioCommand::SetXitEnabled { receiver, enabled } => match receiver {
+            ReceiverPath::Main => state.rit_xit.xit_enabled,
+            ReceiverPath::Sub => state.rit_xit.sub_xit_enabled,
+        }
+        .is_some_and(|current| current == *enabled),
         RadioCommand::SetRitOffset { receiver, offset } => match receiver {
             ReceiverPath::Main => state.rit_xit.offset_hz,
             ReceiverPath::Sub => state.rit_xit.sub_offset_hz,
         }
         .is_some_and(|current| current == *offset),
-        RadioCommand::SetXitOffset(offset) => state
-            .rit_xit
-            .xit_offset_hz
-            .is_some_and(|current| current == *offset),
-        RadioCommand::SetRitXitOffset(offset) => {
-            state
-                .rit_xit
-                .offset_hz
-                .is_some_and(|current| current == *offset)
-                && state
-                    .rit_xit
-                    .xit_offset_hz
-                    .is_some_and(|current| current == *offset)
+        RadioCommand::SetXitOffset { receiver, offset } => match receiver {
+            ReceiverPath::Main => state.rit_xit.xit_offset_hz,
+            ReceiverPath::Sub => state.rit_xit.sub_xit_offset_hz,
+        }
+        .is_some_and(|current| current == *offset),
+        RadioCommand::SetRitXitOffset { receiver, offset } => {
+            let (rit, xit) = match receiver {
+                ReceiverPath::Main => (state.rit_xit.offset_hz, state.rit_xit.xit_offset_hz),
+                ReceiverPath::Sub => (state.rit_xit.sub_offset_hz, state.rit_xit.sub_xit_offset_hz),
+            };
+            rit.is_some_and(|current| current == *offset)
+                && xit.is_some_and(|current| current == *offset)
         }
         RadioCommand::SetKeyerSpeed(wpm) => state
             .keyer
@@ -2222,7 +2224,7 @@ fn icom_validation_queries(
         RadioCommand::SetPtt(_) | RadioCommand::SetDataPtt(_) => vec!["ptt"],
         RadioCommand::SetSplit(_) => vec!["split"],
         RadioCommand::SetRitEnabled { .. } => vec!["rit"],
-        RadioCommand::SetXitEnabled(_) => {
+        RadioCommand::SetXitEnabled { .. } => {
             if profile.capabilities.rit_xit.xit_enabled.can_read() {
                 vec!["xit"]
             } else {
@@ -2230,8 +2232,8 @@ fn icom_validation_queries(
             }
         }
         RadioCommand::SetRitOffset { .. }
-        | RadioCommand::SetXitOffset(_)
-        | RadioCommand::SetRitXitOffset(_) => vec!["rit-offset"],
+        | RadioCommand::SetXitOffset { .. }
+        | RadioCommand::SetRitXitOffset { .. } => vec!["rit-offset"],
         RadioCommand::SetKeyerSpeed(_) => vec!["keyer-speed"],
         RadioCommand::SendCw(_) | RadioCommand::StopCw | RadioCommand::Refresh => Vec::new(),
     }

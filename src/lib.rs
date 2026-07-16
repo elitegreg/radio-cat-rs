@@ -27,9 +27,11 @@ pub mod update;
 
 pub use api::{supported_drivers, Radio, RadioConfig};
 pub use capabilities::{
-    Capability, KeyerCapabilities, PowerCapability, PowerRange, PowerStep, RadioCapabilities,
+    Capability, ControlCapability, DataPttRelationship, IndexedControl, KeyerCapabilities,
+    ModeValueDomain, PowerCapability, PowerRange, PowerStep, RadioCapabilities, RadioRegion,
     ReceiverCapabilities, ReceiverKind, ReceiverRfCapabilities, RitXitCapabilities,
-    RitXitOffsetType, StateUpdateCapability, TransmitterCapabilities,
+    RitXitOffsetType, StateUpdateCapability, SteppedValue, TransmitterCapabilities, ValueDomain,
+    ValueRange,
 };
 pub use command::{CommandOutcome, RadioCommand, ReceiverPath};
 pub use driver::{DriverDescriptor, TransportRequirement};

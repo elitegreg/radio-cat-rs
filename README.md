@@ -88,18 +88,21 @@ This includes `dummy` and Kenwood-ASCII profile IDs such as:
 `RadioConfig` supports radios connected through either serial ports or TCP sockets:
 
 ```rust
-use radio_cat_rs::{Radio, RadioConfig, TransportConfig};
+use radio_cat_rs::{Radio, RadioConfig, RadioRegion, TransportConfig};
 
 # async fn example() -> radio_cat_rs::Result<()> {
 let serial_config = RadioConfig::new("kenwood-ts590")
+    .with_region(RadioRegion::IaruRegion2)
     .with_transport(TransportConfig::serial("/dev/ttyUSB0", 38_400))
     .with_options("driver.specific=true");
 
 let tcp_config = RadioConfig::new("kenwood-ts590")
+    .with_region(RadioRegion::IaruRegion2)
     .with_transport(TransportConfig::tcp("127.0.0.1:4532"))
     .with_options("driver.specific=true");
 
 let tcp_config_with_host_port = RadioConfig::new("kenwood-ts590")
+    .with_region(RadioRegion::IaruRegion2)
     .with_tcp_socket("127.0.0.1", 4532)
     .with_options("driver.specific=true");
 
@@ -110,6 +113,17 @@ let radio = Radio::connect(RadioConfig::dummy()).await?;
 ```
 
 The `options` string is driver-specific. For example, Kenwood TS-590/890/990/480/2000 profiles support `ptt_source=front|usb` for `set_ptt(...)` behavior; the default is `front`. `set_data_ptt(...)` is always data/USB PTT on those radios.
+
+Physical-radio profiles require `RadioRegion::IaruRegion1`, `IaruRegion2`, or
+`IaruRegion3` so their capabilities report the appropriate documented hardware
+coverage. These ranges do not grant transmit authority; callers remain
+responsible for national regulations and operator-license limits.
+
+Radio state snapshots are read-only. Use getters such as `state.main_rx()`,
+`receiver.frequency()`, and `state.rit_xit().xit_offset(ReceiverPath::Main)`;
+change state by submitting commands. Capability metadata exposes frequency
+ranges, current supported modes, filter domains, RF indexes, power ranges,
+keyer-speed ranges, and normal/data PTT behavior for building valid controls.
 
 `flexradio-smartsdr` is TCP-only. Use `with_tcp_transport(...)` or `with_tcp_socket(...)` when calling `Radio::connect`, for example:
 
@@ -157,7 +171,7 @@ Interactive keys mutate state through API commands (`f` frequency, `m` mode, `p`
 Print the normalized capability set for any supported radio id:
 
 ```bash
-cargo run --example capabilities -- kenwood-ts590
+cargo run --example capabilities -- kenwood-ts590 --region 2
 ```
 
 Use `--list-radios` to see available ids.

@@ -28,6 +28,7 @@ pub(crate) struct CommandEnvelope {
 
 pub(crate) struct RadioTask {
     session: Option<Box<dyn RadioSession>>,
+    capabilities: crate::RadioCapabilities,
     reducer: StateReducer,
     command_rx: mpsc::Receiver<CommandEnvelope>,
     urgent_commands: VecDeque<CommandEnvelope>,
@@ -45,15 +46,17 @@ pub(crate) struct RadioTask {
 impl RadioTask {
     pub(crate) fn new(
         session: Box<dyn RadioSession>,
-        initial_state: crate::RadioState,
+        initial: (crate::RadioCapabilities, crate::RadioState),
         command_rx: mpsc::Receiver<CommandEnvelope>,
         shutdown_rx: watch::Receiver<bool>,
         state_tx: watch::Sender<SharedRadioState>,
         update_tx: broadcast::Sender<StateUpdate>,
         transport: Option<BoxedCatTransport>,
     ) -> Self {
+        let (capabilities, initial_state) = initial;
         Self {
             session: Some(session),
+            capabilities,
             reducer: StateReducer::new(initial_state),
             command_rx,
             urgent_commands: VecDeque::new(),
@@ -227,6 +230,8 @@ impl RadioTask {
 
         let command_for_emulation = command.clone();
         let state_before = self.reducer.state().clone();
+        self.capabilities
+            .validate_command(&command, &state_before)?;
 
         let completion = self.execute_session_command(command, &state_before).await?;
         tracing::debug!(?completion, "radio task command completed");
@@ -758,6 +763,7 @@ mod tests {
         JoinHandle<Result<()>>,
     ) {
         let session = TestSession::new(speed_wpm);
+        let capabilities = session.capabilities();
         let initial_state = session.initial_state();
         let (command_tx, command_rx) = mpsc::channel(8);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -765,7 +771,7 @@ mod tests {
         let (update_tx, _) = broadcast::channel(8);
         let task = RadioTask::new(
             Box::new(session),
-            initial_state,
+            (capabilities, initial_state),
             command_rx,
             shutdown_rx,
             state_tx,
@@ -788,6 +794,7 @@ mod tests {
             poll_started: poll_started.clone(),
             urgent_dispatched: urgent_dispatched.clone(),
         };
+        let capabilities = session.capabilities();
         let initial_state = session.initial_state();
         let (command_tx, command_rx) = mpsc::channel(8);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -795,7 +802,7 @@ mod tests {
         let (update_tx, _) = broadcast::channel(8);
         let task = RadioTask::new(
             Box::new(session),
-            initial_state,
+            (capabilities, initial_state),
             command_rx,
             shutdown_rx,
             state_tx,

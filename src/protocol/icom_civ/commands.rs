@@ -161,7 +161,8 @@ pub fn encode(
                 vec![StatePatch::MainRitEnabled(*enabled)],
             )?))
         }
-        RadioCommand::SetXitEnabled(enabled) => {
+        RadioCommand::SetXitEnabled { receiver, enabled } => {
+            require_main_receiver(*receiver, "xit")?;
             require_xit(profile)?;
             Ok(Some(set_bool_level(
                 options,
@@ -174,7 +175,9 @@ pub fn encode(
             require_main_receiver(*receiver, "rit.offset")?;
             Ok(Some(set_rit_offset(profile, options, *offset, false)?))
         }
-        RadioCommand::SetXitOffset(offset) | RadioCommand::SetRitXitOffset(offset) => {
+        RadioCommand::SetXitOffset { receiver, offset }
+        | RadioCommand::SetRitXitOffset { receiver, offset } => {
+            require_main_receiver(*receiver, "xit.offset")?;
             require_xit(profile)?;
             Ok(Some(set_rit_offset(profile, options, *offset, true)?))
         }
@@ -606,10 +609,9 @@ fn set_preamp(
     receiver: ReceiverPath,
     setting: LeveledSetting,
 ) -> Result<EncodedCommand> {
-    let value = if setting.enabled == Some(false) {
-        0x00
-    } else {
-        match setting.level.unwrap_or(1) {
+    let value = match setting.level() {
+        None => 0x00,
+        Some(level) => match level {
             0 => 0x00,
             1 => 0x01,
             2 => 0x02,
@@ -619,7 +621,7 @@ fn set_preamp(
                     message: format!("expected 0, 1, or 2, got {other}"),
                 })
             }
-        }
+        },
     };
 
     set_receiver_value(
@@ -989,14 +991,12 @@ fn decode_bool(value: u8, command: &'static str) -> Result<bool> {
 }
 
 fn setting_enabled(setting: LeveledSetting) -> bool {
-    setting
-        .enabled
-        .unwrap_or_else(|| setting.level.is_some_and(|level| level > 0))
+    setting.is_enabled()
 }
 
 fn bool_level_patch(setting: LeveledSetting) -> LeveledSetting {
     if setting_enabled(setting) {
-        LeveledSetting::enabled(setting.level.unwrap_or(1))
+        LeveledSetting::enabled(setting.level().unwrap_or(1))
     } else {
         LeveledSetting::disabled()
     }
@@ -1027,7 +1027,7 @@ fn encode_attenuator(profile: &IcomCivProfile, setting: LeveledSetting) -> Resul
         return Ok(0x00);
     }
 
-    let desired = setting.level.unwrap_or_else(|| {
+    let desired = setting.level().unwrap_or_else(|| {
         profile
             .attenuator_values_db
             .iter()
@@ -1373,7 +1373,10 @@ mod tests {
         let xit = encode(
             profile(),
             options(),
-            &RadioCommand::SetXitOffset(target),
+            &RadioCommand::SetXitOffset {
+                receiver: ReceiverPath::Main,
+                offset: target,
+            },
             &RadioState::default(),
         )
         .unwrap()
@@ -1381,7 +1384,10 @@ mod tests {
         let both = encode(
             profile(),
             options(),
-            &RadioCommand::SetRitXitOffset(target),
+            &RadioCommand::SetRitXitOffset {
+                receiver: ReceiverPath::Main,
+                offset: target,
+            },
             &RadioState::default(),
         )
         .unwrap()
@@ -1397,7 +1403,10 @@ mod tests {
         let result = encode(
             ic7100,
             IcomCivOptions::defaults(ic7100),
-            &RadioCommand::SetXitEnabled(true),
+            &RadioCommand::SetXitEnabled {
+                receiver: ReceiverPath::Main,
+                enabled: true,
+            },
             &RadioState::default(),
         );
         assert!(result.is_err());

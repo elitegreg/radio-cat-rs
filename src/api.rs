@@ -13,7 +13,7 @@ use crate::{
     },
     update::{SharedRadioState, StateUpdate},
     CommandOutcome, DriverDescriptor, Frequency, LeveledSetting, Mode, Power, RadioCapabilities,
-    RitXitOffsetHz,
+    RadioRegion, RitXitOffsetHz,
 };
 
 #[derive(Debug, Clone)]
@@ -21,6 +21,7 @@ pub struct RadioConfig {
     pub driver: String,
     pub transport: TransportConfig,
     pub options: String,
+    pub region: Option<RadioRegion>,
     pub command_channel_capacity: usize,
     pub update_channel_capacity: usize,
 }
@@ -31,6 +32,7 @@ impl RadioConfig {
             driver: driver.into(),
             transport: TransportConfig::None,
             options: String::new(),
+            region: None,
             command_channel_capacity: 64,
             update_channel_capacity: 128,
         }
@@ -67,6 +69,15 @@ impl RadioConfig {
 
     pub fn options(&self) -> &str {
         &self.options
+    }
+
+    pub fn with_region(mut self, region: RadioRegion) -> Self {
+        self.region = Some(region);
+        self
+    }
+
+    pub fn region(&self) -> Option<RadioRegion> {
+        self.region
     }
 
     pub fn with_command_channel_capacity(mut self, capacity: usize) -> Self {
@@ -113,8 +124,13 @@ impl Radio {
     }
 
     pub(crate) async fn build(config: RadioConfig) -> Result<(Self, RadioTask)> {
-        let session =
-            drivers::create_session(&config.driver, &config.options, &config.transport, false)?;
+        let session = drivers::create_session(
+            &config.driver,
+            config.region,
+            &config.options,
+            &config.transport,
+            false,
+        )?;
 
         tracing::debug!(
             driver = %config.driver,
@@ -169,8 +185,13 @@ impl Radio {
     where
         T: CatTransport + 'static,
     {
-        let session =
-            drivers::create_session(&config.driver, &config.options, &config.transport, true)?;
+        let session = drivers::create_session(
+            &config.driver,
+            config.region,
+            &config.options,
+            &config.transport,
+            true,
+        )?;
         Self::build_from_session(config, session, Some(boxed_transport(transport)))
     }
 
@@ -189,7 +210,8 @@ impl Radio {
         );
 
         let descriptor = session.descriptor();
-        let capabilities = Arc::new(session.capabilities());
+        let capabilities = Arc::new(descriptor.capabilities(config.region)?);
+        let task_capabilities = *capabilities;
         let initial_state = session.initial_state();
         let initial_snapshot = Arc::new(initial_state.clone());
 
@@ -215,7 +237,7 @@ impl Radio {
 
         let task = RadioTask::new(
             session,
-            initial_state,
+            (task_capabilities, initial_state),
             command_rx,
             shutdown_rx,
             state_tx,
@@ -508,10 +530,18 @@ impl Radio {
         self.set_rit_enabled(ReceiverPath::Sub, enabled).await
     }
 
-    pub async fn set_xit_enabled(&self, enabled: bool) -> Result<()> {
-        self.command(RadioCommand::SetXitEnabled(enabled))
+    pub async fn set_xit_enabled(&self, receiver: ReceiverPath, enabled: bool) -> Result<()> {
+        self.command(RadioCommand::SetXitEnabled { receiver, enabled })
             .await
             .map(|_| ())
+    }
+
+    pub async fn set_main_xit_enabled(&self, enabled: bool) -> Result<()> {
+        self.set_xit_enabled(ReceiverPath::Main, enabled).await
+    }
+
+    pub async fn set_sub_xit_enabled(&self, enabled: bool) -> Result<()> {
+        self.set_xit_enabled(ReceiverPath::Sub, enabled).await
     }
 
     pub async fn set_rit_offset(
@@ -532,8 +562,30 @@ impl Radio {
         self.set_rit_offset(ReceiverPath::Sub, offset).await
     }
 
+    pub async fn set_xit_offset(
+        &self,
+        receiver: ReceiverPath,
+        offset: RitXitOffsetHz,
+    ) -> Result<()> {
+        self.command(RadioCommand::SetXitOffset { receiver, offset })
+            .await
+            .map(|_| ())
+    }
+
     pub async fn set_main_xit_offset(&self, offset: RitXitOffsetHz) -> Result<()> {
-        self.command(RadioCommand::SetXitOffset(offset))
+        self.set_xit_offset(ReceiverPath::Main, offset).await
+    }
+
+    pub async fn set_sub_xit_offset(&self, offset: RitXitOffsetHz) -> Result<()> {
+        self.set_xit_offset(ReceiverPath::Sub, offset).await
+    }
+
+    pub async fn set_rit_xit_offset(
+        &self,
+        receiver: ReceiverPath,
+        offset: RitXitOffsetHz,
+    ) -> Result<()> {
+        self.command(RadioCommand::SetRitXitOffset { receiver, offset })
             .await
             .map(|_| ())
     }
@@ -654,6 +706,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn capability_validation_rejects_before_state_changes() {
+        let radio = Radio::connect(RadioConfig::dummy()).await.unwrap();
+        let before = radio.latest_state().main_rx().frequency();
+        let error = radio
+            .set_main_frequency(Frequency::from_hz(2_000_000_000))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RadioError::InvalidValue {
+                field: "receiver.frequency",
+                ..
+            }
+        ));
+        assert_eq!(radio.latest_state().main_rx().frequency(), before);
+
+        radio.set_sub_xit_enabled(true).await.unwrap();
+        assert_eq!(
+            radio
+                .latest_state()
+                .rit_xit()
+                .xit_enabled(ReceiverPath::Sub),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
     async fn supported_driver_list_contains_dummy_kenwood_icom_and_flex_profiles() {
         assert!(supported_drivers()
             .iter()
@@ -694,7 +773,12 @@ mod tests {
             kenwood.transport_requirement,
             crate::TransportRequirement::SerialOrTcp
         );
-        assert!(kenwood.capabilities().main_rx.frequency.is_supported());
+        assert!(kenwood
+            .capabilities(Some(RadioRegion::IaruRegion2))
+            .unwrap()
+            .main_rx
+            .frequency
+            .is_supported());
 
         let icom = supported_drivers()
             .iter()
@@ -704,7 +788,12 @@ mod tests {
             icom.transport_requirement,
             crate::TransportRequirement::SerialOrTcp
         );
-        assert!(icom.capabilities().main_rx.frequency.is_supported());
+        assert!(icom
+            .capabilities(Some(RadioRegion::IaruRegion2))
+            .unwrap()
+            .main_rx
+            .frequency
+            .is_supported());
     }
 
     #[tokio::test]
@@ -749,6 +838,7 @@ mod tests {
 
         let invalid_options = Radio::build(
             RadioConfig::new("icom-ic705")
+                .with_region(RadioRegion::IaruRegion2)
                 .with_options("poll_interval=invalid")
                 .with_tcp_transport("127.0.0.1:0"),
         )

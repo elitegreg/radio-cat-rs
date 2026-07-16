@@ -866,14 +866,10 @@ fn setting_from_index(index: u8) -> LeveledSetting {
 }
 
 fn normalize_index(setting: LeveledSetting, default_on: u8) -> Result<u8> {
-    match (setting.enabled, setting.level) {
-        (Some(false), _) => Ok(0),
-        (_, Some(level)) => Ok(level),
-        (Some(true), None) => Ok(default_on),
-        (None, None) => Err(RadioError::InvalidValue {
-            field: "receiver.setting",
-            message: "setting must provide enabled or level".to_string(),
-        }),
+    match setting.level() {
+        None => Ok(0),
+        Some(0) => Ok(default_on),
+        Some(level) => Ok(level),
     }
 }
 

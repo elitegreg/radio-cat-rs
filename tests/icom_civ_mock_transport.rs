@@ -93,7 +93,9 @@ async fn ic705_actor_skips_mode_set_when_validation_query_confirms_state() {
         .await;
 
     let radio = Radio::connect_with_transport(
-        RadioConfig::new("icom-ic705").with_options("poll_interval=0.2"),
+        RadioConfig::new("icom-ic705")
+            .with_region(radio_cat_rs::RadioRegion::IaruRegion2)
+            .with_options("poll_interval=0.2"),
         transport.clone(),
     )
     .await
@@ -101,7 +103,7 @@ async fn ic705_actor_skips_mode_set_when_validation_query_confirms_state() {
 
     wait_for(Duration::from_secs(2), || {
         let radio = radio.clone();
-        async move { radio.latest_state().main_rx.mode == Some(Mode::Cw) }
+        async move { radio.latest_state().main_rx().mode() == Some(Mode::Cw) }
     })
     .await
     .unwrap();
@@ -123,9 +125,12 @@ async fn ic705_actor_reports_startup_eof() {
     let transport = SharedMockTransport::default();
     transport.set_eof(true).await;
 
-    let error = Radio::connect_with_transport(RadioConfig::new("icom-ic705"), transport)
-        .await
-        .unwrap_err();
+    let error = Radio::connect_with_transport(
+        RadioConfig::new("icom-ic705").with_region(radio_cat_rs::RadioRegion::IaruRegion2),
+        transport,
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(error, RadioError::Transport(message) if message.contains("closed by peer")));
 }
@@ -137,7 +142,9 @@ async fn ic705_power_rejects_out_of_range_without_io_and_returns_quantized_value
         .push_read(response([0x25, 0x00, 0x00, 0x40, 0x07, 0x14, 0x00]))
         .await;
     let radio = Radio::connect_with_transport(
-        RadioConfig::new("icom-ic705").with_options("poll_interval=5"),
+        RadioConfig::new("icom-ic705")
+            .with_region(radio_cat_rs::RadioRegion::IaruRegion2)
+            .with_options("poll_interval=5"),
         transport.clone(),
     )
     .await
@@ -153,16 +160,13 @@ async fn ic705_power_rejects_out_of_range_without_io_and_returns_quantized_value
         }
     ));
     assert_eq!(transport.written_len().await, baseline);
-    assert_eq!(
-        radio.latest_state().tx.as_ref().and_then(|tx| tx.power),
-        None
-    );
+    assert_eq!(radio.latest_state().tx().and_then(|tx| tx.power()), None);
 
     transport.push_read(response([0xfb])).await;
     let accepted = radio.set_tx_power(Power::from_watts(5)).await.unwrap();
     assert_eq!(accepted, Power::from_microwatts(5_019_608));
     assert_eq!(
-        radio.latest_state().tx.as_ref().and_then(|tx| tx.power),
+        radio.latest_state().tx().and_then(|tx| tx.power()),
         Some(accepted)
     );
     let written = transport.written_frames().await;
@@ -178,7 +182,9 @@ async fn ic705_actor_sends_mode_set_when_validation_query_disagrees() {
         .await;
 
     let radio = Radio::connect_with_transport(
-        RadioConfig::new("icom-ic705").with_options("poll_interval=0.2"),
+        RadioConfig::new("icom-ic705")
+            .with_region(radio_cat_rs::RadioRegion::IaruRegion2)
+            .with_options("poll_interval=0.2"),
         transport.clone(),
     )
     .await
@@ -186,7 +192,7 @@ async fn ic705_actor_sends_mode_set_when_validation_query_disagrees() {
 
     wait_for(Duration::from_secs(2), || {
         let radio = radio.clone();
-        async move { radio.latest_state().main_rx.mode == Some(Mode::Cw) }
+        async move { radio.latest_state().main_rx().mode() == Some(Mode::Cw) }
     })
     .await
     .unwrap();
@@ -225,7 +231,9 @@ async fn ic705_actor_handles_startup_async_errors_and_command_ack() {
         .await;
 
     let radio = Radio::connect_with_transport(
-        RadioConfig::new("icom-ic705").with_options("poll_interval=0.2"),
+        RadioConfig::new("icom-ic705")
+            .with_region(radio_cat_rs::RadioRegion::IaruRegion2)
+            .with_options("poll_interval=0.2"),
         transport.clone(),
     )
     .await
@@ -247,8 +255,8 @@ async fn ic705_actor_handles_startup_async_errors_and_command_ack() {
         let radio = radio.clone();
         async move {
             let state = radio.latest_state();
-            state.main_rx.frequency == Some(Frequency::from_hz(14_074_000))
-                && state.main_rx.mode == Some(Mode::DigitalVoice)
+            state.main_rx().frequency() == Some(Frequency::from_hz(14_074_000))
+                && state.main_rx().mode() == Some(Mode::DigitalVoice)
         }
     })
     .await
@@ -265,7 +273,7 @@ async fn ic705_actor_handles_startup_async_errors_and_command_ack() {
 
     wait_for(Duration::from_secs(2), || {
         let radio = radio.clone();
-        async move { radio.latest_state().main_rx.mode == Some(Mode::Wfm) }
+        async move { radio.latest_state().main_rx().mode() == Some(Mode::Wfm) }
     })
     .await
     .unwrap();
@@ -281,7 +289,7 @@ async fn ic705_actor_handles_startup_async_errors_and_command_ack() {
 
     wait_for(Duration::from_secs(2), || {
         let radio = radio.clone();
-        async move { radio.latest_state().main_rx.frequency == Some(Frequency::from_hz(7_030_000)) }
+        async move { radio.latest_state().main_rx().frequency() == Some(Frequency::from_hz(7_030_000)) }
     })
     .await
     .unwrap();
@@ -300,7 +308,9 @@ async fn civ_negative_ack_leaves_accepted_state_unchanged() {
         .push_read(response([0x25, 0x00, 0x00, 0x40, 0x07, 0x14, 0x00]))
         .await;
     let radio = Radio::connect_with_transport(
-        RadioConfig::new("icom-ic705").with_options("poll_interval=5"),
+        RadioConfig::new("icom-ic705")
+            .with_region(radio_cat_rs::RadioRegion::IaruRegion2)
+            .with_options("poll_interval=5"),
         transport.clone(),
     )
     .await
@@ -314,7 +324,7 @@ async fn civ_negative_ack_leaves_accepted_state_unchanged() {
     .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let before = radio.latest_state().main_rx.frequency;
+    let before = radio.latest_state().main_rx().frequency();
     transport.push_read(response([0xfa])).await;
 
     let error = radio
@@ -329,7 +339,7 @@ async fn civ_negative_ack_leaves_accepted_state_unchanged() {
             reason: "negative acknowledgement",
         }
     ));
-    assert_eq!(radio.latest_state().main_rx.frequency, before);
+    assert_eq!(radio.latest_state().main_rx().frequency(), before);
 }
 
 #[tokio::test]
@@ -339,7 +349,9 @@ async fn civ_ignores_wrong_address_response_and_ack() {
         .push_read(response([0x25, 0x00, 0x00, 0x40, 0x07, 0x14, 0x00]))
         .await;
     let radio = Radio::connect_with_transport(
-        RadioConfig::new("icom-ic705").with_options("poll_interval=5"),
+        RadioConfig::new("icom-ic705")
+            .with_region(radio_cat_rs::RadioRegion::IaruRegion2)
+            .with_options("poll_interval=5"),
         transport.clone(),
     )
     .await
@@ -351,7 +363,7 @@ async fn civ_ignores_wrong_address_response_and_ack() {
     .await
     .unwrap();
 
-    let before = radio.latest_state().main_rx.frequency;
+    let before = radio.latest_state().main_rx().frequency();
     transport
         .push_read(
             CivFrame::new(0xe0, 0xb2, [0x25, 0x00, 0x00, 0x00, 0x03, 0x07, 0x00])
@@ -376,10 +388,10 @@ async fn civ_ignores_wrong_address_response_and_ack() {
         .unwrap();
 
     assert_eq!(
-        radio.latest_state().main_rx.frequency,
+        radio.latest_state().main_rx().frequency(),
         Some(Frequency::from_hz(7_030_000))
     );
-    assert_ne!(radio.latest_state().main_rx.frequency, before);
+    assert_ne!(radio.latest_state().main_rx().frequency(), before);
 }
 
 #[tokio::test]
@@ -389,7 +401,9 @@ async fn write_failure_leaves_accepted_state_unchanged() {
         .push_read(response([0x25, 0x00, 0x00, 0x40, 0x07, 0x14, 0x00]))
         .await;
     let radio = Radio::connect_with_transport(
-        RadioConfig::new("icom-ic705").with_options("poll_interval=5"),
+        RadioConfig::new("icom-ic705")
+            .with_region(radio_cat_rs::RadioRegion::IaruRegion2)
+            .with_options("poll_interval=5"),
         transport.clone(),
     )
     .await
@@ -403,7 +417,7 @@ async fn write_failure_leaves_accepted_state_unchanged() {
     .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let before = radio.latest_state().main_rx.frequency;
+    let before = radio.latest_state().main_rx().frequency();
     transport.set_fail_writes(true).await;
     let error = radio
         .set_main_frequency(Frequency::from_hz(7_030_000))
@@ -411,7 +425,7 @@ async fn write_failure_leaves_accepted_state_unchanged() {
         .unwrap_err();
 
     assert!(error.is_transport());
-    assert_eq!(radio.latest_state().main_rx.frequency, before);
+    assert_eq!(radio.latest_state().main_rx().frequency(), before);
 }
 
 #[tokio::test]
@@ -421,7 +435,9 @@ async fn ic705_refresh_writes_startup_queries_and_propagates_failure() {
         .push_read(response([0x25, 0x00, 0x00, 0x40, 0x07, 0x14, 0x00]))
         .await;
     let radio = Radio::connect_with_transport(
-        RadioConfig::new("icom-ic705").with_options("poll_interval=5"),
+        RadioConfig::new("icom-ic705")
+            .with_region(radio_cat_rs::RadioRegion::IaruRegion2)
+            .with_options("poll_interval=5"),
         transport.clone(),
     )
     .await
@@ -429,7 +445,7 @@ async fn ic705_refresh_writes_startup_queries_and_propagates_failure() {
 
     wait_for(Duration::from_secs(2), || {
         let radio = radio.clone();
-        async move { radio.latest_state().main_rx.frequency.is_some() }
+        async move { radio.latest_state().main_rx().frequency().is_some() }
     })
     .await
     .unwrap();
