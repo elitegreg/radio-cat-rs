@@ -7,22 +7,30 @@
 
 mod actor;
 mod api;
+/// Capability metadata and value-domain definitions for supported radios.
 pub mod capabilities;
+/// Commands submitted to a connected [`Radio`].
 pub mod command;
 mod driver;
 mod drivers;
+/// Errors and result aliases returned by this crate.
 pub mod error;
 mod frequency;
 mod keyer_emulation;
+/// Radio operating modes and parsing support.
 pub mod mode;
 #[cfg(feature = "advanced-protocol-api")]
 pub mod protocol;
 #[cfg(not(feature = "advanced-protocol-api"))]
 #[allow(dead_code, unused_imports)]
 mod protocol;
+/// Serial-port discovery helpers.
 pub mod serial_ports;
+/// Read-only state snapshots and normalized radio values.
 pub mod state;
+/// Built-in and caller-provided CAT transports.
 pub mod transport;
+/// State update events and reduction utilities.
 pub mod update;
 
 pub use api::{supported_drivers, Radio, RadioConfig};

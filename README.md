@@ -69,6 +69,10 @@ async fn main() -> radio_cat_rs::Result<()> {
 
 ## Supported drivers
 
+`supported_drivers()` is the only public driver-discovery API. Drivers are
+built into this crate; registering a downstream driver is not currently
+supported.
+
 ```rust
 for driver in radio_cat_rs::supported_drivers() {
     println!("{} - {}", driver.id, driver.display_name);
@@ -153,6 +157,19 @@ let radio = Radio::connect_with_transport(RadioConfig::dummy(), transport).await
 ```
 
 The dummy driver ignores the transport, but the API shape is in place for real drivers.
+
+## Advanced protocol API
+
+Protocol profile tables, frame splitters, and encoder/decoder helpers are not
+part of the default API. Enable the `advanced-protocol-api` feature when
+building protocol tooling or experiments:
+
+```toml
+radio-cat-rs = { version = "0.1", features = ["advanced-protocol-api"] }
+```
+
+This feature exposes built-in protocol details; it does not provide a custom
+driver registration mechanism.
 
 ## TUI example
 

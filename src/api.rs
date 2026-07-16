@@ -16,6 +16,10 @@ use crate::{
     RadioRegion, RitXitOffsetHz,
 };
 
+/// Connection settings used to construct a [`Radio`].
+///
+/// Drivers are selected from the crate's built-in registry; custom driver
+/// registration is not currently supported.
 #[derive(Debug, Clone)]
 pub struct RadioConfig {
     pub driver: String,
@@ -27,6 +31,7 @@ pub struct RadioConfig {
 }
 
 impl RadioConfig {
+    /// Creates settings for a built-in driver ID.
     pub fn new(driver: impl Into<String>) -> Self {
         Self {
             driver: driver.into(),
@@ -38,6 +43,7 @@ impl RadioConfig {
         }
     }
 
+    /// Creates settings for the in-memory `dummy` driver.
     pub fn dummy() -> Self {
         Self::new("dummy")
     }
@@ -91,6 +97,10 @@ impl RadioConfig {
     }
 }
 
+/// A connected asynchronous CAT radio handle.
+///
+/// Submit commands through this handle and observe accepted state through its
+/// state and update subscriptions.
 #[derive(Clone)]
 pub struct Radio {
     command_tx: mpsc::Sender<CommandEnvelope>,
@@ -112,6 +122,7 @@ impl fmt::Debug for Radio {
 }
 
 impl Radio {
+    /// Opens the configured transport and connects to a built-in driver.
     pub async fn connect(config: RadioConfig) -> Result<Self> {
         tracing::info!(
             driver = %config.driver,
@@ -141,6 +152,7 @@ impl Radio {
         Self::build_from_session(config, session, transport)
     }
 
+    /// Connects using a caller-provided bidirectional CAT transport.
     pub async fn connect_with_transport<T>(config: RadioConfig, transport: T) -> Result<Self>
     where
         T: CatTransport + 'static,
@@ -248,14 +260,17 @@ impl Radio {
         Ok((radio, task))
     }
 
+    /// Subscribes to snapshots of the latest accepted radio state.
     pub fn subscribe_state(&self) -> watch::Receiver<SharedRadioState> {
         self.state_rx.clone()
     }
 
+    /// Subscribes to categorized accepted-state update events.
     pub fn subscribe_updates(&self) -> broadcast::Receiver<StateUpdate> {
         self.update_tx.subscribe()
     }
 
+    /// Returns the latest accepted state snapshot without waiting for an update.
     pub fn latest_state(&self) -> SharedRadioState {
         self.state_rx.borrow().clone()
     }
@@ -265,6 +280,7 @@ impl Radio {
         let _ = self.shutdown_tx.send(true);
     }
 
+    /// Returns capability metadata for the connected driver and selected region.
     pub fn capabilities(&self) -> &RadioCapabilities {
         &self.capabilities
     }
@@ -273,6 +289,7 @@ impl Radio {
         self.capabilities.clone()
     }
 
+    /// Returns the descriptor for the connected built-in driver.
     pub fn driver_descriptor(&self) -> DriverDescriptor {
         self.driver
     }
@@ -296,7 +313,7 @@ impl Radio {
     }
 
     /// Reissue the connected radio's startup queries and wait for their protocol completion.
-    /// Decoded state changes are published with [`UpdateSource::ManualRefresh`].
+    /// Decoded state changes are published with [`crate::UpdateSource::ManualRefresh`].
     pub async fn refresh(&self) -> Result<()> {
         self.command(RadioCommand::Refresh).await.map(|_| ())
     }
@@ -607,6 +624,10 @@ impl Radio {
     }
 }
 
+/// Returns descriptors for every driver built into this crate.
+///
+/// This is the sole public driver-discovery entry point. Downstream drivers
+/// cannot currently be registered.
 pub fn supported_drivers() -> &'static [DriverDescriptor] {
     drivers::supported_drivers()
 }
