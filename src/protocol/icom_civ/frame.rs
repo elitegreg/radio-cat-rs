@@ -197,10 +197,10 @@ impl FrameSplitter {
                 };
                 let end = end_offset + 2;
                 let frame_bytes: Vec<u8> = self.buffer.drain(..=end).collect();
-                if frame_bytes.len() <= MAX_FRAME_BYTES {
-                    if let Ok(frame) = CivFrame::parse(frame_bytes) {
-                        frames.push(frame);
-                    }
+                if frame_bytes.len() <= MAX_FRAME_BYTES
+                    && let Ok(frame) = CivFrame::parse(frame_bytes)
+                {
+                    frames.push(frame);
                 }
             }
         }

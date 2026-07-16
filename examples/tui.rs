@@ -358,13 +358,14 @@ async fn run_ui(
             )
         })?;
 
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                tracing::debug!(key = ?key.code, "key pressed");
-                match key.code {
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            tracing::debug!(key = ?key.code, "key pressed");
+            match key.code {
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
                     KeyCode::Esc => command_input.clear(),
                     KeyCode::Backspace => {
@@ -390,7 +391,6 @@ async fn run_ui(
                         command_input.push(ch);
                     }
                     _ => {}
-                }
             }
         }
     }

@@ -52,17 +52,17 @@ pub fn list_serial_ports() -> Result<Vec<SerialPortListEntry>, SerialPortListErr
             description: describe_port_type(&port.port_type),
         });
 
-        if port.port_name.starts_with("/dev/") {
-            if let Some(aliases) = aliases_by_target.get(&port.port_name) {
-                for alias in aliases {
-                    if alias == &port.port_name {
-                        continue;
-                    }
-                    entries.push(SerialPortListEntry {
-                        name: alias.clone(),
-                        description: format!("alias for {}", port.port_name),
-                    });
+        if port.port_name.starts_with("/dev/")
+            && let Some(aliases) = aliases_by_target.get(&port.port_name)
+        {
+            for alias in aliases {
+                if alias == &port.port_name {
+                    continue;
                 }
+                entries.push(SerialPortListEntry {
+                    name: alias.clone(),
+                    description: format!("alias for {}", port.port_name),
+                });
             }
         }
     }

@@ -379,10 +379,10 @@ impl RadioCapabilities {
             if keyer.speed_wpm.is_supported() && keyer.speed_range_wpm.is_none() {
                 return invalid_capabilities("supported keyer speed requires a range");
             }
-            if let Some(range) = keyer.speed_range_wpm {
-                if range.min > range.max || range.step == 0 {
-                    return invalid_capabilities("keyer speed range is invalid");
-                }
+            if let Some(range) = keyer.speed_range_wpm
+                && (range.min > range.max || range.step == 0)
+            {
+                return invalid_capabilities("keyer speed range is invalid");
             }
         }
         let offset = self.rit_xit.offset_range;

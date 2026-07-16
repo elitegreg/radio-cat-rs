@@ -607,19 +607,17 @@ fn rf_level_command(
 ) -> Result<EncodedCommand> {
     let enabled = setting_enabled(setting);
     let mut command = format!("slice s {slice} {enabled_field}={}", bool_text(enabled));
-    if enabled {
-        if let Some(level) = setting.level() {
-            if level > 100 {
-                return Err(RadioError::InvalidValue {
-                    field: level_field,
-                    message: "expected 0..=100".to_string(),
-                });
-            }
-            command.push(' ');
-            command.push_str(level_field);
-            command.push('=');
-            command.push_str(&level.to_string());
+    if enabled && let Some(level) = setting.level() {
+        if level > 100 {
+            return Err(RadioError::InvalidValue {
+                field: level_field,
+                message: "expected 0..=100".to_string(),
+            });
         }
+        command.push(' ');
+        command.push_str(level_field);
+        command.push('=');
+        command.push_str(&level.to_string());
     }
 
     Ok(EncodedCommand::new(vec![command], vec![patch]))

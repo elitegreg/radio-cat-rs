@@ -223,10 +223,10 @@ pub(crate) fn capabilities_for(
     }
     if let Some(profile) = icom_protocol::profile_by_id(id) {
         capabilities.main_rx.rf.attenuator_values = profile.attenuator_values_db;
-        if let Some(sub_rx) = &mut capabilities.sub_rx {
-            if sub_rx.rf.attenuator.is_supported() {
-                sub_rx.rf.attenuator_values = profile.attenuator_values_db;
-            }
+        if let Some(sub_rx) = &mut capabilities.sub_rx
+            && sub_rx.rf.attenuator.is_supported()
+        {
+            sub_rx.rf.attenuator_values = profile.attenuator_values_db;
         }
     }
     if let Some(keyer) = &mut capabilities.keyer {

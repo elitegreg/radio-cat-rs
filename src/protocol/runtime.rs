@@ -56,13 +56,13 @@ pub(crate) fn smartsdr_session(
 pub(crate) fn validate_kenwood_profile(profile: &'static KenwoodAsciiProfile) -> Result<()> {
     let routing = kenwood_ascii::VfoRouting::for_profile(profile);
     for step in profile.startup {
-        if let StartupStep::Query(semantic) = *step {
-            if encode_kenwood_query(profile, semantic, routing)?.is_none() {
-                return Err(RadioError::InvalidValue {
-                    field: "profile.startup",
-                    message: format!("{} has an unencodable query {semantic:?}", profile.id()),
-                });
-            }
+        if let StartupStep::Query(semantic) = *step
+            && encode_kenwood_query(profile, semantic, routing)?.is_none()
+        {
+            return Err(RadioError::InvalidValue {
+                field: "profile.startup",
+                message: format!("{} has an unencodable query {semantic:?}", profile.id()),
+            });
         }
     }
     if let Some(plan) = profile.poll {
@@ -266,16 +266,16 @@ impl KenwoodAsciiRuntime {
                     continue;
                 }
 
-                if let Some(expected) = expected {
-                    if expected.matches(&frame) {
-                        tracing::debug!(
-                            driver = %self.profile.id(),
-                            rx_frame = frame.as_str(),
-                            expected = ?expected,
-                            "received expected CAT response"
-                        );
-                        matched_expected = true;
-                    }
+                if let Some(expected) = expected
+                    && expected.matches(&frame)
+                {
+                    tracing::debug!(
+                        driver = %self.profile.id(),
+                        rx_frame = frame.as_str(),
+                        expected = ?expected,
+                        "received expected CAT response"
+                    );
+                    matched_expected = true;
                 }
 
                 match decode_kenwood_frame(self.profile, &frame, ctx.state(), &mut self.vfo_routing)
@@ -642,19 +642,18 @@ impl RadioSession for KenwoodAsciiRuntime {
             let semantic = plan.queries[self.poll_index];
             self.poll_index = (self.poll_index + 1) % plan.queries.len();
             let complete = self.poll_index == 0;
-            if let Some(encoded) = encode_kenwood_query(self.profile, semantic, self.vfo_routing)? {
-                if let Err(error) = self
+            if let Some(encoded) = encode_kenwood_query(self.profile, semantic, self.vfo_routing)?
+                && let Err(error) = self
                     .send_encoded(
-                        transport,
-                        encoded,
-                        UpdateSource::Poll,
-                        COMMAND_RESPONSE_TIMEOUT,
-                        ctx,
-                    )
-                    .await
-                {
-                    tracing::debug!(driver = %self.profile.id(), semantic, ?error, "poll query failed");
-                }
+                    transport,
+                    encoded,
+                    UpdateSource::Poll,
+                    COMMAND_RESPONSE_TIMEOUT,
+                    ctx,
+                )
+                .await
+            {
+                tracing::debug!(driver = %self.profile.id(), semantic, ?error, "poll query failed");
             }
             return Ok(complete);
         }
@@ -889,20 +888,20 @@ impl IcomCivRuntime {
                 }
 
                 let mut matched_expected = false;
-                if let Some(expected) = expected {
-                    if expected.matches_from(
+                if let Some(expected) = expected
+                    && expected.matches_from(
                         &frame,
                         self.options.controller_address,
                         self.options.radio_address,
-                    ) {
-                        tracing::debug!(
-                            driver = %self.profile.id(),
-                            rx_bytes = ?frame.as_bytes(),
-                            expected = ?expected,
-                            "received expected ICOM CI-V response"
-                        );
-                        matched_expected = true;
-                    }
+                    )
+                {
+                    tracing::debug!(
+                        driver = %self.profile.id(),
+                        rx_bytes = ?frame.as_bytes(),
+                        expected = ?expected,
+                        "received expected ICOM CI-V response"
+                    );
+                    matched_expected = true;
                 }
 
                 let source = if matched_expected {
@@ -1243,19 +1242,18 @@ impl RadioSession for IcomCivRuntime {
             let semantic = plan.queries[self.poll_index];
             self.poll_index = (self.poll_index + 1) % plan.queries.len();
             let complete = self.poll_index == 0;
-            if let Some(encoded) = icom_civ::encode_query(self.profile, self.options, semantic)? {
-                if let Err(error) = self
+            if let Some(encoded) = icom_civ::encode_query(self.profile, self.options, semantic)?
+                && let Err(error) = self
                     .send_encoded(
-                        transport,
-                        encoded,
-                        UpdateSource::Poll,
-                        COMMAND_RESPONSE_TIMEOUT,
-                        ctx,
-                    )
-                    .await
-                {
-                    tracing::debug!(driver = %self.profile.id(), semantic, ?error, "ICOM poll query failed");
-                }
+                    transport,
+                    encoded,
+                    UpdateSource::Poll,
+                    COMMAND_RESPONSE_TIMEOUT,
+                    ctx,
+                )
+                .await
+            {
+                tracing::debug!(driver = %self.profile.id(), semantic, ?error, "ICOM poll query failed");
             }
             return Ok(complete);
         }
