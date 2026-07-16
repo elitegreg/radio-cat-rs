@@ -1,11 +1,12 @@
 use crate::{
     capabilities::{
-        Capability, KeyerCapabilities, RadioCapabilities, ReceiverCapabilities, ReceiverKind,
-        ReceiverRfCapabilities, RitXitCapabilities, RitXitOffsetType, StateUpdateCapability,
-        TransmitterCapabilities,
+        Capability, KeyerCapabilities, PowerCapability, PowerRange, RadioCapabilities,
+        ReceiverCapabilities, ReceiverKind, ReceiverRfCapabilities, RitXitCapabilities,
+        RitXitOffsetType, StateUpdateCapability, TransmitterCapabilities,
     },
-    driver::DriverDescriptor,
+    driver::{DriverDescriptor, TransportRequirement},
     error::{RadioError, Result},
+    Power,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +36,7 @@ impl SmartSdrOptions {
 
     pub fn parse(profile: &SmartSdrProfile, options: &str) -> Result<Self> {
         let mut parsed = Self::defaults(profile);
+        let mut saw_slice = false;
 
         for part in options.split(',') {
             let part = part.trim();
@@ -53,6 +55,13 @@ impl SmartSdrOptions {
 
             match key.as_str() {
                 "slice" | "slice_index" => {
+                    if saw_slice {
+                        return Err(RadioError::InvalidValue {
+                            field: "options",
+                            message: "duplicate SmartSDR option \"slice\"".to_string(),
+                        });
+                    }
+                    saw_slice = true;
                     parsed.slice =
                         value
                             .parse::<u8>()
@@ -82,8 +91,18 @@ const UNSUPPORTED: Capability = Capability::Unsupported;
 const SMARTSDR_RX_RF: ReceiverRfCapabilities =
     ReceiverRfCapabilities::new(UNSUPPORTED, UNSUPPORTED, RW, RW, RW);
 const SMARTSDR_RX: ReceiverCapabilities = ReceiverCapabilities::new(RW, RW, RW, RW, SMARTSDR_RX_RF);
-const SMARTSDR_TX: TransmitterCapabilities =
-    TransmitterCapabilities::new(RW, RW, RW, RW, UNSUPPORTED);
+const SMARTSDR_POWER: &[PowerRange] = &[PowerRange::fixed(
+    Power::from_microwatts(0),
+    Power::from_microwatts(100_000_000),
+    Power::from_microwatts(1_000_000),
+)];
+const SMARTSDR_TX: TransmitterCapabilities = TransmitterCapabilities::new(
+    RW,
+    RW,
+    PowerCapability::new(RW, SMARTSDR_POWER),
+    RW,
+    UNSUPPORTED,
+);
 const SMARTSDR_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
     RW,
     UNSUPPORTED,
@@ -100,6 +119,7 @@ pub const FLEXRADIO_SMARTSDR: SmartSdrProfile = SmartSdrProfile {
         display_name: "FlexRadio SmartSDR",
         description:
             "FlexRadio SmartSDR TCP slice control (default slice 0; configurable via options).",
+        transport_requirement: TransportRequirement::Tcp,
     },
     slice: 0,
     capabilities: RadioCapabilities::new(
@@ -116,9 +136,9 @@ pub const FLEXRADIO_SMARTSDR: SmartSdrProfile = SmartSdrProfile {
 pub const SUPPORTED_PROFILES: &[SmartSdrProfile] = &[FLEXRADIO_SMARTSDR];
 
 pub fn profile_by_id(id: &str) -> Option<&'static SmartSdrProfile> {
-    SUPPORTED_PROFILES.iter().find(|profile| {
-        profile.id().eq_ignore_ascii_case(id) || id.eq_ignore_ascii_case("flexradio-smarthdr")
-    })
+    SUPPORTED_PROFILES
+        .iter()
+        .find(|profile| profile.id().eq_ignore_ascii_case(id))
 }
 
 #[cfg(test)]
@@ -150,5 +170,12 @@ mod tests {
         let options = SmartSdrOptions::parse(profile, "slice=2").unwrap();
 
         assert_eq!(options.slice, 2);
+    }
+
+    #[test]
+    fn smartsdr_options_reject_duplicates_and_the_legacy_typo_alias() {
+        let profile = profile_by_id("flexradio-smartsdr").unwrap();
+        assert!(SmartSdrOptions::parse(profile, "slice=1,slice_index=2").is_err());
+        assert!(profile_by_id("flexradio-smarthdr").is_none());
     }
 }

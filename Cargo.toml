@@ -1,9 +1,13 @@
 [package]
 name = "radio-cat-rs"
-version = "0.1.0"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 description = "Async CAT control library for amateur radios"
 license = "MIT"
+
+[features]
+default = []
+advanced-protocol-api = []
 
 [dependencies]
 async-trait = "0.1"
@@ -11,7 +15,7 @@ bitflags = "2"
 cw-serial-keyer = { git = "https://github.com/elitegreg/cw-serial-keyer-rs.git" }
 smallvec = "1"
 thiserror = "1.0"
-tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
 tokio-serial = "5"
 tracing = "0.1"
 
@@ -19,3 +23,22 @@ tracing = "0.1"
 crossterm = "0.28"
 ratatui = "0.29"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[[test]]
+name = "kenwood_ascii_mock_transport"
+path = "tests/kenwood_ascii_mock_transport.rs"
+required-features = ["advanced-protocol-api"]
+
+[[test]]
+name = "icom_civ_mock_transport"
+path = "tests/icom_civ_mock_transport.rs"
+required-features = ["advanced-protocol-api"]
+
+[[test]]
+name = "flexradio_smartsdr_mock_transport"
+path = "tests/flexradio_smartsdr_mock_transport.rs"
+required-features = ["advanced-protocol-api"]
+
+[[example]]
+name = "capabilities"
+required-features = ["advanced-protocol-api"]

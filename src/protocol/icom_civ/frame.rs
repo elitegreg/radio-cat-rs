@@ -1,5 +1,11 @@
 use crate::{error::RadioError, Result};
 
+const MAX_FRAME_BYTES: usize = 512;
+
+/// CI-V's reserved broadcast address. Broadcast frames are never transaction
+/// responses because they do not identify this controller/radio pair.
+pub const BROADCAST_ADDRESS: u8 = 0x00;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CivFrame {
     bytes: Vec<u8>,
@@ -15,6 +21,19 @@ impl CivFrame {
             return Err(RadioError::Decode {
                 command: "frame",
                 message: "CI-V frame payload is empty".to_string(),
+            });
+        }
+
+        if payload.len() + 5 > MAX_FRAME_BYTES {
+            return Err(RadioError::Decode {
+                command: "frame",
+                message: format!("CI-V frame exceeds maximum size of {MAX_FRAME_BYTES} bytes"),
+            });
+        }
+        if payload.contains(&0xfd) {
+            return Err(RadioError::Decode {
+                command: "frame",
+                message: "CI-V frame payload contains an embedded terminator".to_string(),
             });
         }
 
@@ -71,6 +90,12 @@ impl CivFrame {
 
         let to = bytes[2];
         let from = bytes[3];
+        if bytes.len() > MAX_FRAME_BYTES {
+            return Err(RadioError::Decode {
+                command: "frame",
+                message: format!("CI-V frame exceeds maximum size of {MAX_FRAME_BYTES} bytes"),
+            });
+        }
         let payload = bytes[4..bytes.len() - 1].to_vec();
         if payload.is_empty() {
             return Err(RadioError::Decode {
@@ -126,6 +151,15 @@ impl ResponseMatcher {
         }
     }
 
+    /// Match a response payload and its CI-V endpoint pair.
+    pub fn matches_from(&self, frame: &CivFrame, controller: u8, radio: u8) -> bool {
+        frame.to() == controller
+            && frame.from() == radio
+            && frame.to() != BROADCAST_ADDRESS
+            && frame.from() != BROADCAST_ADDRESS
+            && self.matches(frame)
+    }
+
     pub fn expects_response(&self) -> bool {
         !matches!(self, Self::None)
     }
@@ -142,24 +176,33 @@ impl FrameSplitter {
     }
 
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<CivFrame>> {
-        self.buffer.extend_from_slice(bytes);
-
         let mut frames = Vec::new();
-        loop {
-            let Some(start) = find_preamble(&self.buffer) else {
-                keep_possible_partial_preamble(&mut self.buffer);
-                break;
-            };
-            if start > 0 {
-                self.buffer.drain(..start);
-            }
+        for byte in bytes {
+            self.buffer.push(*byte);
+            loop {
+                let Some(start) = find_preamble(&self.buffer) else {
+                    keep_possible_partial_preamble(&mut self.buffer);
+                    break;
+                };
+                if start > 0 {
+                    self.buffer.drain(..start);
+                }
 
-            let Some(end_offset) = self.buffer.iter().skip(2).position(|byte| *byte == 0xfd) else {
-                break;
-            };
-            let end = end_offset + 2;
-            let frame_bytes: Vec<u8> = self.buffer.drain(..=end).collect();
-            frames.push(CivFrame::parse(frame_bytes)?);
+                let Some(end_offset) = self.buffer.iter().skip(2).position(|byte| *byte == 0xfd)
+                else {
+                    if self.buffer.len() > MAX_FRAME_BYTES {
+                        resynchronize_oversized(&mut self.buffer);
+                    }
+                    break;
+                };
+                let end = end_offset + 2;
+                let frame_bytes: Vec<u8> = self.buffer.drain(..=end).collect();
+                if frame_bytes.len() <= MAX_FRAME_BYTES
+                    && let Ok(frame) = CivFrame::parse(frame_bytes)
+                {
+                    frames.push(frame);
+                }
+            }
         }
 
         Ok(frames)
@@ -179,6 +222,17 @@ fn keep_possible_partial_preamble(buffer: &mut Vec<u8>) {
         buffer.drain(..buffer.len().saturating_sub(1));
     } else {
         buffer.clear();
+    }
+}
+
+fn resynchronize_oversized(buffer: &mut Vec<u8>) {
+    if let Some(start) = buffer[2..]
+        .windows(2)
+        .position(|window| window == [0xfe, 0xfe])
+    {
+        buffer.drain(..start + 2);
+    } else {
+        keep_possible_partial_preamble(buffer);
     }
 }
 
@@ -226,5 +280,36 @@ mod tests {
 
         let response = CivFrame::new(0xe0, 0xa4, [0x26, 0x01, 0x01, 0x00, 0x03]).unwrap();
         assert!(ResponseMatcher::PayloadPrefix(vec![0x26, 0x01]).matches(&response));
+        assert!(ResponseMatcher::Ack.matches_from(&ack, 0xe0, 0xa4));
+        assert!(!ResponseMatcher::Ack.matches_from(
+            &CivFrame::new(0xe0, 0xb2, [0xfb]).unwrap(),
+            0xe0,
+            0xa4
+        ));
+        assert!(!ResponseMatcher::Ack.matches_from(
+            &CivFrame::new(0x00, 0xa4, [0xfb]).unwrap(),
+            0xe0,
+            0xa4
+        ));
+    }
+
+    #[test]
+    fn constructor_rejects_embedded_terminator_and_oversized_payload() {
+        assert!(CivFrame::new(0xe0, 0xa4, [0x25, 0xfd]).is_err());
+        assert!(CivFrame::new(0xe0, 0xa4, vec![0; 508]).is_err());
+    }
+
+    #[test]
+    fn splitter_recovers_after_an_oversized_frame() {
+        let mut splitter = FrameSplitter::new();
+        let mut bytes = vec![0xfe, 0xfe, 0xe0, 0xa4];
+        bytes.extend(std::iter::repeat_n(0x01, 512));
+        bytes.extend_from_slice(&[0xfd, 0xfe, 0xfe, 0xe0, 0xa4, 0xfb, 0xfd]);
+
+        let frames = splitter.push(&bytes).unwrap();
+
+        assert_eq!(frames.len(), 1);
+        assert_eq!(ProtocolStatus::parse(&frames[0]), Some(ProtocolStatus::Ok));
+        assert_eq!(splitter.buffered_len(), 0);
     }
 }

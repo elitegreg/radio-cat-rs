@@ -1,8 +1,8 @@
 use crate::{
     command::{RadioCommand, ReceiverPath},
     error::RadioError,
-    update::{StatePatch, UpdateSource},
-    Frequency, LeveledSetting, Mode, Power, PowerUnit, RadioState, Result, RitXitOffsetHz,
+    update::StatePatch,
+    Frequency, LeveledSetting, Mode, Power, RadioState, Result, RitXitOffsetHz,
 };
 
 use super::{CivFrame, IcomCivOptions, IcomCivProfile, ResponseMatcher};
@@ -12,7 +12,7 @@ pub struct EncodedCommand {
     pub frames: Vec<CivFrame>,
     pub matcher: ResponseMatcher,
     pub response_receiver: Option<ReceiverPath>,
-    pub optimistic: Vec<StatePatch>,
+    pub completion_patches: Vec<StatePatch>,
 }
 
 impl EncodedCommand {
@@ -20,13 +20,13 @@ impl EncodedCommand {
         frames: Vec<CivFrame>,
         matcher: ResponseMatcher,
         response_receiver: Option<ReceiverPath>,
-        optimistic: Vec<StatePatch>,
+        completion_patches: Vec<StatePatch>,
     ) -> Self {
         Self {
             frames,
             matcher,
             response_receiver,
-            optimistic,
+            completion_patches,
         }
     }
 }
@@ -34,15 +34,11 @@ impl EncodedCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedFrame {
     pub patches: Vec<StatePatch>,
-    pub source_hint: Option<UpdateSource>,
 }
 
 impl DecodedFrame {
     pub fn new(patches: Vec<StatePatch>) -> Self {
-        Self {
-            patches,
-            source_hint: None,
-        }
+        Self { patches }
     }
 }
 
@@ -165,7 +161,8 @@ pub fn encode(
                 vec![StatePatch::MainRitEnabled(*enabled)],
             )?))
         }
-        RadioCommand::SetXitEnabled(enabled) => {
+        RadioCommand::SetXitEnabled { receiver, enabled } => {
+            require_main_receiver(*receiver, "xit")?;
             require_xit(profile)?;
             Ok(Some(set_bool_level(
                 options,
@@ -178,14 +175,18 @@ pub fn encode(
             require_main_receiver(*receiver, "rit.offset")?;
             Ok(Some(set_rit_offset(profile, options, *offset, false)?))
         }
-        RadioCommand::SetXitOffset(offset) | RadioCommand::SetRitXitOffset(offset) => {
+        RadioCommand::SetXitOffset { receiver, offset }
+        | RadioCommand::SetRitXitOffset { receiver, offset } => {
+            require_main_receiver(*receiver, "xit.offset")?;
             require_xit(profile)?;
             Ok(Some(set_rit_offset(profile, options, *offset, true)?))
         }
         RadioCommand::SetKeyerSpeed(wpm) => Ok(Some(set_keyer_speed(options, *wpm)?)),
         RadioCommand::SendCw(text) => Ok(Some(send_cw(options, text)?)),
         RadioCommand::StopCw => Ok(Some(stop_cw(options)?)),
-        RadioCommand::Refresh => Ok(None),
+        RadioCommand::Refresh => {
+            unreachable!("refresh is dispatched through RadioSession::refresh")
+        }
     }
 }
 
@@ -250,7 +251,7 @@ pub fn encode_query(
             vec![0x1a, 0x03],
             ResponseMatcher::PayloadPrefix(vec![0x1a, 0x03]),
         ),
-        "preamp-main" if profile.capabilities.main_rx.rf.preamp.can_read() => {
+        "preamp" | "preamp-main" if profile.capabilities.main_rx.rf.preamp.can_read() => {
             receiver_query(profile, options, ReceiverPath::Main, vec![0x16, 0x02])
         }
         "preamp-sub"
@@ -261,7 +262,9 @@ pub fn encode_query(
         {
             receiver_query(profile, options, ReceiverPath::Sub, vec![0x16, 0x02])
         }
-        "attenuator-main" if profile.capabilities.main_rx.rf.attenuator.can_read() => {
+        "attenuator" | "attenuator-main"
+            if profile.capabilities.main_rx.rf.attenuator.can_read() =>
+        {
             receiver_query(profile, options, ReceiverPath::Main, vec![0x11])
         }
         "attenuator-sub"
@@ -272,7 +275,9 @@ pub fn encode_query(
         {
             receiver_query(profile, options, ReceiverPath::Sub, vec![0x11])
         }
-        "noise-blanker-main" if profile.capabilities.main_rx.rf.noise_blanker.can_read() => {
+        "noise-blanker" | "noise-blanker-main"
+            if profile.capabilities.main_rx.rf.noise_blanker.can_read() =>
+        {
             receiver_query(profile, options, ReceiverPath::Main, vec![0x16, 0x22])
         }
         "noise-blanker-sub"
@@ -283,7 +288,9 @@ pub fn encode_query(
         {
             receiver_query(profile, options, ReceiverPath::Sub, vec![0x16, 0x22])
         }
-        "noise-reduction-main" if profile.capabilities.main_rx.rf.noise_reduction.can_read() => {
+        "noise-reduction" | "noise-reduction-main"
+            if profile.capabilities.main_rx.rf.noise_reduction.can_read() =>
+        {
             receiver_query(profile, options, ReceiverPath::Main, vec![0x16, 0x40])
         }
         "noise-reduction-sub"
@@ -294,7 +301,9 @@ pub fn encode_query(
         {
             receiver_query(profile, options, ReceiverPath::Sub, vec![0x16, 0x40])
         }
-        "auto-notch-main" if profile.capabilities.main_rx.rf.auto_notch.can_read() => {
+        "auto-notch" | "auto-notch-main"
+            if profile.capabilities.main_rx.rf.auto_notch.can_read() =>
+        {
             receiver_query(profile, options, ReceiverPath::Main, vec![0x16, 0x41])
         }
         "auto-notch-sub"
@@ -608,10 +617,9 @@ fn set_preamp(
     receiver: ReceiverPath,
     setting: LeveledSetting,
 ) -> Result<EncodedCommand> {
-    let value = if setting.enabled == Some(false) {
-        0x00
-    } else {
-        match setting.level.unwrap_or(1) {
+    let value = match setting.level() {
+        None => 0x00,
+        Some(level) => match level {
             0 => 0x00,
             1 => 0x01,
             2 => 0x02,
@@ -621,7 +629,7 @@ fn set_preamp(
                     message: format!("expected 0, 1, or 2, got {other}"),
                 })
             }
-        }
+        },
     };
 
     set_receiver_value(
@@ -689,14 +697,22 @@ fn set_tx_power(
     options: IcomCivOptions,
     power: Power,
 ) -> Result<EncodedCommand> {
-    let raw = power_to_raw(profile, power);
+    let accepted = profile
+        .capabilities
+        .tx
+        .and_then(|tx| tx.power.quantize(power))
+        .ok_or_else(|| RadioError::InvalidValue {
+            field: "tx.power",
+            message: format!("{power} is outside the supported power ranges"),
+        })?;
+    let raw = power_to_raw(profile, accepted);
     let mut payload = vec![0x14, 0x0a];
     payload.extend_from_slice(&encode_bcd_decimal_0000_0255(raw)?);
     Ok(EncodedCommand::new(
         vec![frame(options, payload)?],
         ResponseMatcher::Ack,
         None,
-        vec![StatePatch::TxPower(raw_to_power(profile, raw))],
+        vec![StatePatch::TxPower(accepted)],
     ))
 }
 
@@ -983,14 +999,12 @@ fn decode_bool(value: u8, command: &'static str) -> Result<bool> {
 }
 
 fn setting_enabled(setting: LeveledSetting) -> bool {
-    setting
-        .enabled
-        .unwrap_or_else(|| setting.level.is_some_and(|level| level > 0))
+    setting.is_enabled()
 }
 
 fn bool_level_patch(setting: LeveledSetting) -> LeveledSetting {
     if setting_enabled(setting) {
-        LeveledSetting::enabled(setting.level.unwrap_or(1))
+        LeveledSetting::enabled(setting.level().unwrap_or(1))
     } else {
         LeveledSetting::disabled()
     }
@@ -1021,7 +1035,7 @@ fn encode_attenuator(profile: &IcomCivProfile, setting: LeveledSetting) -> Resul
         return Ok(0x00);
     }
 
-    let desired = setting.level.unwrap_or_else(|| {
+    let desired = setting.level().unwrap_or_else(|| {
         profile
             .attenuator_values_db
             .iter()
@@ -1255,18 +1269,12 @@ fn invalid_filter_code(code: u8, mode: Mode) -> RadioError {
 
 fn power_to_raw(profile: &IcomCivProfile, power: Power) -> u16 {
     let max_microwatts = profile.max_tx_power_watts as u64 * 1_000_000;
-    let requested = power.as_microwatts().min(max_microwatts);
-    ((requested * 255 + max_microwatts / 2) / max_microwatts) as u16
+    ((power.as_microwatts() * 255 + max_microwatts / 2) / max_microwatts) as u16
 }
 
 fn raw_to_power(profile: &IcomCivProfile, raw: u16) -> Power {
-    let max_milliwatts = profile.max_tx_power_watts as u64 * 1_000;
-    let milliwatts = (raw as u64 * max_milliwatts + 127) / 255;
-    if milliwatts % 1_000 == 0 || milliwatts > u16::MAX as u64 {
-        Power::from_watts(((milliwatts + 500) / 1_000) as u16)
-    } else {
-        Power::new(milliwatts as u16, PowerUnit::Milliwatts)
-    }
+    let max_microwatts = u64::from(profile.max_tx_power_watts) * Power::MICROWATTS_PER_WATT;
+    Power::from_microwatts((u64::from(raw) * max_microwatts + 127) / 255)
 }
 
 fn wpm_to_raw(wpm: u8) -> Result<u16> {
@@ -1373,7 +1381,10 @@ mod tests {
         let xit = encode(
             profile(),
             options(),
-            &RadioCommand::SetXitOffset(target),
+            &RadioCommand::SetXitOffset {
+                receiver: ReceiverPath::Main,
+                offset: target,
+            },
             &RadioState::default(),
         )
         .unwrap()
@@ -1381,14 +1392,17 @@ mod tests {
         let both = encode(
             profile(),
             options(),
-            &RadioCommand::SetRitXitOffset(target),
+            &RadioCommand::SetRitXitOffset {
+                receiver: ReceiverPath::Main,
+                offset: target,
+            },
             &RadioState::default(),
         )
         .unwrap()
         .unwrap();
 
         assert_eq!(xit.frames, both.frames);
-        assert_eq!(xit.optimistic, both.optimistic);
+        assert_eq!(xit.completion_patches, both.completion_patches);
     }
 
     #[test]
@@ -1397,7 +1411,10 @@ mod tests {
         let result = encode(
             ic7100,
             IcomCivOptions::defaults(ic7100),
-            &RadioCommand::SetXitEnabled(true),
+            &RadioCommand::SetXitEnabled {
+                receiver: ReceiverPath::Main,
+                enabled: true,
+            },
             &RadioState::default(),
         );
         assert!(result.is_err());
@@ -1624,10 +1641,31 @@ mod tests {
     fn tx_power_maps_over_ic705_ten_watt_scale() {
         assert_eq!(power_to_raw(profile(), Power::from_watts(10)), 255);
         assert_eq!(raw_to_power(profile(), 255), Power::from_watts(10));
-        assert_eq!(raw_to_power(profile(), 128).unit(), PowerUnit::Milliwatts);
+        assert_eq!(
+            raw_to_power(profile(), 128),
+            Power::from_microwatts(5_019_608)
+        );
 
         let ic7760 = crate::protocol::icom_civ::profile_by_id("icom-ic7760").unwrap();
         assert_eq!(raw_to_power(ic7760, 255), Power::from_watts(200));
+    }
+
+    #[test]
+    fn tx_power_reports_quantization_and_rejects_values_above_profile_maximum() {
+        let encoded = set_tx_power(profile(), options(), Power::from_watts(5)).unwrap();
+        assert_eq!(
+            encoded.completion_patches,
+            vec![StatePatch::TxPower(Power::from_microwatts(5_019_608))]
+        );
+
+        let error = set_tx_power(profile(), options(), Power::from_watts(11)).unwrap_err();
+        assert!(matches!(
+            error,
+            RadioError::InvalidValue {
+                field: "tx.power",
+                ..
+            }
+        ));
     }
 
     #[test]

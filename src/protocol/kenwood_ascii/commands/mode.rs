@@ -1,3 +1,4 @@
+use super::VfoRouting;
 use crate::{
     command::{RadioCommand, ReceiverPath},
     error::RadioError,
@@ -5,12 +6,9 @@ use crate::{
     Mode, RadioState, Result,
 };
 
-use super::{
-    split::{current_tx_vfo, tx_vfo_from_state, RoutingVfo},
-    DecodedFrame, EncodedCommand,
-};
+use super::{DecodedFrame, EncodedCommand};
 use crate::protocol::kenwood_ascii::{
-    AsciiFrame, CommandPriority, KenwoodAsciiProfile, ResponseMatcher,
+    AsciiFrame, CommandPriority, KenwoodAsciiProfile, OutgoingStep, ResponseMatcher,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -24,14 +22,32 @@ pub fn encode(
     command: &RadioCommand,
     state: &RadioState,
 ) -> Result<Option<EncodedCommand>> {
+    encode_with_routing(profile, command, state, VfoRouting::for_profile(profile))
+}
+
+pub fn encode_with_routing(
+    profile: &KenwoodAsciiProfile,
+    command: &RadioCommand,
+    state: &RadioState,
+    vfo_routing: VfoRouting,
+) -> Result<Option<EncodedCommand>> {
     match command {
-        RadioCommand::SetReceiverMode { receiver, mode } => {
-            encode_mode_for_target(profile, receiver_target(*receiver), *mode, state).map(Some)
-        }
-        RadioCommand::SetTxMode(mode) => {
-            encode_mode_for_target(profile, tx_target_from_state(profile, state)?, *mode, state)
-                .map(Some)
-        }
+        RadioCommand::SetReceiverMode { receiver, mode } => encode_mode_for_target(
+            profile,
+            receiver_target(*receiver),
+            *mode,
+            state,
+            vfo_routing,
+        )
+        .map(Some),
+        RadioCommand::SetTxMode(mode) => encode_mode_for_target(
+            profile,
+            receiver_target(vfo_routing.receiver_for_vfo(vfo_routing.tx_vfo())),
+            *mode,
+            state,
+            vfo_routing,
+        )
+        .map(Some),
         _ => Ok(None),
     }
 }
@@ -64,14 +80,41 @@ pub fn decode(
     frame: &AsciiFrame,
     state: &RadioState,
 ) -> Result<Option<DecodedFrame>> {
+    decode_with_routing(profile, frame, state, VfoRouting::for_profile(profile))
+}
+
+pub fn decode_with_routing(
+    profile: &KenwoodAsciiProfile,
+    frame: &AsciiFrame,
+    state: &RadioState,
+    vfo_routing: VfoRouting,
+) -> Result<Option<DecodedFrame>> {
     let patches = match frame.command() {
-        "MD" => decode_md(profile, frame.payload(), state)?,
-        "MD$" => decode_elecraft_md(profile, ModeTarget::Sub, frame.payload(), state)?,
-        "DA" => decode_ts590_da(profile, frame.payload(), state)?,
-        "DT" => decode_elecraft_dt(profile, ModeTarget::Main, frame.payload(), state)?,
-        "DT$" => decode_elecraft_dt(profile, ModeTarget::Sub, frame.payload(), state)?,
-        "SF" => decode_ts890_sf(profile, frame.payload(), state)?,
-        "OM" => decode_ts990_om(profile, frame.payload(), state)?,
+        "MD" => decode_md(profile, frame.payload(), state, vfo_routing)?,
+        "MD$" => decode_elecraft_md(
+            profile,
+            ModeTarget::Sub,
+            frame.payload(),
+            state,
+            vfo_routing,
+        )?,
+        "DA" => decode_ts590_da(profile, frame.payload(), state, vfo_routing)?,
+        "DT" => decode_elecraft_dt(
+            profile,
+            ModeTarget::Main,
+            frame.payload(),
+            state,
+            vfo_routing,
+        )?,
+        "DT$" => decode_elecraft_dt(
+            profile,
+            ModeTarget::Sub,
+            frame.payload(),
+            state,
+            vfo_routing,
+        )?,
+        "SF" => decode_ts890_sf(profile, frame.payload(), state, vfo_routing)?,
+        "OM" => decode_ts990_om(profile, frame.payload(), state, vfo_routing)?,
         _ => return Ok(None),
     };
 
@@ -110,6 +153,7 @@ fn encode_mode_for_target(
     target: ModeTarget,
     mode: Mode,
     state: &RadioState,
+    vfo_routing: VfoRouting,
 ) -> Result<EncodedCommand> {
     let (frames, matcher) = if profile.id() == "kenwood-ts590" {
         encode_ts590(mode)?
@@ -124,40 +168,66 @@ fn encode_mode_for_target(
     } else if profile.id() == "elecraft-k2" {
         encode_k2(mode)?
     } else if is_yaesu(profile) {
-        encode_yaesu_mode(profile, target, mode)?
+        encode_yaesu_mode(profile, target, mode, vfo_routing)?
     } else {
         return Err(RadioError::UnsupportedCapability { capability: "mode" });
     };
 
-    Ok(EncodedCommand::new(
-        frames,
-        matcher,
-        mode_patches(profile, target, mode, state),
-        CommandPriority::Normal,
-    ))
+    let patches = mode_patches(profile, target, mode, state, vfo_routing);
+    if frames.len() == 1 {
+        return Ok(EncodedCommand::new(
+            frames,
+            matcher,
+            patches,
+            CommandPriority::Normal,
+        ));
+    }
+
+    let steps = frames
+        .into_iter()
+        .map(|frame| {
+            let expected = match frame.command() {
+                "MD" => ResponseMatcher::Prefix("MD"),
+                "DA" => ResponseMatcher::Prefix("DA"),
+                "MD$" => ResponseMatcher::Prefix("MD$"),
+                "DT" => ResponseMatcher::Prefix("DT"),
+                "DT$" => ResponseMatcher::Prefix("DT$"),
+                command => unreachable!("unexpected multi-frame mode command {command}"),
+            };
+            OutgoingStep::decoded(frame, expected, CommandPriority::Normal)
+        })
+        .collect();
+    Ok(EncodedCommand::with_steps(steps, patches))
 }
 
 fn decode_md(
     profile: &KenwoodAsciiProfile,
     payload: &str,
     state: &RadioState,
+    vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if is_yaesu(profile) {
-        return decode_yaesu_md(profile, payload, state);
+        return decode_yaesu_md(profile, payload, state, vfo_routing);
     }
     if profile.id() == "kenwood-ts590" {
-        return decode_ts590_md(profile, payload, state);
+        return decode_ts590_md(profile, payload, state, vfo_routing);
     }
     if is_elecraft_family(profile) {
-        return decode_elecraft_md(profile, ModeTarget::Main, payload, state);
+        return decode_elecraft_md(profile, ModeTarget::Main, payload, state, vfo_routing);
     }
     if profile.id() == "elecraft-k2" {
-        return decode_k2_md(profile, payload, state);
+        return decode_k2_md(profile, payload, state, vfo_routing);
     }
 
     let code = single_code("MD", payload)?;
     let mode = decode_standard_kenwood_code(code, "MD")?;
-    Ok(mode_patches(profile, ModeTarget::Main, mode, state))
+    Ok(mode_patches(
+        profile,
+        ModeTarget::Main,
+        mode,
+        state,
+        vfo_routing,
+    ))
 }
 
 fn encode_standard_md(mode: Mode) -> Result<(Vec<AsciiFrame>, ResponseMatcher)> {
@@ -233,11 +303,17 @@ fn encode_yaesu_mode(
     profile: &KenwoodAsciiProfile,
     target: ModeTarget,
     mode: Mode,
+    _vfo_routing: VfoRouting,
 ) -> Result<(Vec<AsciiFrame>, ResponseMatcher)> {
-    let target_code = match (profile.id(), target) {
-        ("yaesu-ftdx101", ModeTarget::Main) => '0',
-        ("yaesu-ftdx101", ModeTarget::Sub) => '1',
-        (_, _) => '0',
+    let target_code = match profile.id() {
+        "yaesu-ftdx101" | "yaesu-ftdx10" | "yaesu-ft710" => {
+            if matches!(target, ModeTarget::Main) {
+                '0'
+            } else {
+                '1'
+            }
+        }
+        _ => '0',
     };
     let code = encode_yaesu_code(profile, mode)?;
     Ok((
@@ -250,17 +326,25 @@ fn decode_ts590_md(
     profile: &KenwoodAsciiProfile,
     payload: &str,
     state: &RadioState,
+    vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     let code = single_code("MD", payload)?;
     let data_flag = current_ts590_data_flag(state.main_rx.mode);
     let mode = compose_ts590_mode(code, data_flag, "MD")?;
-    Ok(mode_patches(profile, ModeTarget::Main, mode, state))
+    Ok(mode_patches(
+        profile,
+        ModeTarget::Main,
+        mode,
+        state,
+        vfo_routing,
+    ))
 }
 
 fn decode_ts590_da(
     profile: &KenwoodAsciiProfile,
     payload: &str,
     state: &RadioState,
+    vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     let flag = match single_code("DA", payload)? {
         '0' => false,
@@ -278,13 +362,20 @@ fn decode_ts590_da(
         message: "cannot compose TS-590 mode without current MD state".to_string(),
     })?;
     let mode = compose_ts590_mode(base, flag, "DA")?;
-    Ok(mode_patches(profile, ModeTarget::Main, mode, state))
+    Ok(mode_patches(
+        profile,
+        ModeTarget::Main,
+        mode,
+        state,
+        vfo_routing,
+    ))
 }
 
 fn decode_ts890_sf(
     profile: &KenwoodAsciiProfile,
     payload: &str,
     state: &RadioState,
+    vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if payload.len() != 13 {
         return Err(RadioError::Decode {
@@ -319,7 +410,7 @@ fn decode_ts890_sf(
             StatePatch::SubRxFrequency(crate::Frequency::from_hz(frequency)),
         ],
     };
-    patches.extend(mode_patches(profile, target, mode, state));
+    patches.extend(mode_patches(profile, target, mode, state, vfo_routing));
     Ok(patches)
 }
 
@@ -327,6 +418,7 @@ fn decode_ts990_om(
     profile: &KenwoodAsciiProfile,
     payload: &str,
     state: &RadioState,
+    vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if profile.id() != "kenwood-ts990" {
         return Err(RadioError::Decode {
@@ -351,7 +443,7 @@ fn decode_ts990_om(
         }
     };
     let mode = decode_ts990_code(payload.as_bytes()[1] as char)?;
-    Ok(mode_patches(profile, target, mode, state))
+    Ok(mode_patches(profile, target, mode, state, vfo_routing))
 }
 
 fn decode_elecraft_md(
@@ -359,6 +451,7 @@ fn decode_elecraft_md(
     target: ModeTarget,
     payload: &str,
     state: &RadioState,
+    vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if !is_elecraft_family(profile) {
         return Err(RadioError::Decode {
@@ -369,7 +462,7 @@ fn decode_elecraft_md(
     let code = single_code("MD", payload)?;
     let dt_code = current_elecraft_dt_code(target, state);
     let mode = compose_elecraft_mode(code, dt_code, "MD")?;
-    Ok(mode_patches(profile, target, mode, state))
+    Ok(mode_patches(profile, target, mode, state, vfo_routing))
 }
 
 fn decode_elecraft_dt(
@@ -377,6 +470,7 @@ fn decode_elecraft_dt(
     target: ModeTarget,
     payload: &str,
     state: &RadioState,
+    vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if !is_elecraft_family(profile) {
         return Err(RadioError::Decode {
@@ -390,13 +484,14 @@ fn decode_elecraft_dt(
         message: "cannot compose Elecraft mode without current MD state".to_string(),
     })?;
     let mode = compose_elecraft_mode(md_code, Some(dt_code), "DT")?;
-    Ok(mode_patches(profile, target, mode, state))
+    Ok(mode_patches(profile, target, mode, state, vfo_routing))
 }
 
 fn decode_k2_md(
     profile: &KenwoodAsciiProfile,
     payload: &str,
     state: &RadioState,
+    vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     let code = single_code("MD", payload)?;
     let mode = match code {
@@ -413,13 +508,20 @@ fn decode_k2_md(
             })
         }
     };
-    Ok(mode_patches(profile, ModeTarget::Main, mode, state))
+    Ok(mode_patches(
+        profile,
+        ModeTarget::Main,
+        mode,
+        state,
+        vfo_routing,
+    ))
 }
 
 fn decode_yaesu_md(
     profile: &KenwoodAsciiProfile,
     payload: &str,
     state: &RadioState,
+    vfo_routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     let (target, code) = match payload.len() {
         1 => (ModeTarget::Main, payload.as_bytes()[0] as char),
@@ -445,14 +547,15 @@ fn decode_yaesu_md(
     };
 
     let mode = decode_yaesu_code(profile, code, "MD")?;
-    Ok(mode_patches(profile, target, mode, state))
+    Ok(mode_patches(profile, target, mode, state, vfo_routing))
 }
 
 fn mode_patches(
-    profile: &KenwoodAsciiProfile,
+    _profile: &KenwoodAsciiProfile,
     target: ModeTarget,
     mode: Mode,
-    state: &RadioState,
+    _state: &RadioState,
+    vfo_routing: VfoRouting,
 ) -> Vec<StatePatch> {
     let mut patches = vec![match target {
         ModeTarget::Main => StatePatch::MainRxMode(mode),
@@ -463,7 +566,12 @@ fn mode_patches(
         patches.insert(0, StatePatch::SubRxPresent(true));
     }
 
-    if current_tx_vfo(profile, state) == Some(routing_vfo(target)) {
+    if vfo_routing.receiver_for_vfo(vfo_routing.tx_vfo())
+        == match target {
+            ModeTarget::Main => ReceiverPath::Main,
+            ModeTarget::Sub => ReceiverPath::Sub,
+        }
+    {
         patches.push(StatePatch::TxMode(mode));
     }
 
@@ -474,20 +582,6 @@ fn receiver_target(receiver: ReceiverPath) -> ModeTarget {
     match receiver {
         ReceiverPath::Main => ModeTarget::Main,
         ReceiverPath::Sub => ModeTarget::Sub,
-    }
-}
-
-fn tx_target_from_state(profile: &KenwoodAsciiProfile, state: &RadioState) -> Result<ModeTarget> {
-    Ok(match tx_vfo_from_state(profile, state, "tx.mode")? {
-        RoutingVfo::Main => ModeTarget::Main,
-        RoutingVfo::Sub => ModeTarget::Sub,
-    })
-}
-
-fn routing_vfo(target: ModeTarget) -> RoutingVfo {
-    match target {
-        ModeTarget::Main => RoutingVfo::Main,
-        ModeTarget::Sub => RoutingVfo::Sub,
     }
 }
 
@@ -778,6 +872,7 @@ fn encode_yaesu_code(profile: &KenwoodAsciiProfile, mode: Mode) -> Result<char> 
         }
         Mode::DataUsb => Ok('C'),
         Mode::Psk => Ok('E'),
+        Mode::DigitalVoice if profile.id() == "yaesu-ft991" => Ok('E'),
         _ => Err(RadioError::InvalidValue {
             field: "mode",
             message: format!("mode {mode} is not supported by {}", profile.id()),
@@ -812,6 +907,7 @@ fn decode_yaesu_code(
             command,
             message: "FT-891 does not support mode code 'E'".to_string(),
         }),
+        'E' if profile.id() == "yaesu-ft991" => Ok(Mode::DigitalVoice),
         'E' => Ok(Mode::Psk),
         'F' if profile.id() == "yaesu-ft891" => Err(RadioError::Decode {
             command,
@@ -894,8 +990,10 @@ mod tests {
     #[test]
     fn ts990_om_decodes_data_variants_to_normalized_modes() {
         let profile = profile_by_id("kenwood-ts990").unwrap();
-        let mut state = RadioState::default();
-        state.tx = Some(TransmitterState::default());
+        let state = RadioState {
+            tx: Some(TransmitterState::default()),
+            ..RadioState::default()
+        };
         let decoded = decode(profile, &AsciiFrame::new("OM0D;").unwrap(), &state)
             .unwrap()
             .unwrap();
@@ -943,27 +1041,32 @@ mod tests {
     #[test]
     fn yaesu_mode_targets_and_ft991_special_case_work() {
         let ftdx101 = profile_by_id("yaesu-ftdx101").unwrap();
-        let mut split_state = RadioState::default();
-        split_state.tx = Some(TransmitterState {
-            split: Some(true),
-            ..TransmitterState::default()
-        });
-        let encoded = encode(
+        let split_state = RadioState {
+            tx: Some(TransmitterState {
+                split: Some(true),
+                ..TransmitterState::default()
+            }),
+            ..RadioState::default()
+        };
+        let mut routing = VfoRouting::for_profile(ftdx101);
+        routing.set_tx_vfo(super::super::PhysicalVfo::B);
+        let encoded = encode_with_routing(
             ftdx101,
             &RadioCommand::SetReceiverMode {
                 receiver: ReceiverPath::Sub,
                 mode: Mode::DataUsb,
             },
             &split_state,
+            routing,
         )
         .unwrap()
         .unwrap();
         assert_eq!(encoded.frames[0].as_str(), "MD1C;");
         assert!(encoded
-            .optimistic
+            .completion_patches
             .contains(&StatePatch::SubRxMode(Mode::DataUsb)));
         assert!(encoded
-            .optimistic
+            .completion_patches
             .contains(&StatePatch::TxMode(Mode::DataUsb)));
 
         let ft991 = profile_by_id("yaesu-ft991").unwrap();
@@ -974,7 +1077,9 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(decoded.patches.contains(&StatePatch::MainRxMode(Mode::Psk)));
+        assert!(decoded
+            .patches
+            .contains(&StatePatch::MainRxMode(Mode::DigitalVoice)));
     }
 
     #[test]
@@ -990,6 +1095,39 @@ mod tests {
         let profile = profile_by_id("yaesu-ftdx101").unwrap();
         let md = encode_query(profile, "MD1").unwrap().unwrap();
         assert_eq!(md.frames[0].as_str(), "MD1;");
+    }
+
+    #[test]
+    fn switched_vfo_routing_maps_mode_commands_and_responses() {
+        let profile = profile_by_id("yaesu-ftdx10").unwrap();
+        let state = RadioState::default();
+        let mut routing = VfoRouting::for_profile(profile);
+        super::super::info::decode(
+            profile,
+            &AsciiFrame::new("VS1;").unwrap(),
+            &state,
+            &mut routing,
+        )
+        .unwrap();
+
+        let encoded = encode_with_routing(
+            profile,
+            &RadioCommand::SetReceiverMode {
+                receiver: ReceiverPath::Main,
+                mode: Mode::Usb,
+            },
+            &state,
+            routing,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(encoded.frames[0].as_str(), "MD02;");
+
+        let decoded =
+            decode_with_routing(profile, &AsciiFrame::new("MD02;").unwrap(), &state, routing)
+                .unwrap()
+                .unwrap();
+        assert!(decoded.patches.contains(&StatePatch::MainRxMode(Mode::Usb)));
     }
 
     #[test]

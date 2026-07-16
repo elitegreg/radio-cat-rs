@@ -1,6 +1,5 @@
 use crate::{
-    command::RadioCommand, error::RadioError, update::StatePatch, Capability, Power, PowerUnit,
-    Result,
+    command::RadioCommand, error::RadioError, update::StatePatch, Capability, Power, Result,
 };
 
 use super::{DecodedFrame, EncodedCommand, PowerCommandEncoding};
@@ -17,7 +16,15 @@ pub fn encode(
     match command {
         RadioCommand::SetTxPower(power) => {
             require_tx_power(profile)?;
-            let encoding = encode_power_value(profile, *power)?;
+            let accepted = profile
+                .capabilities
+                .tx
+                .and_then(|tx| tx.power.quantize(*power))
+                .ok_or_else(|| RadioError::InvalidValue {
+                    field: "tx.power",
+                    message: format!("{} is outside the supported power ranges", power),
+                })?;
+            let encoding = encode_power_value(profile, accepted)?;
             let frame = match encoding {
                 PowerCommandEncoding::StandardWatts { watts }
                 | PowerCommandEncoding::K4High { watts } => {
@@ -38,7 +45,7 @@ pub fn encode(
             Ok(Some(EncodedCommand::new(
                 vec![frame],
                 ResponseMatcher::Prefix("PC"),
-                vec![StatePatch::TxPower(*power)],
+                vec![StatePatch::TxPower(accepted)],
                 CommandPriority::Normal,
             )))
         }
@@ -74,7 +81,7 @@ pub fn encode_query(
         || profile
             .capabilities
             .tx
-            .map(|tx| tx.power)
+            .map(|tx| tx.power.access)
             .unwrap_or(Capability::Unsupported)
             == Capability::Unsupported
     {
@@ -108,9 +115,10 @@ fn decode_power_frame(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Resu
             message: error.to_string(),
         })?;
         match suffix {
-            "H" => Power::from_watts(value),
-            "L" => Power::from_milliwatts(value * 100),
-            "X" => Power::from_microwatts(value * 100),
+            "H" => Power::checked_from_watts(u64::from(value)).expect("u16 watts fit in Power"),
+            "L" => Power::checked_from_milliwatts(u64::from(value) * 100)
+                .expect("u16 deciwatts fit in Power"),
+            "X" => Power::from_microwatts(u64::from(value) * 100),
             _ => {
                 return Err(RadioError::Decode {
                     command: "PC",
@@ -123,7 +131,7 @@ fn decode_power_frame(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Resu
             command: "PC",
             message: error.to_string(),
         })?;
-        Power::from_watts(watts)
+        Power::checked_from_watts(u64::from(watts)).expect("u16 watts fit in Power")
     };
 
     Ok(DecodedFrame::new(vec![StatePatch::TxPower(power)]))
@@ -182,65 +190,33 @@ fn encode_power_value(profile: &KenwoodAsciiProfile, power: Power) -> Result<Pow
         return encode_k4_power(power);
     }
 
-    let microwatts = power.as_microwatts();
-    let watts = ((microwatts + 999_999) / 1_000_000) as u16;
-    let (min_watts, max_watts) =
-        standard_power_range(profile.id()).ok_or(RadioError::UnsupportedCapability {
-            capability: "tx.power",
+    let watts =
+        u16::try_from(power.as_microwatts() / Power::MICROWATTS_PER_WATT).map_err(|_| {
+            RadioError::InvalidValue {
+                field: "tx.power",
+                message: format!("{} cannot be encoded by {}", power, profile.id()),
+            }
         })?;
-    if watts < min_watts || watts > max_watts {
-        return Err(RadioError::InvalidValue {
-            field: "tx.power",
-            message: format!("expected {min_watts}..={max_watts} W for {}", profile.id()),
-        });
-    }
 
     Ok(PowerCommandEncoding::StandardWatts { watts })
 }
 
 fn encode_k4_power(power: Power) -> Result<PowerCommandEncoding> {
-    match power.unit() {
-        PowerUnit::Watts => {
-            let watts = power.value();
-            if !(1..=110).contains(&watts) {
-                return Err(RadioError::InvalidValue {
-                    field: "tx.power",
-                    message: "K4 high range is 1..=110 W".to_string(),
-                });
-            }
-            Ok(PowerCommandEncoding::K4High { watts })
-        }
-        PowerUnit::Milliwatts => {
-            let value = power.value();
-            if value <= 10 {
-                Ok(PowerCommandEncoding::K4Milli {
-                    deci_milliwatts: value * 10,
-                })
-            } else if value % 100 == 0 && (100..=10_000).contains(&value) {
-                Ok(PowerCommandEncoding::K4Low {
-                    deci_watts: value / 100,
-                })
-            } else {
-                Err(RadioError::InvalidValue {
-                    field: "tx.power",
-                    message: "K4 milliwatt inputs must fit 0.1..=10 mW or 0.1..=10 W exactly"
-                        .to_string(),
-                })
-            }
-        }
-        PowerUnit::Microwatts => {
-            let value = power.value();
-            if value % 100 != 0 || !(100..=10_000).contains(&value) {
-                return Err(RadioError::InvalidValue {
-                    field: "tx.power",
-                    message: "K4 microwatt inputs must fit 0.1..=10 mW in 0.1 mW steps".to_string(),
-                });
-            }
-            Ok(PowerCommandEncoding::K4Milli {
-                deci_milliwatts: value / 100,
-            })
-        }
+    let microwatts = power.as_microwatts();
+    if microwatts <= 10_000 {
+        return Ok(PowerCommandEncoding::K4Milli {
+            deci_milliwatts: (microwatts / 100) as u16,
+        });
     }
+    if microwatts <= 10_000_000 {
+        return Ok(PowerCommandEncoding::K4Low {
+            deci_watts: (microwatts / 100_000) as u16,
+        });
+    }
+
+    Ok(PowerCommandEncoding::K4High {
+        watts: (microwatts / Power::MICROWATTS_PER_WATT) as u16,
+    })
 }
 
 fn ptt_frame(
@@ -263,12 +239,10 @@ fn ptt_frame(
         } else {
             "RX;"
         }
+    } else if transmitting {
+        "TX;"
     } else {
-        if transmitting {
-            "TX;"
-        } else {
-            "RX;"
-        }
+        "RX;"
     }
 }
 
@@ -289,19 +263,6 @@ fn is_split_ptt_kenwood(profile: &KenwoodAsciiProfile) -> bool {
         profile.id(),
         "kenwood-ts590" | "kenwood-ts890" | "kenwood-ts990" | "kenwood-ts480" | "kenwood-ts2000"
     )
-}
-
-fn standard_power_range(id: &str) -> Option<(u16, u16)> {
-    match id {
-        "kenwood-ts590" | "kenwood-ts2000" => Some((5, 100)),
-        "kenwood-ts890" => Some((5, 100)),
-        "kenwood-ts990" | "kenwood-ts480" | "kenwood-ts570" | "kenwood-ts870" => Some((5, 200)),
-        "elecraft-k3" => Some((0, 110)),
-        "elecraft-k2" => Some((0, 150)),
-        "yaesu-ftdx101" => Some((5, 200)),
-        "yaesu-ftdx10" | "yaesu-ft710" | "yaesu-ft891" | "yaesu-ft991" => Some((5, 100)),
-        _ => None,
-    }
 }
 
 fn is_yaesu(profile: &KenwoodAsciiProfile) -> bool {
@@ -331,6 +292,37 @@ mod tests {
     }
 
     #[test]
+    fn standard_power_reports_quantized_value_and_rejects_out_of_range() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let encoded = encode(
+            profile,
+            KenwoodAsciiOptions::defaults(),
+            &RadioCommand::SetTxPower(Power::from_microwatts(25_500_000)),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(encoded.frames[0].as_str(), "PC026;");
+        assert_eq!(
+            encoded.completion_patches,
+            vec![StatePatch::TxPower(Power::from_watts(26))]
+        );
+
+        let error = encode(
+            profile,
+            KenwoodAsciiOptions::defaults(),
+            &RadioCommand::SetTxPower(Power::from_microwatts(4_900_000)),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            RadioError::InvalidValue {
+                field: "tx.power",
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn k4_power_preserves_low_range_precision() {
         let profile = profile_by_id("elecraft-k4").unwrap();
         let low = encode(
@@ -350,6 +342,20 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(micro.frames[0].as_str(), "PC005X;");
+
+        let gap = encode(
+            profile,
+            KenwoodAsciiOptions::defaults(),
+            &RadioCommand::SetTxPower(Power::from_milliwatts(50)),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            gap,
+            RadioError::InvalidValue {
+                field: "tx.power",
+                ..
+            }
+        ));
     }
 
     #[test]

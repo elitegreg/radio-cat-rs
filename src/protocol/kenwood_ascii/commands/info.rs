@@ -2,7 +2,7 @@ use crate::{error::RadioError, update::StatePatch, Frequency, RadioState, Result
 
 use super::{
     mode::{decode_kenwood_if_mode, decode_yaesu_if_mode},
-    DecodedFrame,
+    DecodedFrame, PhysicalVfo, VfoRouting,
 };
 use crate::protocol::kenwood_ascii::{
     AsciiFrame, CommandPriority, EncodedCommand, KenwoodAsciiProfile, ReceiverKind, ResponseMatcher,
@@ -27,23 +27,16 @@ pub fn encode_query(
     )))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum YaesuMainVfo {
-    #[default]
-    A,
-    B,
-}
-
 pub fn decode(
     profile: &KenwoodAsciiProfile,
     frame: &AsciiFrame,
     state: &RadioState,
-    yaesu_main_vfo: &mut YaesuMainVfo,
+    vfo_routing: &mut VfoRouting,
 ) -> Result<Option<DecodedFrame>> {
     if frame.command() == "VS" && supports_yaesu_vs(profile) {
         let selected = match frame.payload() {
-            "0" => YaesuMainVfo::A,
-            "1" => YaesuMainVfo::B,
+            "0" => PhysicalVfo::A,
+            "1" => PhysicalVfo::B,
             payload => {
                 return Err(RadioError::Decode {
                     command: "VS",
@@ -51,9 +44,15 @@ pub fn decode(
                 })
             }
         };
-        let patches = if selected != *yaesu_main_vfo {
-            *yaesu_main_vfo = selected;
-            vec![StatePatch::SwapReceivers]
+        let patches = if vfo_routing.switchable && selected != vfo_routing.main_vfo {
+            vfo_routing.main_vfo = selected;
+            let mut patches = vec![StatePatch::SwapVfoFrequencies];
+            if let (Some(id), Some(mode)) = (vfo_routing.main_bandwidth_id, state.main_rx.mode) {
+                patches.push(StatePatch::MainRxFilterBandwidth(
+                    super::filter::decode_yaesu_bandwidth(mode, id),
+                ));
+            }
+            patches
         } else {
             Vec::new()
         };
@@ -62,23 +61,13 @@ pub fn decode(
 
     let payload = frame.payload();
     let patches = match frame.command() {
-        "IF" if supports_generic_if(profile) && is_yaesu(profile) => decode_yaesu_info(
-            profile,
-            "IF",
-            payload,
-            state,
-            YaesuMainVfo::A,
-            *yaesu_main_vfo,
-        )?,
-        "OI" if supports_yaesu_oi(profile) => decode_yaesu_info(
-            profile,
-            "OI",
-            payload,
-            state,
-            YaesuMainVfo::B,
-            *yaesu_main_vfo,
-        )?,
-        "IF" if supports_generic_if(profile) => decode_kenwood_if(profile, payload, state)?,
+        "IF" if supports_generic_if(profile) && is_yaesu(profile) => {
+            decode_yaesu_info(profile, "IF", payload, state, PhysicalVfo::A, *vfo_routing)?
+        }
+        "OI" if supports_yaesu_oi(profile) => {
+            decode_yaesu_info(profile, "OI", payload, state, PhysicalVfo::B, *vfo_routing)?
+        }
+        "IF" if supports_generic_if(profile) => decode_kenwood_if(profile, payload, vfo_routing)?,
         _ => return Ok(None),
     };
 
@@ -88,7 +77,7 @@ pub fn decode(
 fn decode_kenwood_if(
     profile: &KenwoodAsciiProfile,
     payload: &str,
-    state: &RadioState,
+    routing: &mut VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if payload.len() != 35 {
         return Err(RadioError::Decode {
@@ -109,32 +98,35 @@ fn decode_kenwood_if(
     let active_vfo = decode_active_vfo(payload.as_bytes()[28] as char)?;
     let split = parse_bool_digit("IF", payload.as_bytes()[29])?;
 
-    let mut patches = vec![
+    let physical_vfo = match active_vfo {
+        ActiveVfo::A => PhysicalVfo::A,
+        ActiveVfo::B => PhysicalVfo::B,
+    };
+    let changed = routing.select(physical_vfo);
+    routing.set_split(split);
+
+    let mut patches = Vec::new();
+    if changed {
+        patches.push(StatePatch::SwapVfoFrequencies);
+    }
+    patches.extend([
         StatePatch::RitXitOffset(offset),
         StatePatch::XitEnabled(xit_enabled),
         StatePatch::Transmitting(transmitting),
         StatePatch::Split(split),
-    ];
+    ]);
 
-    match active_vfo {
-        ActiveVfo::A => {
+    match routing.receiver_for_vfo(physical_vfo) {
+        crate::ReceiverPath::Main => {
             patches.push(StatePatch::MainRitEnabled(rit_enabled));
             patches.push(StatePatch::MainRxFrequency(frequency));
             patches.push(StatePatch::MainRxMode(mode));
             if !split {
                 patches.push(StatePatch::TxFrequency(frequency));
                 patches.push(StatePatch::TxMode(mode));
-            } else if state.tx.as_ref().and_then(|tx| tx.frequency).is_none() {
-                patches.push(StatePatch::TxFrequency(
-                    state
-                        .sub_rx
-                        .as_ref()
-                        .and_then(|rx| rx.frequency)
-                        .unwrap_or(frequency),
-                ));
             }
         }
-        ActiveVfo::B => {
+        crate::ReceiverPath::Sub => {
             patches.push(StatePatch::SubRitEnabled(rit_enabled));
             patches.push(StatePatch::SubRxPresent(true));
             patches.push(StatePatch::SubRxFrequency(frequency));
@@ -142,10 +134,6 @@ fn decode_kenwood_if(
             if !split {
                 patches.push(StatePatch::TxFrequency(frequency));
                 patches.push(StatePatch::TxMode(mode));
-            } else if state.tx.as_ref().and_then(|tx| tx.frequency).is_none() {
-                patches.push(StatePatch::TxFrequency(
-                    state.main_rx.frequency.unwrap_or(frequency),
-                ));
             }
         }
     }
@@ -158,8 +146,8 @@ fn decode_yaesu_info(
     command: &'static str,
     payload: &str,
     state: &RadioState,
-    physical_vfo: YaesuMainVfo,
-    main_vfo: YaesuMainVfo,
+    physical_vfo: PhysicalVfo,
+    routing: VfoRouting,
 ) -> Result<Vec<StatePatch>> {
     if payload.len() != 25 {
         return Err(RadioError::Decode {
@@ -178,7 +166,10 @@ fn decode_yaesu_info(
     let mode = decode_yaesu_if_mode(profile, payload.as_bytes()[19] as char)?;
     let split = decode_yaesu_split(payload.as_bytes()[24] as char)?;
 
-    let is_main = physical_vfo == main_vfo;
+    let is_main = matches!(
+        routing.receiver_for_vfo(physical_vfo),
+        crate::command::ReceiverPath::Main
+    );
     let mut patches = vec![StatePatch::Split(split)];
     if is_main {
         patches.extend([
@@ -302,14 +293,17 @@ enum ActiveVfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{protocol::kenwood_ascii::profile_by_id, Mode, TransmitterState};
+    use crate::{
+        protocol::kenwood_ascii::{profile_by_id, split},
+        Mode, StateReducer, TransmitterState,
+    };
 
     fn decode_with_default_routing(
         profile: &KenwoodAsciiProfile,
         frame: &AsciiFrame,
         state: &RadioState,
     ) -> DecodedFrame {
-        decode(profile, frame, state, &mut YaesuMainVfo::default())
+        decode(profile, frame, state, &mut VfoRouting::for_profile(profile))
             .unwrap()
             .unwrap()
     }
@@ -388,18 +382,58 @@ mod tests {
         .unwrap();
 
         let decoded = decode_with_default_routing(profile, &frame, &state);
-        assert_eq!(
-            decoded.patches[0],
-            StatePatch::RitXitOffset(RitXitOffsetHz::new(-251).unwrap())
-        );
-        assert!(decoded.patches.contains(&StatePatch::SubRxPresent(true)));
+        assert_eq!(decoded.patches[0], StatePatch::SwapVfoFrequencies);
+        assert!(decoded.patches.contains(&StatePatch::MainRitEnabled(false)));
         assert!(decoded
             .patches
-            .contains(&StatePatch::SubRxFrequency(Frequency::from_hz(7_074_000))));
+            .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(7_074_000))));
         assert!(decoded.patches.contains(&StatePatch::Split(true)));
+        assert!(!decoded
+            .patches
+            .iter()
+            .any(|patch| matches!(patch, StatePatch::TxFrequency(_))));
+    }
+
+    #[test]
+    fn fr1_then_vfo_b_if_updates_normalized_main_without_another_swap() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut routing = VfoRouting::for_profile(profile);
+        let mut reducer = StateReducer::new(RadioState::default());
+
+        let fr = split::decode_with_routing(
+            profile,
+            &AsciiFrame::new("FR1;").unwrap(),
+            reducer.state(),
+            &mut routing,
+        )
+        .unwrap()
+        .unwrap();
+        reducer.apply_patches(fr.patches);
+
+        let frame = AsciiFrame::new(concat!(
+            "IF",
+            "00007074000",
+            "00000",
+            "+0000",
+            "0",
+            "0",
+            "000",
+            "0",
+            "2",
+            "1",
+            "0",
+            "00000",
+            ";"
+        ))
+        .unwrap();
+        let decoded = decode(profile, &frame, reducer.state(), &mut routing)
+            .unwrap()
+            .unwrap();
+
+        assert!(!decoded.patches.contains(&StatePatch::SwapVfoFrequencies));
         assert!(decoded
             .patches
-            .contains(&StatePatch::TxFrequency(Frequency::from_hz(14_074_000))));
+            .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(7_074_000))));
     }
 
     #[test]
@@ -454,11 +488,11 @@ mod tests {
     fn vs_routes_if_and_oi_between_main_and_sub_without_duplicate_swaps() {
         let profile = profile_by_id("yaesu-ftdx10").unwrap();
         let state = RadioState::default();
-        let mut routing = YaesuMainVfo::default();
+        let mut routing = VfoRouting::for_profile(profile);
 
         let vs = AsciiFrame::new("VS1;").unwrap();
         let first = decode(profile, &vs, &state, &mut routing).unwrap().unwrap();
-        assert_eq!(first.patches, vec![StatePatch::SwapReceivers]);
+        assert_eq!(first.patches, vec![StatePatch::SwapVfoFrequencies]);
         let duplicate = decode(profile, &vs, &state, &mut routing).unwrap().unwrap();
         assert!(duplicate.patches.is_empty());
 
@@ -474,7 +508,51 @@ mod tests {
     }
 
     #[test]
-    fn fixed_yaesu_routing_maps_oi_to_sub_vfo() {
+    fn vs_reinterprets_cached_main_bandwidth_id_for_incoming_mode() {
+        let profile = profile_by_id("yaesu-ftdx10").unwrap();
+        let mut state = RadioState::default();
+        state.main_rx.mode = Some(Mode::Usb);
+        state.sub_rx = Some(crate::ReceiverState {
+            mode: Some(Mode::Cw),
+            ..crate::ReceiverState::default()
+        });
+        let mut routing = VfoRouting::for_profile(profile);
+
+        crate::protocol::kenwood_ascii::filter::decode_with_routing(
+            profile,
+            &AsciiFrame::new("SH0013;").unwrap(),
+            &state,
+            &mut routing,
+        )
+        .unwrap()
+        .unwrap();
+
+        state.main_rx.mode = Some(Mode::Cw);
+        let usb_bandwidth =
+            crate::protocol::kenwood_ascii::filter::decode_yaesu_bandwidth(Mode::Usb, 13);
+        let cw_bandwidth =
+            crate::protocol::kenwood_ascii::filter::decode_yaesu_bandwidth(Mode::Cw, 13);
+        assert_ne!(usb_bandwidth, cw_bandwidth);
+
+        let decoded = decode(
+            profile,
+            &AsciiFrame::new("VS1;").unwrap(),
+            &state,
+            &mut routing,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            decoded.patches,
+            vec![
+                StatePatch::SwapVfoFrequencies,
+                StatePatch::MainRxFilterBandwidth(cw_bandwidth),
+            ]
+        );
+    }
+
+    #[test]
+    fn fixed_vfo_routing_maps_oi_to_sub_vfo() {
         let profile = profile_by_id("yaesu-ft991").unwrap();
         let state = RadioState::default();
         let oi = AsciiFrame::new("OI000007074000+012310E00000;").unwrap();
@@ -483,7 +561,9 @@ mod tests {
         assert!(decoded
             .patches
             .contains(&StatePatch::SubRxFrequency(Frequency::from_hz(7_074_000))));
-        assert!(decoded.patches.contains(&StatePatch::SubRxMode(Mode::Psk)));
+        assert!(decoded
+            .patches
+            .contains(&StatePatch::SubRxMode(Mode::DigitalVoice)));
         assert!(decoded
             .patches
             .contains(&StatePatch::SubRitOffset(RitXitOffsetHz::new(123).unwrap())));
@@ -512,6 +592,8 @@ mod tests {
         .unwrap();
 
         let decoded = decode_with_default_routing(profile, &frame, &state);
-        assert!(decoded.patches.contains(&StatePatch::MainRxMode(Mode::Psk)));
+        assert!(decoded
+            .patches
+            .contains(&StatePatch::MainRxMode(Mode::DigitalVoice)));
     }
 }

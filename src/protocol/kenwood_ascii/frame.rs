@@ -1,5 +1,7 @@
 use crate::{error::RadioError, Result};
 
+const MAX_FRAME_BYTES: usize = 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AsciiFrame {
     text: String,
@@ -88,13 +90,22 @@ impl FrameSplitter {
             });
         }
 
-        self.buffer.extend_from_slice(bytes);
-
         let mut frames = Vec::new();
-        while let Some(pos) = self.buffer.iter().position(|byte| *byte == b';') {
-            let frame_bytes: Vec<u8> = self.buffer.drain(..=pos).collect();
-            let text = String::from_utf8(frame_bytes).expect("ASCII bytes are valid UTF-8");
-            frames.push(AsciiFrame::new(text)?);
+        for byte in bytes {
+            self.buffer.push(*byte);
+            if *byte != b';' && self.buffer.len() > MAX_FRAME_BYTES {
+                self.buffer.clear();
+                continue;
+            }
+            if *byte == b';' {
+                let frame_bytes = std::mem::take(&mut self.buffer);
+                if frame_bytes.len() <= MAX_FRAME_BYTES {
+                    let text = String::from_utf8(frame_bytes).expect("ASCII bytes are valid UTF-8");
+                    if let Ok(frame) = AsciiFrame::new(text) {
+                        frames.push(frame);
+                    }
+                }
+            }
         }
 
         Ok(frames)
@@ -117,6 +128,27 @@ fn validate_frame(text: &str) -> Result<()> {
         return Err(RadioError::Decode {
             command: "frame",
             message: "frame is missing semicolon terminator".to_string(),
+        });
+    }
+
+    if text.len() > MAX_FRAME_BYTES {
+        return Err(RadioError::Decode {
+            command: "frame",
+            message: format!("frame exceeds maximum size of {MAX_FRAME_BYTES} bytes"),
+        });
+    }
+
+    if text.matches(';').count() != 1 || text[..text.len() - 1].contains(';') {
+        return Err(RadioError::Decode {
+            command: "frame",
+            message: "frame contains an embedded semicolon".to_string(),
+        });
+    }
+
+    if text.bytes().any(|byte| byte.is_ascii_control()) {
+        return Err(RadioError::Decode {
+            command: "frame",
+            message: "frame contains an ASCII control character".to_string(),
         });
     }
 
@@ -183,5 +215,26 @@ mod tests {
             ProtocolErrorFrame::parse(&busy),
             Some(ProtocolErrorFrame::Busy)
         );
+    }
+
+    #[test]
+    fn constructor_rejects_embedded_terminators_and_controls() {
+        assert!(AsciiFrame::new("FA;MD2;").is_err());
+        assert!(AsciiFrame::new("FA\n;").is_err());
+    }
+
+    #[test]
+    fn splitter_discards_oversized_frame_and_recovers() {
+        let mut splitter = FrameSplitter::new();
+        let mut bytes = vec![b'X'; 1025];
+        bytes.extend_from_slice(b";MD2;");
+
+        let frames = splitter.push(&bytes).unwrap();
+
+        assert_eq!(
+            frames.iter().map(AsciiFrame::as_str).collect::<Vec<_>>(),
+            ["MD2;"]
+        );
+        assert_eq!(splitter.buffered_len(), 0);
     }
 }

@@ -8,7 +8,7 @@ use crate::{
 
 use super::{DecodedFrame, EncodedCommand};
 use crate::protocol::kenwood_ascii::{
-    AsciiFrame, CommandPriority, KenwoodAsciiProfile, ResponseMatcher,
+    AsciiFrame, CommandPriority, KenwoodAsciiProfile, OutgoingStep, ResponseMatcher,
 };
 
 pub fn encode(
@@ -41,15 +41,32 @@ pub fn encode(
                 CommandPriority::Normal,
             )))
         }
-        RadioCommand::SetXitEnabled(enabled) => {
+        RadioCommand::SetXitEnabled { receiver, enabled } => {
             require_writable(
-                profile.capabilities.rit_xit.xit_enabled,
-                "rit_xit.xit_enabled",
+                match receiver {
+                    ReceiverPath::Main => profile.capabilities.rit_xit.xit_enabled,
+                    ReceiverPath::Sub => profile.capabilities.rit_xit.sub_xit_enabled,
+                },
+                match receiver {
+                    ReceiverPath::Main => "rit_xit.xit_enabled",
+                    ReceiverPath::Sub => "rit_xit.sub_xit_enabled",
+                },
             )?;
+            let suffix = rit_target_suffix(profile, *receiver, state);
             Ok(Some(EncodedCommand::new(
-                vec![AsciiFrame::new(format!("XT{};", bool_digit(*enabled)))?],
-                ResponseMatcher::Prefix("XT"),
-                vec![StatePatch::XitEnabled(*enabled)],
+                vec![AsciiFrame::new(format!(
+                    "XT{suffix}{};",
+                    bool_digit(*enabled)
+                ))?],
+                if suffix.is_empty() {
+                    ResponseMatcher::Prefix("XT")
+                } else {
+                    ResponseMatcher::Prefix("XT$")
+                },
+                vec![match receiver {
+                    ReceiverPath::Main => StatePatch::XitEnabled(*enabled),
+                    ReceiverPath::Sub => StatePatch::SubXitEnabled(*enabled),
+                }],
                 CommandPriority::Normal,
             )))
         }
@@ -68,9 +85,15 @@ pub fn encode(
             }
             Ok(Some(encode_offset(profile, *receiver, *offset, state)?))
         }
-        RadioCommand::SetXitOffset(target_offset)
-        | RadioCommand::SetRitXitOffset(target_offset) => {
-            require_writable(profile.capabilities.rit_xit.offset, "rit_xit.offset_hz")?;
+        RadioCommand::SetXitOffset {
+            receiver,
+            offset: target_offset,
+        }
+        | RadioCommand::SetRitXitOffset {
+            receiver,
+            offset: target_offset,
+        } => {
+            require_writable(offset_capability(profile, *receiver), "rit_xit.offset_hz")?;
             if is_k2(profile) {
                 return Err(RadioError::UnsupportedCapability {
                     capability: "rit_xit.offset_hz",
@@ -78,7 +101,7 @@ pub fn encode(
             }
             Ok(Some(encode_offset(
                 profile,
-                ReceiverPath::Main,
+                *receiver,
                 *target_offset,
                 state,
             )?))
@@ -197,13 +220,19 @@ fn encode_offset(
     }
 
     let (confirm_frame, matcher) = confirm_query(profile)?;
-    frames.push(confirm_frame);
-
-    Ok(EncodedCommand::new(
-        frames,
+    let mut steps = frames
+        .into_iter()
+        .map(|frame| OutgoingStep::written(frame, CommandPriority::Normal))
+        .collect::<Vec<_>>();
+    steps.push(OutgoingStep::decoded(
+        confirm_frame,
         matcher,
-        vec![offset_patch(receiver, target_offset)],
         CommandPriority::Normal,
+    ));
+
+    Ok(EncodedCommand::with_steps(
+        steps,
+        vec![offset_patch(receiver, target_offset)],
     ))
 }
 
@@ -384,23 +413,39 @@ mod tests {
         .unwrap();
         assert_eq!(rit.frames[0].as_str(), "RT1;");
 
-        let xit = encode(ts590, &RadioCommand::SetXitEnabled(false), &state)
-            .unwrap()
-            .unwrap();
+        let xit = encode(
+            ts590,
+            &RadioCommand::SetXitEnabled {
+                receiver: ReceiverPath::Main,
+                enabled: false,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(xit.frames[0].as_str(), "XT0;");
 
         let k4 = profile_by_id("elecraft-k4").unwrap();
-        let xit = encode(k4, &RadioCommand::SetXitEnabled(true), &state)
-            .unwrap()
-            .unwrap();
+        let xit = encode(
+            k4,
+            &RadioCommand::SetXitEnabled {
+                receiver: ReceiverPath::Main,
+                enabled: true,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(xit.frames[0].as_str(), "XT1;");
 
         let k4 = profile_by_id("elecraft-k4").unwrap();
-        let mut split_state = RadioState::default();
-        split_state.tx = Some(crate::TransmitterState {
-            split: Some(true),
-            ..crate::TransmitterState::default()
-        });
+        let split_state = RadioState {
+            tx: Some(crate::TransmitterState {
+                split: Some(true),
+                ..crate::TransmitterState::default()
+            }),
+            ..RadioState::default()
+        };
 
         let targeted = encode(
             k4,
@@ -466,16 +511,30 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let xit = encode(ts590, &RadioCommand::SetXitOffset(target), &state)
-            .unwrap()
-            .unwrap();
-        let both = encode(ts590, &RadioCommand::SetRitXitOffset(target), &state)
-            .unwrap()
-            .unwrap();
+        let xit = encode(
+            ts590,
+            &RadioCommand::SetXitOffset {
+                receiver: ReceiverPath::Main,
+                offset: target,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        let both = encode(
+            ts590,
+            &RadioCommand::SetRitXitOffset {
+                receiver: ReceiverPath::Main,
+                offset: target,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
 
         assert_eq!(rit.frames, xit.frames);
         assert_eq!(rit.frames, both.frames);
-        assert_eq!(rit.optimistic, both.optimistic);
+        assert_eq!(rit.completion_patches, both.completion_patches);
     }
 
     #[test]
@@ -560,11 +619,13 @@ mod tests {
         assert_eq!(encoded.frames[0].as_str(), "RO-0321;");
 
         let k4 = profile_by_id("elecraft-k4").unwrap();
-        let mut split_state = RadioState::default();
-        split_state.tx = Some(crate::TransmitterState {
-            split: Some(true),
-            ..crate::TransmitterState::default()
-        });
+        let split_state = RadioState {
+            tx: Some(crate::TransmitterState {
+                split: Some(true),
+                ..crate::TransmitterState::default()
+            }),
+            ..RadioState::default()
+        };
 
         let encoded = encode(
             k4,

@@ -1,49 +1,105 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 
 use crate::{
-    capabilities::RadioCapabilities, command::RadioCommand, error::Result, update::StatePatch,
-    RadioState, UpdateSource,
+    error::Result, transport::CatTransport, RadioCapabilities, RadioCommand, RadioRegion,
+    RadioState, StatePatch, UpdateSource,
 };
+
+/// Transport types a driver can use for a direct connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransportRequirement {
+    None,
+    SerialOrTcp,
+    Tcp,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DriverDescriptor {
     pub id: &'static str,
     pub display_name: &'static str,
     pub description: &'static str,
+    pub transport_requirement: TransportRequirement,
 }
 
-#[derive(Debug, Clone)]
-pub struct DriverCommandOutcome {
-    pub patches: Vec<StatePatch>,
-    pub source: UpdateSource,
-}
-
-impl DriverCommandOutcome {
-    pub fn command_response(patches: impl Into<Vec<StatePatch>>) -> Self {
-        Self {
-            patches: patches.into(),
-            source: UpdateSource::CommandResponse,
+impl DriverDescriptor {
+    /// Capability metadata is available without opening a transport or
+    /// constructing a radio connection.
+    pub fn supported_regions(self) -> &'static [RadioRegion] {
+        match self.transport_requirement {
+            TransportRequirement::SerialOrTcp => RadioRegion::ALL,
+            TransportRequirement::None | TransportRequirement::Tcp => &[],
         }
     }
 
-    pub fn manual_refresh(patches: impl Into<Vec<StatePatch>>) -> Self {
-        Self {
-            patches: patches.into(),
-            source: UpdateSource::ManualRefresh,
-        }
+    pub fn capabilities(self, region: Option<RadioRegion>) -> Result<RadioCapabilities> {
+        crate::drivers::capabilities_for(self.id, region)
     }
 }
 
+/// The furthest protocol stage reached by a successful command.
+///
+/// `Written` means the command was sent without a protocol acknowledgement,
+/// `Accepted` means the radio acknowledged it, and `Observed` means a decoded
+/// radio response established the resulting state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandCompletion {
+    Written,
+    Accepted,
+    Observed,
+}
+
+pub(crate) trait StateSink: Send {
+    fn state(&self) -> &RadioState;
+    fn publish_patches(&mut self, patches: Vec<StatePatch>, source: UpdateSource);
+}
+
+/// The complete, per-connection behavior for one supported radio.
+///
+/// This is intentionally crate-private. The supported extension point is the
+/// built-in factory registry rather than downstream trait implementations.
 #[async_trait]
-pub trait RadioDriver: Send + 'static {
+pub(crate) trait RadioSession: Send {
     fn descriptor(&self) -> DriverDescriptor;
     fn capabilities(&self) -> RadioCapabilities;
     fn initial_state(&self) -> RadioState;
+    fn poll_interval(&self) -> Option<Duration>;
 
-    async fn start(&mut self) -> Result<Vec<StatePatch>>;
-    async fn handle_command(
+    async fn startup(
         &mut self,
+        transport: Option<&mut dyn CatTransport>,
+        sink: &mut dyn StateSink,
+    ) -> Result<()>;
+
+    /// Reissue the protocol's startup refresh plan without changing connection lifecycle state.
+    async fn refresh(
+        &mut self,
+        transport: Option<&mut dyn CatTransport>,
+        sink: &mut dyn StateSink,
+    ) -> Result<()>;
+
+    async fn execute(
+        &mut self,
+        transport: Option<&mut dyn CatTransport>,
         command: RadioCommand,
-        current_state: &RadioState,
-    ) -> Result<DriverCommandOutcome>;
+        state_before: &RadioState,
+        sink: &mut dyn StateSink,
+    ) -> Result<CommandCompletion>;
+
+    async fn process_incoming(
+        &mut self,
+        transport: Option<&mut dyn CatTransport>,
+        wait_timeout: Duration,
+        default_source: UpdateSource,
+        sink: &mut dyn StateSink,
+    ) -> Result<bool>;
+
+    /// Run at most one item of the poll plan. Returns `true` when the plan has
+    /// completed (or when there is no plan).
+    async fn poll_one(
+        &mut self,
+        transport: Option<&mut dyn CatTransport>,
+        sink: &mut dyn StateSink,
+    ) -> Result<bool>;
 }

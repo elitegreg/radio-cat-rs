@@ -1,40 +1,49 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::{
     actor::{send_command, CommandEnvelope, RadioTask},
     command::{RadioCommand, ReceiverPath},
+    driver::RadioSession,
     drivers,
-    drivers::{DummyRadioDriver, FlexRadioSmartSdrDriver, IcomCivDriver, KenwoodAsciiDriver},
-    error::{RadioError, Result},
+    error::Result,
     transport::{
         boxed_transport, open_transport, BoxedCatTransport, CatTransport, TransportConfig,
     },
     update::{SharedRadioState, StateUpdate},
-    DriverDescriptor, Frequency, LeveledSetting, Mode, Power, RadioCapabilities, RitXitOffsetHz,
+    CommandOutcome, DriverDescriptor, Frequency, LeveledSetting, Mode, Power, RadioCapabilities,
+    RadioRegion, RitXitOffsetHz,
 };
 
+/// Connection settings used to construct a [`Radio`].
+///
+/// Drivers are selected from the crate's built-in registry; custom driver
+/// registration is not currently supported.
 #[derive(Debug, Clone)]
 pub struct RadioConfig {
     pub driver: String,
     pub transport: TransportConfig,
     pub options: String,
+    pub region: Option<RadioRegion>,
     pub command_channel_capacity: usize,
     pub update_channel_capacity: usize,
 }
 
 impl RadioConfig {
+    /// Creates settings for a built-in driver ID.
     pub fn new(driver: impl Into<String>) -> Self {
         Self {
             driver: driver.into(),
             transport: TransportConfig::None,
             options: String::new(),
+            region: None,
             command_channel_capacity: 64,
             update_channel_capacity: 128,
         }
     }
 
+    /// Creates settings for the in-memory `dummy` driver.
     pub fn dummy() -> Self {
         Self::new("dummy")
     }
@@ -68,6 +77,15 @@ impl RadioConfig {
         &self.options
     }
 
+    pub fn with_region(mut self, region: RadioRegion) -> Self {
+        self.region = Some(region);
+        self
+    }
+
+    pub fn region(&self) -> Option<RadioRegion> {
+        self.region
+    }
+
     pub fn with_command_channel_capacity(mut self, capacity: usize) -> Self {
         self.command_channel_capacity = capacity;
         self
@@ -79,16 +97,32 @@ impl RadioConfig {
     }
 }
 
+/// A connected asynchronous CAT radio handle.
+///
+/// Submit commands through this handle and observe accepted state through its
+/// state and update subscriptions.
 #[derive(Clone)]
 pub struct Radio {
     command_tx: mpsc::Sender<CommandEnvelope>,
+    shutdown_tx: watch::Sender<bool>,
     state_rx: watch::Receiver<SharedRadioState>,
     update_tx: broadcast::Sender<StateUpdate>,
     capabilities: Arc<RadioCapabilities>,
     driver: DriverDescriptor,
 }
 
+impl fmt::Debug for Radio {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Radio")
+            .field("driver", &self.driver)
+            .field("capabilities", &self.capabilities)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Radio {
+    /// Opens the configured transport and connects to a built-in driver.
     pub async fn connect(config: RadioConfig) -> Result<Self> {
         tracing::info!(
             driver = %config.driver,
@@ -97,31 +131,17 @@ impl Radio {
         );
 
         let (radio, task) = Self::build(config).await?;
-        let descriptor = radio.driver_descriptor();
-        let task_driver = descriptor;
-
-        tokio::spawn(async move {
-            tracing::info!(driver = %task_driver.id, "radio task spawned");
-            if let Err(error) = task.run().await {
-                tracing::error!(driver = %task_driver.id, ?error, "radio task stopped with error");
-            } else {
-                tracing::info!(driver = %task_driver.id, "radio task stopped");
-            }
-        });
-
-        tracing::info!(
-            driver = %descriptor.id,
-            display_name = %descriptor.display_name,
-            "radio connected"
-        );
-
-        Ok(radio)
+        Self::start(radio, task).await
     }
 
-    pub async fn build(config: RadioConfig) -> Result<(Self, RadioTask)> {
-        if FlexRadioSmartSdrDriver::from_driver_id(&config.driver, "")?.is_some() {
-            FlexRadioSmartSdrDriver::validate_transport_config(&config.transport)?;
-        }
+    pub(crate) async fn build(config: RadioConfig) -> Result<(Self, RadioTask)> {
+        let session = drivers::create_session(
+            &config.driver,
+            config.region,
+            &config.options,
+            &config.transport,
+            false,
+        )?;
 
         tracing::debug!(
             driver = %config.driver,
@@ -129,9 +149,10 @@ impl Radio {
             "opening transport for radio"
         );
         let transport = open_transport(&config.transport).await?;
-        Self::build_inner(config, transport).await
+        Self::build_from_session(config, session, transport)
     }
 
+    /// Connects using a caller-provided bidirectional CAT transport.
     pub async fn connect_with_transport<T>(config: RadioConfig, transport: T) -> Result<Self>
     where
         T: CatTransport + 'static,
@@ -142,8 +163,14 @@ impl Radio {
         );
 
         let (radio, task) = Self::build_with_transport(config, transport).await?;
+        Self::start(radio, task).await
+    }
+
+    async fn start(radio: Self, mut task: RadioTask) -> Result<Self> {
         let descriptor = radio.driver_descriptor();
         let task_driver = descriptor;
+
+        task.start().await?;
 
         tokio::spawn(async move {
             tracing::info!(driver = %task_driver.id, "radio task spawned");
@@ -163,23 +190,30 @@ impl Radio {
         Ok(radio)
     }
 
-    pub async fn build_with_transport<T>(
+    pub(crate) async fn build_with_transport<T>(
         config: RadioConfig,
         transport: T,
     ) -> Result<(Self, RadioTask)>
     where
         T: CatTransport + 'static,
     {
-        Self::build_inner(config, Some(boxed_transport(transport))).await
+        let session = drivers::create_session(
+            &config.driver,
+            config.region,
+            &config.options,
+            &config.transport,
+            true,
+        )?;
+        Self::build_from_session(config, session, Some(boxed_transport(transport)))
     }
 
-    async fn build_inner(
+    fn build_from_session(
         config: RadioConfig,
+        session: Box<dyn RadioSession>,
         transport: Option<BoxedCatTransport>,
     ) -> Result<(Self, RadioTask)> {
-        let driver_id = config.driver.trim();
         tracing::debug!(
-            driver = %driver_id,
+            driver = %config.driver,
             options = %config.options,
             has_transport = transport.is_some(),
             command_channel_capacity = config.command_channel_capacity,
@@ -187,34 +221,14 @@ impl Radio {
             "building radio internals"
         );
 
-        let driver: Box<dyn crate::RadioDriver> = match driver_id.to_ascii_lowercase().as_str() {
-            "dummy" => Box::new(DummyRadioDriver::with_options(config.options.clone())),
-            _ => match KenwoodAsciiDriver::from_driver_id(driver_id, config.options.clone())? {
-                Some(driver) => Box::new(driver),
-                None => match IcomCivDriver::from_driver_id(driver_id, config.options.clone())? {
-                    Some(driver) => Box::new(driver),
-                    None => match FlexRadioSmartSdrDriver::from_driver_id(
-                        driver_id,
-                        config.options.clone(),
-                    )? {
-                        Some(driver) => Box::new(driver),
-                        None => {
-                            tracing::error!(driver = %config.driver, "unsupported radio driver requested");
-                            return Err(RadioError::UnsupportedDriver {
-                                driver: config.driver,
-                            });
-                        }
-                    },
-                },
-            },
-        };
-
-        let descriptor = driver.descriptor();
-        let capabilities = Arc::new(driver.capabilities());
-        let initial_state = driver.initial_state();
+        let descriptor = session.descriptor();
+        let capabilities = Arc::new(descriptor.capabilities(config.region)?);
+        let task_capabilities = *capabilities;
+        let initial_state = session.initial_state();
         let initial_snapshot = Arc::new(initial_state.clone());
 
         let (command_tx, command_rx) = mpsc::channel(config.command_channel_capacity.max(1));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (state_tx, state_rx) = watch::channel(initial_snapshot);
         let (update_tx, _) = broadcast::channel(config.update_channel_capacity.max(1));
 
@@ -226,6 +240,7 @@ impl Radio {
 
         let radio = Self {
             command_tx,
+            shutdown_tx,
             state_rx,
             update_tx: update_tx.clone(),
             capabilities,
@@ -233,30 +248,39 @@ impl Radio {
         };
 
         let task = RadioTask::new(
-            driver,
-            initial_state,
+            session,
+            (task_capabilities, initial_state),
             command_rx,
+            shutdown_rx,
             state_tx,
             update_tx,
             transport,
-            config.options,
         );
 
         Ok((radio, task))
     }
 
+    /// Subscribes to snapshots of the latest accepted radio state.
     pub fn subscribe_state(&self) -> watch::Receiver<SharedRadioState> {
         self.state_rx.clone()
     }
 
+    /// Subscribes to categorized accepted-state update events.
     pub fn subscribe_updates(&self) -> broadcast::Receiver<StateUpdate> {
         self.update_tx.subscribe()
     }
 
+    /// Returns the latest accepted state snapshot without waiting for an update.
     pub fn latest_state(&self) -> SharedRadioState {
         self.state_rx.borrow().clone()
     }
 
+    /// Request a clean shutdown of this radio task.
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+    }
+
+    /// Returns capability metadata for the connected driver and selected region.
     pub fn capabilities(&self) -> &RadioCapabilities {
         &self.capabilities
     }
@@ -265,19 +289,22 @@ impl Radio {
         self.capabilities.clone()
     }
 
+    /// Returns the descriptor for the connected built-in driver.
     pub fn driver_descriptor(&self) -> DriverDescriptor {
         self.driver
     }
 
-    pub fn supported_drivers() -> &'static [DriverDescriptor] {
-        drivers::supported_drivers()
-    }
-
-    pub async fn command(&self, command: RadioCommand) -> Result<()> {
+    /// Submit a command and wait until its protocol session reaches its
+    /// supported completion stage: written, acknowledged, or decoded state.
+    /// A successful call never publishes a predicted state before that stage;
+    /// use state updates to observe the resulting accepted radio state.
+    pub async fn command(&self, command: RadioCommand) -> Result<CommandOutcome> {
         tracing::debug!(driver = %self.driver.id, ?command, "queueing radio command");
         let result = send_command(&self.command_tx, command).await;
         match &result {
-            Ok(()) => tracing::trace!(driver = %self.driver.id, "radio command completed"),
+            Ok(outcome) => {
+                tracing::trace!(driver = %self.driver.id, ?outcome, "radio command completed")
+            }
             Err(error) => {
                 tracing::debug!(driver = %self.driver.id, ?error, "radio command failed")
             }
@@ -285,8 +312,10 @@ impl Radio {
         result
     }
 
+    /// Reissue the connected radio's startup queries and wait for their protocol completion.
+    /// Decoded state changes are published with [`crate::UpdateSource::ManualRefresh`].
     pub async fn refresh(&self) -> Result<()> {
-        self.command(RadioCommand::Refresh).await
+        self.command(RadioCommand::Refresh).await.map(|_| ())
     }
 
     pub async fn set_receiver_frequency(
@@ -299,6 +328,7 @@ impl Radio {
             frequency,
         })
         .await
+        .map(|_| ())
     }
 
     pub async fn set_main_frequency(&self, frequency: Frequency) -> Result<()> {
@@ -314,6 +344,7 @@ impl Radio {
     pub async fn set_receiver_mode(&self, receiver: ReceiverPath, mode: Mode) -> Result<()> {
         self.command(RadioCommand::SetReceiverMode { receiver, mode })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_mode(&self, mode: Mode) -> Result<()> {
@@ -334,6 +365,7 @@ impl Radio {
             bandwidth_hz,
         })
         .await
+        .map(|_| ())
     }
 
     pub async fn set_main_filter_bandwidth(&self, bandwidth_hz: u16) -> Result<()> {
@@ -353,6 +385,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetReceiverFilterShift { receiver, shift_hz })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_filter_shift(&self, shift_hz: i16) -> Result<()> {
@@ -372,6 +405,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetReceiverPreamp { receiver, setting })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_preamp(&self, setting: LeveledSetting) -> Result<()> {
@@ -389,6 +423,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetReceiverAttenuator { receiver, setting })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_attenuator(&self, setting: LeveledSetting) -> Result<()> {
@@ -408,6 +443,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetReceiverNoiseBlanker { receiver, setting })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_noise_blanker(&self, setting: LeveledSetting) -> Result<()> {
@@ -427,6 +463,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetReceiverNoiseReduction { receiver, setting })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_noise_reduction(&self, setting: LeveledSetting) -> Result<()> {
@@ -446,6 +483,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetReceiverAutoNotch { receiver, enabled })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_auto_notch(&self, enabled: bool) -> Result<()> {
@@ -459,32 +497,46 @@ impl Radio {
     }
 
     pub async fn set_tx_frequency(&self, frequency: Frequency) -> Result<()> {
-        self.command(RadioCommand::SetTxFrequency(frequency)).await
+        self.command(RadioCommand::SetTxFrequency(frequency))
+            .await
+            .map(|_| ())
     }
 
     pub async fn set_tx_mode(&self, mode: Mode) -> Result<()> {
-        self.command(RadioCommand::SetTxMode(mode)).await
+        self.command(RadioCommand::SetTxMode(mode))
+            .await
+            .map(|_| ())
     }
 
-    pub async fn set_tx_power(&self, power: Power) -> Result<()> {
-        self.command(RadioCommand::SetTxPower(power)).await
+    pub async fn set_tx_power(&self, power: Power) -> Result<Power> {
+        match self.command(RadioCommand::SetTxPower(power)).await? {
+            CommandOutcome::TxPower { accepted } => Ok(accepted),
+            CommandOutcome::Completed => Err(crate::RadioError::ProtocolCommunication),
+        }
     }
 
     pub async fn set_ptt(&self, transmitting: bool) -> Result<()> {
-        self.command(RadioCommand::SetPtt(transmitting)).await
+        self.command(RadioCommand::SetPtt(transmitting))
+            .await
+            .map(|_| ())
     }
 
     pub async fn set_data_ptt(&self, transmitting: bool) -> Result<()> {
-        self.command(RadioCommand::SetDataPtt(transmitting)).await
+        self.command(RadioCommand::SetDataPtt(transmitting))
+            .await
+            .map(|_| ())
     }
 
     pub async fn set_split(&self, split: bool) -> Result<()> {
-        self.command(RadioCommand::SetSplit(split)).await
+        self.command(RadioCommand::SetSplit(split))
+            .await
+            .map(|_| ())
     }
 
     pub async fn set_rit_enabled(&self, receiver: ReceiverPath, enabled: bool) -> Result<()> {
         self.command(RadioCommand::SetRitEnabled { receiver, enabled })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_rit_enabled(&self, enabled: bool) -> Result<()> {
@@ -495,8 +547,18 @@ impl Radio {
         self.set_rit_enabled(ReceiverPath::Sub, enabled).await
     }
 
-    pub async fn set_xit_enabled(&self, enabled: bool) -> Result<()> {
-        self.command(RadioCommand::SetXitEnabled(enabled)).await
+    pub async fn set_xit_enabled(&self, receiver: ReceiverPath, enabled: bool) -> Result<()> {
+        self.command(RadioCommand::SetXitEnabled { receiver, enabled })
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn set_main_xit_enabled(&self, enabled: bool) -> Result<()> {
+        self.set_xit_enabled(ReceiverPath::Main, enabled).await
+    }
+
+    pub async fn set_sub_xit_enabled(&self, enabled: bool) -> Result<()> {
+        self.set_xit_enabled(ReceiverPath::Sub, enabled).await
     }
 
     pub async fn set_rit_offset(
@@ -506,6 +568,7 @@ impl Radio {
     ) -> Result<()> {
         self.command(RadioCommand::SetRitOffset { receiver, offset })
             .await
+            .map(|_| ())
     }
 
     pub async fn set_main_rit_offset(&self, offset: RitXitOffsetHz) -> Result<()> {
@@ -516,23 +579,55 @@ impl Radio {
         self.set_rit_offset(ReceiverPath::Sub, offset).await
     }
 
+    pub async fn set_xit_offset(
+        &self,
+        receiver: ReceiverPath,
+        offset: RitXitOffsetHz,
+    ) -> Result<()> {
+        self.command(RadioCommand::SetXitOffset { receiver, offset })
+            .await
+            .map(|_| ())
+    }
+
     pub async fn set_main_xit_offset(&self, offset: RitXitOffsetHz) -> Result<()> {
-        self.command(RadioCommand::SetXitOffset(offset)).await
+        self.set_xit_offset(ReceiverPath::Main, offset).await
+    }
+
+    pub async fn set_sub_xit_offset(&self, offset: RitXitOffsetHz) -> Result<()> {
+        self.set_xit_offset(ReceiverPath::Sub, offset).await
+    }
+
+    pub async fn set_rit_xit_offset(
+        &self,
+        receiver: ReceiverPath,
+        offset: RitXitOffsetHz,
+    ) -> Result<()> {
+        self.command(RadioCommand::SetRitXitOffset { receiver, offset })
+            .await
+            .map(|_| ())
     }
 
     pub async fn set_keyer_speed(&self, wpm: u8) -> Result<()> {
-        self.command(RadioCommand::SetKeyerSpeed(wpm)).await
+        self.command(RadioCommand::SetKeyerSpeed(wpm))
+            .await
+            .map(|_| ())
     }
 
     pub async fn send_cw(&self, text: impl Into<String>) -> Result<()> {
-        self.command(RadioCommand::SendCw(text.into())).await
+        self.command(RadioCommand::SendCw(text.into()))
+            .await
+            .map(|_| ())
     }
 
     pub async fn stop_cw(&self) -> Result<()> {
-        self.command(RadioCommand::StopCw).await
+        self.command(RadioCommand::StopCw).await.map(|_| ())
     }
 }
 
+/// Returns descriptors for every driver built into this crate.
+///
+/// This is the sole public driver-discovery entry point. Downstream drivers
+/// cannot currently be registered.
 pub fn supported_drivers() -> &'static [DriverDescriptor] {
     drivers::supported_drivers()
 }
@@ -540,13 +635,23 @@ pub fn supported_drivers() -> &'static [DriverDescriptor] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Capability, ChangeFlags};
+    use crate::{Capability, ChangeFlags, RadioError};
 
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
     fn radio_handle_is_send_sync() {
         assert_send_sync::<Radio>();
+    }
+
+    #[tokio::test]
+    async fn radio_debug_redacts_internal_channels() {
+        let radio = Radio::connect(RadioConfig::dummy()).await.unwrap();
+        let debug = format!("{radio:?}");
+        assert!(debug.contains("Radio"));
+        assert!(debug.contains("dummy"));
+        assert!(!debug.contains("command_tx"));
+        radio.shutdown();
     }
 
     #[test]
@@ -593,6 +698,59 @@ mod tests {
             radio.latest_state().main_rx.frequency,
             Some(Frequency::from_hz(7_030_000))
         );
+
+        let accepted = radio
+            .set_tx_power(Power::from_microwatts(50_500_000))
+            .await
+            .unwrap();
+        assert_eq!(accepted, Power::from_watts(51));
+        assert_eq!(
+            radio.latest_state().tx.as_ref().and_then(|tx| tx.power),
+            Some(accepted)
+        );
+
+        let error = radio
+            .set_tx_power(Power::from_watts(101))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RadioError::InvalidValue {
+                field: "tx.power",
+                ..
+            }
+        ));
+        assert_eq!(
+            radio.latest_state().tx.as_ref().and_then(|tx| tx.power),
+            Some(accepted)
+        );
+    }
+
+    #[tokio::test]
+    async fn capability_validation_rejects_before_state_changes() {
+        let radio = Radio::connect(RadioConfig::dummy()).await.unwrap();
+        let before = radio.latest_state().main_rx().frequency();
+        let error = radio
+            .set_main_frequency(Frequency::from_hz(2_000_000_000))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RadioError::InvalidValue {
+                field: "receiver.frequency",
+                ..
+            }
+        ));
+        assert_eq!(radio.latest_state().main_rx().frequency(), before);
+
+        radio.set_sub_xit_enabled(true).await.unwrap();
+        assert_eq!(
+            radio
+                .latest_state()
+                .rit_xit()
+                .xit_enabled(ReceiverPath::Sub),
+            Some(true)
+        );
     }
 
     #[tokio::test]
@@ -628,15 +786,35 @@ mod tests {
             Capability::ReadWrite
         );
 
-        let kenwood = Radio::connect(RadioConfig::new("kenwood-ts590"))
-            .await
+        let kenwood = supported_drivers()
+            .iter()
+            .find(|driver| driver.id == "kenwood-ts590")
             .unwrap();
-        assert_eq!(kenwood.driver_descriptor().id, "kenwood-ts590");
+        assert_eq!(
+            kenwood.transport_requirement,
+            crate::TransportRequirement::SerialOrTcp
+        );
+        assert!(kenwood
+            .capabilities(Some(RadioRegion::IaruRegion2))
+            .unwrap()
+            .main_rx
+            .frequency
+            .is_supported());
 
-        let icom = Radio::connect(RadioConfig::new("icom-ic705"))
-            .await
+        let icom = supported_drivers()
+            .iter()
+            .find(|driver| driver.id == "icom-ic705")
             .unwrap();
-        assert_eq!(icom.driver_descriptor().id, "icom-ic705");
+        assert_eq!(
+            icom.transport_requirement,
+            crate::TransportRequirement::SerialOrTcp
+        );
+        assert!(icom
+            .capabilities(Some(RadioRegion::IaruRegion2))
+            .unwrap()
+            .main_rx
+            .frequency
+            .is_supported());
     }
 
     #[tokio::test]
@@ -668,6 +846,41 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn registry_resolution_and_option_parsing_happen_before_transport_open() {
+        let unsupported =
+            Radio::build(RadioConfig::new("not-a-radio").with_tcp_transport("127.0.0.1:0")).await;
+        assert!(matches!(
+            unsupported,
+            Err(RadioError::UnsupportedDriver { .. })
+        ));
+
+        let invalid_options = Radio::build(
+            RadioConfig::new("icom-ic705")
+                .with_region(RadioRegion::IaruRegion2)
+                .with_options("poll_interval=invalid")
+                .with_tcp_transport("127.0.0.1:0"),
+        )
+        .await;
+        assert!(matches!(
+            invalid_options,
+            Err(RadioError::InvalidValue { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn physical_drivers_reject_missing_transport_before_connecting() {
+        for driver in ["kenwood-ts590", "icom-ic705", "  flexradio-smartsdr  "] {
+            assert!(matches!(
+                Radio::build(RadioConfig::new(driver)).await,
+                Err(RadioError::InvalidValue {
+                    field: "transport",
+                    ..
+                })
+            ));
+        }
     }
 
     #[tokio::test]

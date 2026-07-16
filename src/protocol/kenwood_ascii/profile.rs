@@ -2,12 +2,13 @@ use std::time::Duration;
 
 use crate::{
     capabilities::{
-        Capability, KeyerCapabilities, RadioCapabilities, ReceiverCapabilities, ReceiverKind,
-        ReceiverRfCapabilities, RitXitCapabilities, RitXitOffsetType, StateUpdateCapability,
-        TransmitterCapabilities,
+        Capability, KeyerCapabilities, PowerCapability, PowerRange, RadioCapabilities,
+        ReceiverCapabilities, ReceiverKind, ReceiverRfCapabilities, RitXitCapabilities,
+        RitXitOffsetType, StateUpdateCapability, TransmitterCapabilities,
     },
-    driver::DriverDescriptor,
+    driver::{DriverDescriptor, TransportRequirement},
     error::{RadioError, Result},
+    Power,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -81,6 +82,7 @@ impl KenwoodAsciiOptions {
 
     pub fn parse(options: &str) -> Result<Self> {
         let mut parsed = Self::defaults();
+        let mut saw_ptt_source = false;
 
         for part in options.split(',') {
             let part = part.trim();
@@ -99,6 +101,13 @@ impl KenwoodAsciiOptions {
 
             match key.as_str() {
                 "ptt_source" | "ptt" => {
+                    if saw_ptt_source {
+                        return Err(RadioError::InvalidValue {
+                            field: "options",
+                            message: "duplicate Kenwood ASCII option \"ptt_source\"".to_string(),
+                        });
+                    }
+                    saw_ptt_source = true;
                     parsed.ptt_source = match value.to_ascii_lowercase().as_str() {
                         "front" => KenwoodPttSource::Front,
                         "usb" | "data" => KenwoodPttSource::Usb,
@@ -143,18 +152,68 @@ const NO_RF: ReceiverRfCapabilities = ReceiverRfCapabilities::new(
 );
 
 const FULL_RX: ReceiverCapabilities = ReceiverCapabilities::new(RW, RW, RW, RW, FULL_RF);
+const YAESU_FT891_991_SUB_RX: ReceiverCapabilities = ReceiverCapabilities::new(
+    RW,
+    RW,
+    RW,
+    RW,
+    ReceiverRfCapabilities::new(
+        UNSUPPORTED,
+        UNSUPPORTED,
+        UNSUPPORTED,
+        UNSUPPORTED,
+        UNSUPPORTED,
+    ),
+);
 const K3_RX: ReceiverCapabilities = ReceiverCapabilities::new(RW, RW, RW, RW, NB_ONLY_RF);
 const NO_AUTO_NOTCH_RX: ReceiverCapabilities =
     ReceiverCapabilities::new(RW, RW, RW, RW, NO_AUTO_NOTCH_RF);
 const NO_FILTER_NO_AUTO_NOTCH_RX: ReceiverCapabilities =
     ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, NO_AUTO_NOTCH_RF);
-const BW_ONLY_RX: ReceiverCapabilities =
-    ReceiverCapabilities::new(RW, RW, RW, UNSUPPORTED, NB_ONLY_RF);
+const K2_RX: ReceiverCapabilities = ReceiverCapabilities::new(
+    RW,
+    RW,
+    RW,
+    UNSUPPORTED,
+    ReceiverRfCapabilities::new(RW, RW, RO, UNSUPPORTED, UNSUPPORTED),
+);
 const NO_FILTER_NO_RF_RX: ReceiverCapabilities =
     ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, NO_RF);
+const VFO_ONLY_RX: ReceiverCapabilities =
+    ReceiverCapabilities::new(RW, RW, UNSUPPORTED, UNSUPPORTED, NO_RF);
 
-const FULL_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, RW, RW, RW);
-const IF232_TX: TransmitterCapabilities = TransmitterCapabilities::new(RW, RW, UNSUPPORTED, RW, RW);
+const fn watts(value: u64) -> Power {
+    Power::from_microwatts(value * Power::MICROWATTS_PER_WATT)
+}
+
+const fn milliwatts(value: u64) -> Power {
+    Power::from_microwatts(value * Power::MICROWATTS_PER_MILLIWATT)
+}
+
+const fn fixed_watts(min: u64, max: u64) -> PowerRange {
+    PowerRange::fixed(watts(min), watts(max), watts(1))
+}
+
+const POWER_5_100: &[PowerRange] = &[fixed_watts(5, 100)];
+const POWER_5_200: &[PowerRange] = &[fixed_watts(5, 200)];
+const POWER_0_110: &[PowerRange] = &[fixed_watts(0, 110)];
+const POWER_0_150: &[PowerRange] = &[fixed_watts(0, 150)];
+const K4_POWER: &[PowerRange] = &[
+    PowerRange::fixed(
+        Power::from_microwatts(100),
+        milliwatts(10),
+        Power::from_microwatts(100),
+    ),
+    PowerRange::fixed(milliwatts(100), watts(10), milliwatts(100)),
+    PowerRange::fixed(watts(1), watts(110), watts(1)),
+];
+
+const fn full_tx(ranges: &'static [PowerRange]) -> TransmitterCapabilities {
+    TransmitterCapabilities::new(RW, RW, PowerCapability::new(RW, ranges), RW, RW)
+}
+
+const IF232_TX: TransmitterCapabilities =
+    TransmitterCapabilities::new(RW, RW, PowerCapability::unsupported(), RW, RW);
 
 const MAIN_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
     RW,
@@ -179,6 +238,7 @@ const FULL_KEYER: KeyerCapabilities = KeyerCapabilities::new(RW, EMULATED, WO, W
 const YAESU_KEYER: KeyerCapabilities =
     KeyerCapabilities::new(RW, UNSUPPORTED, UNSUPPORTED, UNSUPPORTED);
 
+const NATIVE: StateUpdateCapability = StateUpdateCapability::Native;
 const HYBRID: StateUpdateCapability = StateUpdateCapability::Hybrid;
 
 const IF232_POLL: Duration = Duration::from_secs(2);
@@ -506,6 +566,7 @@ const fn descriptor(
         id,
         display_name,
         description,
+        transport_requirement: TransportRequirement::SerialOrTcp,
     }
 }
 
@@ -516,14 +577,45 @@ const fn dual_capabilities(
     rit_xit: RitXitCapabilities,
     keyer: Option<KeyerCapabilities>,
 ) -> RadioCapabilities {
+    asymmetric_dual_capabilities_with_update(receiver_kind, rx, rx, tx, rit_xit, keyer, NATIVE)
+}
+
+const fn asymmetric_dual_capabilities(
+    receiver_kind: ReceiverKind,
+    main_rx: ReceiverCapabilities,
+    sub_rx: ReceiverCapabilities,
+    tx: TransmitterCapabilities,
+    rit_xit: RitXitCapabilities,
+    keyer: Option<KeyerCapabilities>,
+) -> RadioCapabilities {
+    asymmetric_dual_capabilities_with_update(
+        receiver_kind,
+        main_rx,
+        sub_rx,
+        tx,
+        rit_xit,
+        keyer,
+        NATIVE,
+    )
+}
+
+const fn asymmetric_dual_capabilities_with_update(
+    receiver_kind: ReceiverKind,
+    main_rx: ReceiverCapabilities,
+    sub_rx: ReceiverCapabilities,
+    tx: TransmitterCapabilities,
+    rit_xit: RitXitCapabilities,
+    keyer: Option<KeyerCapabilities>,
+    state_updates: StateUpdateCapability,
+) -> RadioCapabilities {
     RadioCapabilities::new(
         receiver_kind,
-        rx,
-        Some(rx),
+        main_rx,
+        Some(sub_rx),
         Some(tx),
         rit_xit,
         keyer,
-        HYBRID,
+        state_updates,
     )
 }
 
@@ -540,11 +632,11 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
-            FULL_TX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS590_STARTUP,
         poll: None,
     },
@@ -560,11 +652,11 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
-            FULL_TX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS890_STARTUP,
         poll: None,
     },
@@ -580,11 +672,11 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualRx,
             FULL_RX,
-            FULL_TX,
+            full_tx(POWER_5_200),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS990_STARTUP,
         poll: None,
     },
@@ -600,11 +692,11 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
-            FULL_TX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS2000_STARTUP,
         poll: None,
     },
@@ -620,11 +712,11 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
             NO_AUTO_NOTCH_RX,
-            FULL_TX,
+            full_tx(POWER_5_200),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS480_STARTUP,
         poll: None,
     },
@@ -640,11 +732,11 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
             NO_FILTER_NO_AUTO_NOTCH_RX,
-            FULL_TX,
+            full_tx(POWER_5_200),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS570_TS870_STARTUP,
         poll: None,
     },
@@ -660,11 +752,11 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
             NO_FILTER_NO_AUTO_NOTCH_RX,
-            FULL_TX,
+            full_tx(POWER_5_200),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: TS570_TS870_STARTUP,
         poll: None,
     },
@@ -677,12 +769,14 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Kenwood,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz11Digit,
-        capabilities: dual_capabilities(
+        capabilities: asymmetric_dual_capabilities_with_update(
             ReceiverKind::DualVfo,
+            NO_FILTER_NO_RF_RX,
             NO_FILTER_NO_RF_RX,
             IF232_TX,
             MAIN_RIT_XIT,
             None,
+            HYBRID,
         ),
         update_strategy: HYBRID,
         startup: IF232_STARTUP,
@@ -703,11 +797,11 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualRx,
             FULL_RX,
-            FULL_TX,
+            full_tx(K4_POWER),
             K4_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: ELECRAFT_K4_STARTUP,
         poll: None,
     },
@@ -723,11 +817,11 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualRx,
             K3_RX,
-            FULL_TX,
+            full_tx(POWER_0_110),
             MAIN_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: ELECRAFT_K3_STARTUP,
         poll: None,
     },
@@ -742,12 +836,12 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         frequency_format: FrequencyFormat::Hertz11Digit,
         capabilities: dual_capabilities(
             ReceiverKind::DualVfo,
-            BW_ONLY_RX,
-            FULL_TX,
+            K2_RX,
+            full_tx(POWER_0_150),
             K2_RIT_XIT,
             Some(FULL_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: ELECRAFT_K2_STARTUP,
         poll: None,
     },
@@ -763,11 +857,11 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         capabilities: dual_capabilities(
             ReceiverKind::DualRx,
             FULL_RX,
-            FULL_TX,
+            full_tx(POWER_5_200),
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: YAESU_FTDX101_STARTUP,
         poll: None,
     },
@@ -780,14 +874,15 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Yaesu,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        capabilities: dual_capabilities(
+        capabilities: asymmetric_dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
-            FULL_TX,
+            VFO_ONLY_RX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: YAESU_FTDX10_FT710_STARTUP,
         poll: None,
     },
@@ -800,14 +895,15 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Yaesu,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        capabilities: dual_capabilities(
+        capabilities: asymmetric_dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
-            FULL_TX,
+            VFO_ONLY_RX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: YAESU_FTDX10_FT710_STARTUP,
         poll: None,
     },
@@ -820,14 +916,15 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Yaesu,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        capabilities: dual_capabilities(
+        capabilities: asymmetric_dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
-            FULL_TX,
+            YAESU_FT891_991_SUB_RX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: YAESU_FT891_STARTUP,
         poll: None,
     },
@@ -840,14 +937,15 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         brand: Brand::Yaesu,
         receiver_kind: ReceiverKind::DualVfo,
         frequency_format: FrequencyFormat::Hertz9Digit,
-        capabilities: dual_capabilities(
+        capabilities: asymmetric_dual_capabilities(
             ReceiverKind::DualVfo,
             FULL_RX,
-            FULL_TX,
+            YAESU_FT891_991_SUB_RX,
+            full_tx(POWER_5_100),
             MAIN_RIT_XIT,
             Some(YAESU_KEYER),
         ),
-        update_strategy: HYBRID,
+        update_strategy: NATIVE,
         startup: YAESU_FT991_STARTUP,
         poll: None,
     },
@@ -888,7 +986,7 @@ mod tests {
             Capability::Unsupported
         );
         assert_eq!(
-            if232.capabilities.tx.unwrap().power,
+            if232.capabilities.tx.unwrap().power.access,
             Capability::Unsupported
         );
         assert!(if232.capabilities.keyer.is_none());
@@ -942,7 +1040,20 @@ mod tests {
         assert_eq!(ts990.receiver_kind, ReceiverKind::DualRx);
 
         let if232 = profile_by_id("kenwood-if232").unwrap();
+        assert_eq!(if232.update_strategy, StateUpdateCapability::Hybrid);
         assert_eq!(if232.poll.unwrap().interval, IF232_POLL);
+
+        for profile in SUPPORTED_PROFILES
+            .iter()
+            .filter(|profile| profile.id() != "kenwood-if232")
+        {
+            assert_eq!(profile.update_strategy, StateUpdateCapability::Native);
+            assert!(
+                profile.poll.is_none(),
+                "{} unexpectedly polls",
+                profile.id()
+            );
+        }
     }
 
     #[test]
@@ -989,5 +1100,11 @@ mod tests {
                 .ptt_source,
             KenwoodPttSource::Usb
         );
+    }
+
+    #[test]
+    fn kenwood_options_reject_duplicate_canonical_keys() {
+        assert!(KenwoodAsciiOptions::parse("ptt=front,ptt_source=usb").is_err());
+        assert!(KenwoodAsciiOptions::parse("unknown=value").is_err());
     }
 }

@@ -1,23 +1,25 @@
 use crate::{
     command::{RadioCommand, ReceiverPath},
     error::RadioError,
-    update::{StatePatch, UpdateSource},
+    update::StatePatch,
     Frequency, LeveledSetting, Mode, Power, RadioState, Result, RitXitOffsetHz,
 };
 
 use super::SmartSdrProfile;
 
+const MAX_LINE_BYTES: usize = 8192;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedCommand {
     pub commands: Vec<String>,
-    pub optimistic: Vec<StatePatch>,
+    pub completion_patches: Vec<StatePatch>,
 }
 
 impl EncodedCommand {
-    pub fn new(commands: Vec<String>, optimistic: Vec<StatePatch>) -> Self {
+    pub fn new(commands: Vec<String>, completion_patches: Vec<StatePatch>) -> Self {
         Self {
             commands,
-            optimistic,
+            completion_patches,
         }
     }
 }
@@ -25,15 +27,11 @@ impl EncodedCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedFrame {
     pub patches: Vec<StatePatch>,
-    pub source_hint: Option<UpdateSource>,
 }
 
 impl DecodedFrame {
     pub fn new(patches: Vec<StatePatch>) -> Self {
-        Self {
-            patches,
-            source_hint: None,
-        }
+        Self { patches }
     }
 }
 
@@ -73,16 +71,16 @@ impl LineSplitter {
                         continue;
                     }
 
-                    let line =
-                        String::from_utf8(std::mem::take(&mut self.buffer)).map_err(|error| {
-                            RadioError::Decode {
-                                command: "smartsdr-line",
-                                message: error.to_string(),
-                            }
-                        })?;
-                    lines.push(line);
+                    if let Ok(line) = String::from_utf8(std::mem::take(&mut self.buffer)) {
+                        lines.push(line);
+                    }
                 }
-                _ => self.buffer.push(*byte),
+                _ => {
+                    self.buffer.push(*byte);
+                    if self.buffer.len() > MAX_LINE_BYTES {
+                        self.buffer.clear();
+                    }
+                }
             }
         }
 
@@ -259,10 +257,18 @@ pub fn encode(
             mode_patches(*mode),
         ))),
         RadioCommand::SetTxPower(power) => {
-            let watts = encode_rfpower(*power)?;
+            let accepted = profile
+                .capabilities
+                .tx
+                .and_then(|tx| tx.power.quantize(*power))
+                .ok_or_else(|| RadioError::InvalidValue {
+                    field: "tx.power",
+                    message: format!("{power} is outside the supported power ranges"),
+                })?;
+            let watts = encode_rfpower(accepted)?;
             Ok(Some(EncodedCommand::new(
                 vec![format!("transmit set rfpower={watts}")],
-                vec![StatePatch::TxPower(Power::from_watts(watts))],
+                vec![StatePatch::TxPower(accepted)],
             )))
         }
         RadioCommand::SetPtt(enabled) | RadioCommand::SetDataPtt(enabled) => {
@@ -292,14 +298,17 @@ pub fn encode(
                 vec![StatePatch::MainRitEnabled(*enabled)],
             )))
         }
-        RadioCommand::SetXitEnabled(enabled) => Ok(Some(EncodedCommand::new(
-            vec![format!(
-                "slice s {} xit_on={}",
-                profile.slice,
-                bool_digit(*enabled)
-            )],
-            vec![StatePatch::XitEnabled(*enabled)],
-        ))),
+        RadioCommand::SetXitEnabled { receiver, enabled } => {
+            require_main_receiver(*receiver, "xit.enabled")?;
+            Ok(Some(EncodedCommand::new(
+                vec![format!(
+                    "slice s {} xit_on={}",
+                    profile.slice,
+                    bool_digit(*enabled)
+                )],
+                vec![StatePatch::XitEnabled(*enabled)],
+            )))
+        }
         RadioCommand::SetRitOffset { receiver, offset } => {
             require_main_receiver(*receiver, "rit.offset")?;
             Ok(Some(EncodedCommand::new(
@@ -311,26 +320,32 @@ pub fn encode(
                 vec![StatePatch::RitOffset(*offset)],
             )))
         }
-        RadioCommand::SetXitOffset(offset) => Ok(Some(EncodedCommand::new(
-            vec![format!(
-                "slice s {} xit_freq={}",
-                profile.slice,
-                offset.as_hz()
-            )],
-            vec![StatePatch::XitOffset(*offset)],
-        ))),
-        RadioCommand::SetRitXitOffset(offset) => Ok(Some(EncodedCommand::new(
-            vec![format!(
-                "slice s {} rit_freq={} xit_freq={}",
-                profile.slice,
-                offset.as_hz(),
-                offset.as_hz()
-            )],
-            vec![
-                StatePatch::RitXitOffset(*offset),
-                StatePatch::XitOffset(*offset),
-            ],
-        ))),
+        RadioCommand::SetXitOffset { receiver, offset } => {
+            require_main_receiver(*receiver, "xit.offset")?;
+            Ok(Some(EncodedCommand::new(
+                vec![format!(
+                    "slice s {} xit_freq={}",
+                    profile.slice,
+                    offset.as_hz()
+                )],
+                vec![StatePatch::XitOffset(*offset)],
+            )))
+        }
+        RadioCommand::SetRitXitOffset { receiver, offset } => {
+            require_main_receiver(*receiver, "rit_xit.offset")?;
+            Ok(Some(EncodedCommand::new(
+                vec![format!(
+                    "slice s {} rit_freq={} xit_freq={}",
+                    profile.slice,
+                    offset.as_hz(),
+                    offset.as_hz()
+                )],
+                vec![
+                    StatePatch::RitXitOffset(*offset),
+                    StatePatch::XitOffset(*offset),
+                ],
+            )))
+        }
         RadioCommand::SetKeyerSpeed(wpm) => Ok(Some(set_keyer_speed(*wpm)?)),
         RadioCommand::SendCw(text) => Ok(Some(EncodedCommand::new(
             vec![format!("cwx send \"{}\"", encode_cw_text(text)?)],
@@ -340,7 +355,9 @@ pub fn encode(
             vec!["cwx clear".to_string()],
             Vec::new(),
         ))),
-        RadioCommand::Refresh => Ok(None),
+        RadioCommand::Refresh => {
+            unreachable!("refresh is dispatched through RadioSession::refresh")
+        }
     }
 }
 
@@ -590,19 +607,17 @@ fn rf_level_command(
 ) -> Result<EncodedCommand> {
     let enabled = setting_enabled(setting);
     let mut command = format!("slice s {slice} {enabled_field}={}", bool_text(enabled));
-    if enabled {
-        if let Some(level) = setting.level {
-            if level > 100 {
-                return Err(RadioError::InvalidValue {
-                    field: level_field,
-                    message: "expected 0..=100".to_string(),
-                });
-            }
-            command.push(' ');
-            command.push_str(level_field);
-            command.push('=');
-            command.push_str(&level.to_string());
+    if enabled && let Some(level) = setting.level() {
+        if level > 100 {
+            return Err(RadioError::InvalidValue {
+                field: level_field,
+                message: "expected 0..=100".to_string(),
+            });
         }
+        command.push(' ');
+        command.push_str(level_field);
+        command.push('=');
+        command.push_str(&level.to_string());
     }
 
     Ok(EncodedCommand::new(vec![command], vec![patch]))
@@ -720,7 +735,7 @@ fn parse_frequency_mhz(value: &str) -> Result<Frequency> {
         command: "RF_frequency",
         message: error.to_string(),
     })?;
-    Ok(Frequency::from_decimal_mhz(mhz))
+    Frequency::from_decimal_mhz(mhz)
 }
 
 fn parse_filter_edge(value: &str) -> Result<i16> {
@@ -772,19 +787,22 @@ fn parse_rfpower(value: &str) -> Result<Power> {
         command: "rfpower",
         message: error.to_string(),
     })?;
-    Ok(Power::from_watts(watts))
+    Ok(Power::from_watts(u32::from(watts)))
 }
 
 fn encode_rfpower(power: Power) -> Result<u16> {
     let microwatts = power.as_microwatts();
-    if microwatts % 1_000_000 != 0 {
+    if !microwatts.is_multiple_of(1_000_000) {
         return Err(RadioError::InvalidValue {
             field: "tx.power",
             message: "SmartSDR rfpower requires whole-watt values".to_string(),
         });
     }
 
-    Ok((microwatts / 1_000_000) as u16)
+    u16::try_from(microwatts / Power::MICROWATTS_PER_WATT).map_err(|_| RadioError::InvalidValue {
+        field: "tx.power",
+        message: format!("{power} cannot be encoded as SmartSDR rfpower"),
+    })
 }
 
 fn parse_bool_text(value: &str, command: &'static str) -> Result<bool> {
@@ -806,23 +824,22 @@ fn normalize_setting_update(
     let current = current.unwrap_or_default();
     match enabled {
         Some(false) => LeveledSetting::disabled(),
-        Some(true) => LeveledSetting::enabled(level.or(current.level).unwrap_or(1)),
+        Some(true) => LeveledSetting::enabled(level.or(current.level()).unwrap_or(1)),
         None => {
-            let setting = LeveledSetting::new(current.enabled, level.or(current.level));
+            let setting =
+                LeveledSetting::new(Some(current.is_enabled()), level.or(current.level()));
             bool_level_patch(setting)
         }
     }
 }
 
 fn setting_enabled(setting: LeveledSetting) -> bool {
-    setting
-        .enabled
-        .unwrap_or_else(|| setting.level.is_some_and(|level| level > 0))
+    setting.is_enabled()
 }
 
 fn bool_level_patch(setting: LeveledSetting) -> LeveledSetting {
     if setting_enabled(setting) {
-        LeveledSetting::enabled(setting.level.unwrap_or(1))
+        LeveledSetting::enabled(setting.level().unwrap_or(1))
     } else {
         LeveledSetting::disabled()
     }
@@ -905,7 +922,7 @@ mod tests {
 
         assert_eq!(encoded.commands, vec!["filt 0 100 2900"]);
         assert_eq!(
-            encoded.optimistic,
+            encoded.completion_patches,
             vec![
                 StatePatch::MainRxFilterBandwidth(2_800),
                 StatePatch::MainRxFilterShift(1_500),
@@ -933,7 +950,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(encoded.commands, vec!["cwx wpm 32"]);
-        assert_eq!(encoded.optimistic, vec![StatePatch::KeyerSpeed(32)]);
+        assert_eq!(encoded.completion_patches, vec![StatePatch::KeyerSpeed(32)]);
     }
 
     #[test]
@@ -948,8 +965,24 @@ mod tests {
 
         assert_eq!(encoded.commands, vec!["transmit set rfpower=50"]);
         assert_eq!(
-            encoded.optimistic,
+            encoded.completion_patches,
             vec![StatePatch::TxPower(Power::from_watts(50))]
+        );
+    }
+
+    #[test]
+    fn tx_power_quantizes_and_reports_the_accepted_whole_watt_value() {
+        let encoded = encode(
+            profile(),
+            &RadioCommand::SetTxPower(Power::from_microwatts(50_500_000)),
+            &RadioState::default(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(encoded.commands, vec!["transmit set rfpower=51"]);
+        assert_eq!(
+            encoded.completion_patches,
+            vec![StatePatch::TxPower(Power::from_watts(51))]
         );
     }
 
@@ -1033,5 +1066,24 @@ mod tests {
                 "S0|slice 0 RF_frequency=14.074".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn line_splitter_skips_invalid_utf8_without_losing_other_lines() {
+        let mut splitter = LineSplitter::new();
+        let lines = splitter.push(b"V1\n\xff\nH2\n").unwrap();
+
+        assert_eq!(lines, vec!["V1".to_string(), "H2".to_string()]);
+    }
+
+    #[test]
+    fn line_splitter_bounds_unterminated_lines_and_recovers() {
+        let mut splitter = LineSplitter::new();
+        let mut bytes = vec![b'X'; 8193];
+        bytes.extend_from_slice(b"\nH2\n");
+
+        let lines = splitter.push(&bytes).unwrap();
+
+        assert_eq!(lines, vec!["H2".to_string()]);
     }
 }

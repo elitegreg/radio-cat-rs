@@ -9,17 +9,17 @@ use crate::error::Result;
 
 pub type BoxedCatTransport = Box<dyn CatTransport>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum TransportConfig {
+    #[default]
     None,
-    Serial { path: String, baud_rate: u32 },
-    Tcp { address: String },
-}
-
-impl Default for TransportConfig {
-    fn default() -> Self {
-        Self::None
-    }
+    Serial {
+        path: String,
+        baud_rate: u32,
+    },
+    Tcp {
+        address: String,
+    },
 }
 
 impl TransportConfig {
@@ -41,13 +41,17 @@ impl TransportConfig {
     }
 
     pub fn tcp_socket(host: impl AsRef<str>, port: u16) -> Self {
+        let host = host.as_ref();
+        let host = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host.to_string()
+        };
         Self::Tcp {
-            address: format!("{}:{}", host.as_ref(), port),
+            address: format!("{host}:{port}"),
         }
     }
 }
-
-pub type ConnectionConfig = TransportConfig;
 
 #[async_trait]
 pub trait CatTransport: Send {
@@ -85,8 +89,7 @@ where
     async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
         let count = self.io.read(buf).await?;
         if count > 0 {
-            let received = String::from_utf8_lossy(&buf[..count]);
-            tracing::trace!(byte_count = count, payload = %received, "transport read bytes");
+            tracing::trace!(byte_count = count, payload = ?&buf[..count], "transport read bytes");
         }
         Ok(count)
     }
@@ -100,81 +103,67 @@ where
 
 #[derive(Debug)]
 pub struct TcpTransport {
-    stream: TcpStream,
+    inner: AsyncIoTransport<TcpStream>,
 }
 
 impl TcpTransport {
     pub async fn connect(address: impl AsRef<str>) -> Result<Self> {
         let stream = TcpStream::connect(address.as_ref()).await?;
-        Ok(Self { stream })
+        Ok(Self {
+            inner: AsyncIoTransport::new(stream),
+        })
     }
 
     pub fn into_inner(self) -> TcpStream {
-        self.stream
+        self.inner.into_inner()
     }
 }
 
 #[async_trait]
 impl CatTransport for TcpTransport {
     async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
-        tracing::debug!(byte_count = bytes.len(), "tcp transport write");
-        self.stream.write_all(bytes).await?;
-        Ok(())
+        self.inner.write_all(bytes).await
     }
 
     async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let count = self.stream.read(buf).await?;
-        if count > 0 {
-            let received = String::from_utf8_lossy(&buf[..count]);
-            tracing::trace!(byte_count = count, payload = %received, "tcp transport read bytes");
-        }
-        Ok(count)
+        self.inner.read_some(buf).await
     }
 
     async fn flush(&mut self) -> Result<()> {
-        tracing::trace!("tcp transport flush");
-        self.stream.flush().await?;
-        Ok(())
+        self.inner.flush().await
     }
 }
 
 #[derive(Debug)]
 pub struct SerialTransport {
-    stream: tokio_serial::SerialStream,
+    inner: AsyncIoTransport<tokio_serial::SerialStream>,
 }
 
 impl SerialTransport {
     pub fn open(path: impl AsRef<str>, baud_rate: u32) -> Result<Self> {
         let stream = tokio_serial::new(path.as_ref(), baud_rate).open_native_async()?;
-        Ok(Self { stream })
+        Ok(Self {
+            inner: AsyncIoTransport::new(stream),
+        })
     }
 
     pub fn into_inner(self) -> tokio_serial::SerialStream {
-        self.stream
+        self.inner.into_inner()
     }
 }
 
 #[async_trait]
 impl CatTransport for SerialTransport {
     async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
-        tracing::debug!(byte_count = bytes.len(), "serial transport write");
-        self.stream.write_all(bytes).await?;
-        Ok(())
+        self.inner.write_all(bytes).await
     }
 
     async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let count = self.stream.read(buf).await?;
-        if count > 0 {
-            let received = String::from_utf8_lossy(&buf[..count]);
-            tracing::trace!(byte_count = count, payload = %received, "serial transport read bytes");
-        }
-        Ok(count)
+        self.inner.read_some(buf).await
     }
 
     async fn flush(&mut self) -> Result<()> {
-        tracing::trace!("serial transport flush");
-        self.stream.flush().await?;
-        Ok(())
+        self.inner.flush().await
     }
 }
 
@@ -204,4 +193,25 @@ where
     T: CatTransport + 'static,
 {
     Box::new(transport)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tcp_socket_brackets_ipv6_literals() {
+        assert_eq!(
+            TransportConfig::tcp_socket("2001:db8::1", 4532),
+            TransportConfig::tcp("[2001:db8::1]:4532")
+        );
+    }
+
+    #[test]
+    fn tcp_socket_does_not_double_bracket_ipv6_literals() {
+        assert_eq!(
+            TransportConfig::tcp_socket("[2001:db8::1]", 4532),
+            TransportConfig::tcp("[2001:db8::1]:4532")
+        );
+    }
 }
