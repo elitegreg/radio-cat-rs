@@ -2941,11 +2941,13 @@ mod tests {
 
     #[test]
     fn current_tx_mode_uses_optional_response_handling() {
-        let mut state = RadioState::default();
-        state.tx = Some(TransmitterState {
-            mode: Some(Mode::Cw),
+        let state = RadioState {
+            tx: Some(TransmitterState {
+                mode: Some(Mode::Cw),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
 
         assert_eq!(
             mode_reapply_response_expectation(&RadioCommand::SetTxMode(Mode::Cw), &state),
