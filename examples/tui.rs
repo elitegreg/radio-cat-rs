@@ -3,19 +3,19 @@ use std::{env, error::Error, fmt, fs::OpenOptions, str::FromStr, time::Duration}
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use radio_cat_rs::{
-    supported_drivers, Frequency, LeveledSetting, Mode, Power, Radio, RadioConfig, RadioRegion,
-    RadioState, ReceiverPath, RitXitOffsetHz, StateUpdate, TransportConfig,
+    Frequency, LeveledSetting, Mode, Power, Radio, RadioConfig, RadioRegion, RadioState,
+    ReceiverPath, RitXitOffsetHz, StateUpdate, TransportConfig, supported_drivers,
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
-    Frame, Terminal,
 };
 
 const DEFAULT_BAUD_RATE: u32 = 38_400;
@@ -161,7 +161,7 @@ fn parse_launch_config() -> Result<Option<LaunchConfig>, CliError> {
             other => {
                 return Err(CliError(format!(
                     "unknown argument: {other} (use --help for usage)"
-                )))
+                )));
             }
         }
     }
@@ -306,7 +306,9 @@ fn print_usage() {
     println!("      --port <port>       TCP port (use with --host)");
     println!("      --options <text>    Driver options string");
     println!("      --region <1|2|3>    IARU region for physical radios");
-    println!("      --log-level <lvl>   Log level: trace|debug|info|warn|error (default: {DEFAULT_LOG_LEVEL})");
+    println!(
+        "      --log-level <lvl>   Log level: trace|debug|info|warn|error (default: {DEFAULT_LOG_LEVEL})"
+    );
     println!("      --log-file <path>   Append logs to file instead of stderr");
     println!("      --list-radios       Show supported radio ids and exit");
     println!("  -h, --help              Show this help and exit");
@@ -366,31 +368,31 @@ async fn run_ui(
             }
             tracing::debug!(key = ?key.code, "key pressed");
             match key.code {
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-                    KeyCode::Esc => command_input.clear(),
-                    KeyCode::Backspace => {
-                        command_input.pop();
-                    }
-                    KeyCode::Enter => {
-                        let line = command_input.trim().to_string();
-                        if !line.is_empty() {
-                            if line.eq_ignore_ascii_case("q") || line.eq_ignore_ascii_case("quit") {
-                                break;
-                            }
-                            match execute_command(&radio, state.as_ref(), &line).await {
-                                Ok(message) => status = message,
-                                Err(error) => status = format!("error: {error}"),
-                            }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                KeyCode::Esc => command_input.clear(),
+                KeyCode::Backspace => {
+                    command_input.pop();
+                }
+                KeyCode::Enter => {
+                    let line = command_input.trim().to_string();
+                    if !line.is_empty() {
+                        if line.eq_ignore_ascii_case("q") || line.eq_ignore_ascii_case("quit") {
+                            break;
                         }
-                        command_input.clear();
+                        match execute_command(&radio, state.as_ref(), &line).await {
+                            Ok(message) => status = message,
+                            Err(error) => status = format!("error: {error}"),
+                        }
                     }
-                    KeyCode::Char(ch)
-                        if !key.modifiers.contains(KeyModifiers::CONTROL)
-                            && !key.modifiers.contains(KeyModifiers::ALT) =>
-                    {
-                        command_input.push(ch);
-                    }
-                    _ => {}
+                    command_input.clear();
+                }
+                KeyCode::Char(ch)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    command_input.push(ch);
+                }
+                _ => {}
             }
         }
     }
@@ -481,9 +483,15 @@ keyer:   speed_wpm={:?} sending={:?}",
         rit_xit.rit_enabled(ReceiverPath::Main),
         rit_xit.rit_enabled(ReceiverPath::Sub),
         rit_xit.xit_enabled(ReceiverPath::Main),
-        rit_xit.rit_offset(ReceiverPath::Main).map(|offset| offset.as_hz()),
-        rit_xit.xit_offset(ReceiverPath::Main).map(|offset| offset.as_hz()),
-        rit_xit.rit_offset(ReceiverPath::Sub).map(|offset| offset.as_hz()),
+        rit_xit
+            .rit_offset(ReceiverPath::Main)
+            .map(|offset| offset.as_hz()),
+        rit_xit
+            .xit_offset(ReceiverPath::Main)
+            .map(|offset| offset.as_hz()),
+        rit_xit
+            .rit_offset(ReceiverPath::Sub)
+            .map(|offset| offset.as_hz()),
         keyer.and_then(|keyer| keyer.speed_wpm()),
         keyer.and_then(|keyer| keyer.sending()),
     )

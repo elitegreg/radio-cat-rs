@@ -1,8 +1,8 @@
-use crate::{error::RadioError, update::StatePatch, Frequency, RadioState, Result, RitXitOffsetHz};
+use crate::{Frequency, RadioState, Result, RitXitOffsetHz, error::RadioError, update::StatePatch};
 
 use super::{
-    mode::{decode_kenwood_if_mode, decode_yaesu_if_mode},
     DecodedFrame, PhysicalVfo, VfoRouting,
+    mode::{decode_kenwood_if_mode, decode_yaesu_if_mode},
 };
 use crate::protocol::kenwood_ascii::{
     AsciiFrame, CommandPriority, EncodedCommand, KenwoodAsciiProfile, ReceiverKind, ResponseMatcher,
@@ -41,7 +41,7 @@ pub fn decode(
                 return Err(RadioError::Decode {
                     command: "VS",
                     message: format!("expected 0/1 VFO selector, got {payload:?}"),
-                })
+                });
             }
         };
         let patches = if vfo_routing.switchable && selected != vfo_routing.main_vfo {
@@ -294,8 +294,8 @@ enum ActiveVfo {
 mod tests {
     use super::*;
     use crate::{
-        protocol::kenwood_ascii::{profile_by_id, split},
         Mode, StateReducer, TransmitterState,
+        protocol::kenwood_ascii::{profile_by_id, split},
     };
 
     fn decode_with_default_routing(
@@ -384,14 +384,18 @@ mod tests {
         let decoded = decode_with_default_routing(profile, &frame, &state);
         assert_eq!(decoded.patches[0], StatePatch::SwapVfoFrequencies);
         assert!(decoded.patches.contains(&StatePatch::MainRitEnabled(false)));
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(7_074_000))));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(7_074_000)))
+        );
         assert!(decoded.patches.contains(&StatePatch::Split(true)));
-        assert!(!decoded
-            .patches
-            .iter()
-            .any(|patch| matches!(patch, StatePatch::TxFrequency(_))));
+        assert!(
+            !decoded
+                .patches
+                .iter()
+                .any(|patch| matches!(patch, StatePatch::TxFrequency(_)))
+        );
     }
 
     #[test]
@@ -431,9 +435,11 @@ mod tests {
             .unwrap();
 
         assert!(!decoded.patches.contains(&StatePatch::SwapVfoFrequencies));
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(7_074_000))));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(7_074_000)))
+        );
     }
 
     #[test]
@@ -498,9 +504,11 @@ mod tests {
 
         let oi = AsciiFrame::new("OI000007074000-025110300001;").unwrap();
         let decoded = decode(profile, &oi, &state, &mut routing).unwrap().unwrap();
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(7_074_000))));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(7_074_000)))
+        );
         assert!(decoded.patches.contains(&StatePatch::MainRxMode(Mode::Cw)));
         assert!(decoded.patches.contains(&StatePatch::RitXitOffset(
             RitXitOffsetHz::new(-251).unwrap()
@@ -558,19 +566,27 @@ mod tests {
         let oi = AsciiFrame::new("OI000007074000+012310E00000;").unwrap();
         let decoded = decode_with_default_routing(profile, &oi, &state);
 
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::SubRxFrequency(Frequency::from_hz(7_074_000))));
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::SubRxMode(Mode::DigitalVoice)));
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::SubRitOffset(RitXitOffsetHz::new(123).unwrap())));
-        assert!(!decoded
-            .patches
-            .iter()
-            .any(|patch| matches!(patch, StatePatch::TxFrequency(_))));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::SubRxFrequency(Frequency::from_hz(7_074_000)))
+        );
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::SubRxMode(Mode::DigitalVoice))
+        );
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::SubRitOffset(RitXitOffsetHz::new(123).unwrap()))
+        );
+        assert!(
+            !decoded
+                .patches
+                .iter()
+                .any(|patch| matches!(patch, StatePatch::TxFrequency(_)))
+        );
     }
 
     #[test]
@@ -592,8 +608,10 @@ mod tests {
         .unwrap();
 
         let decoded = decode_with_default_routing(profile, &frame, &state);
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxMode(Mode::DigitalVoice)));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::MainRxMode(Mode::DigitalVoice))
+        );
     }
 }

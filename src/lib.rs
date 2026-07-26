@@ -33,7 +33,7 @@ pub mod transport;
 /// State update events and reduction utilities.
 pub mod update;
 
-pub use api::{supported_drivers, Radio, RadioConfig};
+pub use api::{Radio, RadioConfig, supported_drivers};
 pub use capabilities::{
     Capability, ControlCapability, DataPttRelationship, IndexedControl, KeyerCapabilities,
     ModeValueDomain, PowerCapability, PowerRange, PowerStep, RadioCapabilities, RadioRegion,
@@ -46,14 +46,14 @@ pub use driver::{DriverDescriptor, TransportRequirement};
 pub use error::{RadioError, RangeError, Result};
 pub use frequency::Frequency;
 pub use mode::{Mode, ParseModeError};
-pub use serial_ports::{list_serial_ports, SerialPortListEntry, SerialPortListError};
+pub use serial_ports::{SerialPortListEntry, SerialPortListError, list_serial_ports};
 pub use state::{
     ConnectionState, KeyerState, LeveledSetting, Power, RadioState, ReceiverFilterState,
     ReceiverRfState, ReceiverState, RitXitOffsetHz, RitXitState, TransmitterState,
 };
 pub use transport::{
-    boxed_transport, open_transport, AsyncIoTransport, BoxedCatTransport, CatTransport,
-    SerialTransport, TcpTransport, TransportConfig,
+    AsyncIoTransport, BoxedCatTransport, CatTransport, SerialTransport, TcpTransport,
+    TransportConfig, boxed_transport, open_transport,
 };
 pub use update::{
     ChangeFlags, ChangeSet, SharedRadioState, StateField, StatePatch, StateReducer, StateUpdate,

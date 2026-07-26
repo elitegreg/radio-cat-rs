@@ -3,14 +3,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::{
+    ConnectionState, Frequency, LeveledSetting, Mode, Power, RadioCapabilities, RadioState,
+    ReceiverFilterState, ReceiverRfState, ReceiverState, RitXitOffsetHz, RitXitState,
+    TransmitterState, UpdateSource,
     command::{RadioCommand, ReceiverPath},
     driver::{CommandCompletion, DriverDescriptor, RadioSession, StateSink, TransportRequirement},
     error::{RadioError, Result},
     transport::CatTransport,
     update::StatePatch,
-    ConnectionState, Frequency, LeveledSetting, Mode, Power, RadioCapabilities, RadioState,
-    ReceiverFilterState, ReceiverRfState, ReceiverState, RitXitOffsetHz, RitXitState,
-    TransmitterState, UpdateSource,
 };
 
 pub(crate) const DUMMY_DRIVER: DriverDescriptor = DriverDescriptor {

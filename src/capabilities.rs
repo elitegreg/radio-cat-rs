@@ -1159,9 +1159,11 @@ mod constraint_tests {
     fn built_in_constraint_shape_is_valid() {
         RadioCapabilities::dummy_all().validate().unwrap();
         assert!(!RadioCapabilities::dummy_all().main_rx.modes.is_empty());
-        assert!(!RadioCapabilities::dummy_all()
-            .main_rx
-            .frequency_ranges
-            .is_empty());
+        assert!(
+            !RadioCapabilities::dummy_all()
+                .main_rx
+                .frequency_ranges
+                .is_empty()
+        );
     }
 }

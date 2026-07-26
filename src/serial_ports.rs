@@ -5,7 +5,7 @@ use std::{
 };
 
 use thiserror::Error;
-use tokio_serial::{available_ports, SerialPortType};
+use tokio_serial::{SerialPortType, available_ports};
 
 /// One serial-port listing entry.
 #[derive(Debug, Clone, PartialEq, Eq)]

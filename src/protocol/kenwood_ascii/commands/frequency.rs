@@ -1,8 +1,8 @@
 use crate::{
+    Frequency, RadioState, Result,
     command::{RadioCommand, ReceiverPath},
     error::RadioError,
     update::StatePatch,
-    Frequency, RadioState, Result,
 };
 
 use super::{DecodedFrame, EncodedCommand, FrequencyCommandTarget, VfoRouting};
@@ -262,7 +262,7 @@ impl FrameCommandHint for AsciiFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{protocol::kenwood_ascii::profile_by_id, ReceiverState, TransmitterState};
+    use crate::{ReceiverState, TransmitterState, protocol::kenwood_ascii::profile_by_id};
 
     fn routed_state(split: bool, tx_frequency: Frequency) -> RadioState {
         RadioState {
@@ -407,9 +407,10 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(fa
-            .patches
-            .contains(&StatePatch::SubRxFrequency(Frequency::from_hz(7_074_000))));
+        assert!(
+            fa.patches
+                .contains(&StatePatch::SubRxFrequency(Frequency::from_hz(7_074_000)))
+        );
 
         let fb = decode_with_routing(
             profile,
@@ -419,9 +420,10 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(fb
-            .patches
-            .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(14_074_000))));
+        assert!(
+            fb.patches
+                .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(14_074_000)))
+        );
 
         let main_set = encode_with_routing(
             profile,
@@ -473,9 +475,11 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(7_100_000))));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(7_100_000)))
+        );
 
         let encoded = encode_with_routing(
             profile,

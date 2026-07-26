@@ -1,9 +1,9 @@
 use crate::{
+    LeveledSetting, Result,
     capabilities::Capability,
     command::{RadioCommand, ReceiverPath},
     error::RadioError,
     update::StatePatch,
-    LeveledSetting, Result,
 };
 
 use super::{DecodedFrame, EncodedCommand, VfoRouting};
@@ -175,7 +175,7 @@ fn encode_preamp(
         _ => {
             return Err(RadioError::UnsupportedCapability {
                 capability: "receiver.preamp",
-            })
+            });
         }
     };
 
@@ -242,7 +242,7 @@ fn encode_attenuator(
         _ => {
             return Err(RadioError::UnsupportedCapability {
                 capability: "receiver.attenuator",
-            })
+            });
         }
     };
 
@@ -354,7 +354,7 @@ fn encode_noise_blanker(
         _ => {
             return Err(RadioError::UnsupportedCapability {
                 capability: "receiver.noise_blanker",
-            })
+            });
         }
     };
 
@@ -435,7 +435,7 @@ fn encode_noise_reduction(
         _ => {
             return Err(RadioError::UnsupportedCapability {
                 capability: "receiver.noise_reduction",
-            })
+            });
         }
     };
 
@@ -481,7 +481,7 @@ fn encode_auto_notch(
         _ => {
             return Err(RadioError::UnsupportedCapability {
                 capability: "receiver.auto_notch",
-            })
+            });
         }
     };
 
@@ -781,7 +781,7 @@ fn decode_auto_notch(
             return Err(RadioError::Decode {
                 command: "auto-notch",
                 message: format!("unsupported auto notch frame {:?}", frame.as_str()),
-            })
+            });
         }
     };
 
@@ -897,11 +897,7 @@ fn target_digit(receiver: ReceiverPath) -> char {
 }
 
 fn bool_digit(value: bool) -> char {
-    if value {
-        '1'
-    } else {
-        '0'
-    }
+    if value { '1' } else { '0' }
 }
 
 fn bool_digit_value(value: bool) -> u8 {
@@ -1128,9 +1124,11 @@ mod tests {
         for (mode, enabled) in [('0', false), ('1', true), ('2', false), ('3', false)] {
             let frame = AsciiFrame::new(format!("NT0{mode};")).unwrap();
             let decoded = decode(profile, &frame).unwrap().unwrap();
-            assert!(decoded
-                .patches
-                .contains(&StatePatch::MainRxAutoNotch(enabled)));
+            assert!(
+                decoded
+                    .patches
+                    .contains(&StatePatch::MainRxAutoNotch(enabled))
+            );
         }
 
         let query = encode_query(profile, "NT0").unwrap().unwrap();

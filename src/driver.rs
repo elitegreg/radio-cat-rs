@@ -3,8 +3,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::{
-    error::Result, transport::CatTransport, RadioCapabilities, RadioCommand, RadioRegion,
-    RadioState, StatePatch, UpdateSource,
+    RadioCapabilities, RadioCommand, RadioRegion, RadioState, StatePatch, UpdateSource,
+    error::Result, transport::CatTransport,
 };
 
 /// Transport types a driver can use for a direct connection.

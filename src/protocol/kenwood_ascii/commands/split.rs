@@ -1,4 +1,4 @@
-use crate::{command::RadioCommand, error::RadioError, update::StatePatch, RadioState, Result};
+use crate::{RadioState, Result, command::RadioCommand, error::RadioError, update::StatePatch};
 
 use super::{DecodedFrame, EncodedCommand, PhysicalVfo, VfoRouting};
 use crate::protocol::kenwood_ascii::{
@@ -314,19 +314,11 @@ fn routing_vfo(vfo: PhysicalVfo) -> RoutingVfo {
 
 fn selected_tx_vfo(split: bool, routing: VfoRouting) -> RoutingVfo {
     let rx_vfo = routing_vfo(routing.main_vfo);
-    if split {
-        rx_vfo.opposite()
-    } else {
-        rx_vfo
-    }
+    if split { rx_vfo.opposite() } else { rx_vfo }
 }
 
 fn split_digit(split: bool) -> char {
-    if split {
-        '1'
-    } else {
-        '0'
-    }
+    if split { '1' } else { '0' }
 }
 
 fn supports_fr(profile: &KenwoodAsciiProfile) -> bool {
@@ -369,7 +361,7 @@ fn uses_st(profile: &KenwoodAsciiProfile) -> bool {
 mod tests {
     use super::*;
     use crate::{
-        protocol::kenwood_ascii::profile_by_id, Frequency, Mode, ReceiverState, TransmitterState,
+        Frequency, Mode, ReceiverState, TransmitterState, protocol::kenwood_ascii::profile_by_id,
     };
 
     fn routed_state(split: bool, tx_frequency: Frequency) -> RadioState {

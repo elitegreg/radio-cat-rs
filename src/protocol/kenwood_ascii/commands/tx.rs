@@ -1,5 +1,5 @@
 use crate::{
-    command::RadioCommand, error::RadioError, update::StatePatch, Capability, Power, Result,
+    Capability, Power, Result, command::RadioCommand, error::RadioError, update::StatePatch,
 };
 
 use super::{DecodedFrame, EncodedCommand, PowerCommandEncoding};
@@ -123,7 +123,7 @@ fn decode_power_frame(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Resu
                 return Err(RadioError::Decode {
                     command: "PC",
                     message: format!("unknown K4 power suffix {suffix:?}"),
-                })
+                });
             }
         }
     } else {
@@ -146,7 +146,7 @@ fn decode_ptt_frame(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result
                 return Err(RadioError::Decode {
                     command: "TX",
                     message: format!("unexpected Yaesu TX/RX frame {:?}", frame.as_str()),
-                })
+                });
             }
         }
     } else {
@@ -157,7 +157,7 @@ fn decode_ptt_frame(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result
                 return Err(RadioError::Decode {
                     command: "TX",
                     message: format!("unexpected TX/RX frame {:?}", frame.as_str()),
-                })
+                });
             }
         }
     };
@@ -225,11 +225,7 @@ fn ptt_frame(
     transmitting: bool,
 ) -> &'static str {
     if is_yaesu(profile) {
-        if transmitting {
-            "TX1;"
-        } else {
-            "TX0;"
-        }
+        if transmitting { "TX1;" } else { "TX0;" }
     } else if is_split_ptt_kenwood(profile) {
         if transmitting {
             match options.ptt_source {
@@ -248,11 +244,7 @@ fn ptt_frame(
 
 fn data_ptt_frame(profile: &KenwoodAsciiProfile, transmitting: bool) -> &'static str {
     if is_split_ptt_kenwood(profile) {
-        if transmitting {
-            "TX1;"
-        } else {
-            "RX;"
-        }
+        if transmitting { "TX1;" } else { "RX;" }
     } else {
         ptt_frame(profile, KenwoodAsciiOptions::defaults(), transmitting)
     }

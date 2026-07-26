@@ -8,7 +8,7 @@ pub mod rit_xit;
 pub mod split;
 pub mod tx;
 
-use crate::{command::ReceiverPath, error::RadioError, update::StatePatch, Result};
+use crate::{Result, command::ReceiverPath, error::RadioError, update::StatePatch};
 
 use super::{AsciiFrame, CommandPriority, OutgoingStep, ResponseMatcher};
 

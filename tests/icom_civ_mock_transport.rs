@@ -2,9 +2,9 @@ use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use radio_cat_rs::{
-    protocol::icom_civ::{profile_by_id, CivFrame},
     CatTransport, Frequency, Mode, Power, Radio, RadioConfig, RadioError, Result,
     StateUpdateCapability,
+    protocol::icom_civ::{CivFrame, profile_by_id},
 };
 use tokio::sync::Mutex;
 
@@ -294,11 +294,13 @@ async fn ic705_actor_handles_startup_async_errors_and_command_ack() {
     .await
     .unwrap();
 
-    assert!(transport
-        .written_frames()
-        .await
-        .iter()
-        .any(|frame| frame == &set_frequency));
+    assert!(
+        transport
+            .written_frames()
+            .await
+            .iter()
+            .any(|frame| frame == &set_frequency)
+    );
 }
 
 #[tokio::test]

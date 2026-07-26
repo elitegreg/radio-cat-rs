@@ -1,8 +1,8 @@
 use crate::{
+    Mode, RadioState, Result,
     command::{RadioCommand, ReceiverPath},
     error::RadioError,
     update::StatePatch,
-    Mode, RadioState, Result,
 };
 
 use super::{DecodedFrame, EncodedCommand, VfoRouting};
@@ -440,7 +440,7 @@ fn decode_yaesu_na(frame: &AsciiFrame, vfo_routing: &mut VfoRouting) -> Result<V
             return Err(RadioError::Decode {
                 command: "NA",
                 message: format!("expected NA00 or NA01, got {payload:?}"),
-            })
+            });
         }
     }
     Ok(Vec::new())

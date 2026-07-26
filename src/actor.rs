@@ -2,17 +2,17 @@ use std::{collections::VecDeque, sync::Arc};
 
 use tokio::{
     sync::{broadcast, mpsc, oneshot, watch},
-    time::{timeout, Duration, Instant},
+    time::{Duration, Instant, timeout},
 };
 
 use crate::{
+    Capability, CommandOutcome, ConnectionState, RadioCommand, RadioState, StatePatch,
+    UpdateSource,
     driver::{CommandCompletion, RadioSession, StateSink},
     error::{RadioError, Result},
     keyer_emulation,
     transport::BoxedCatTransport,
     update::{SharedRadioState, StateReducer, StateUpdate},
-    Capability, CommandOutcome, ConnectionState, RadioCommand, RadioState, StatePatch,
-    UpdateSource,
 };
 
 const COMMAND_LOOP_IDLE_TICK: Duration = Duration::from_millis(50);
@@ -293,7 +293,11 @@ impl RadioTask {
                 };
 
                 let Some(duration) = keyer_emulation::estimate_send_time(text, wpm) else {
-                    tracing::debug!(?command, wpm, "skipping emulated keyer sending update because send time could not be estimated");
+                    tracing::debug!(
+                        ?command,
+                        wpm,
+                        "skipping emulated keyer sending update because send time could not be estimated"
+                    );
                     return;
                 };
 
@@ -561,8 +565,8 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     };
     use tokio::{sync::Notify, task::JoinHandle};
 

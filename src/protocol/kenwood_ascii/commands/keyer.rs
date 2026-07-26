@@ -1,4 +1,4 @@
-use crate::{command::RadioCommand, error::RadioError, update::StatePatch, Result};
+use crate::{Result, command::RadioCommand, error::RadioError, update::StatePatch};
 
 use super::{DecodedFrame, EncodedCommand};
 use crate::protocol::kenwood_ascii::{

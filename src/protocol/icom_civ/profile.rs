@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crate::{
+    Power,
     capabilities::{
         Capability, KeyerCapabilities, PowerCapability, PowerRange, RadioCapabilities,
         ReceiverCapabilities, ReceiverKind, ReceiverRfCapabilities, RitXitCapabilities,
@@ -8,7 +9,6 @@ use crate::{
     },
     driver::{DriverDescriptor, TransportRequirement},
     error::{RadioError, Result},
-    Power,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

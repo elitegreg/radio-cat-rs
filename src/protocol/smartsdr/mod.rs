@@ -2,7 +2,7 @@ mod commands;
 mod profile;
 
 pub use commands::{
-    command_frame, decode_response, decode_status, encode, parse_line, DecodedFrame,
-    EncodedCommand, IncomingLine, LineSplitter, ResponseLine,
+    DecodedFrame, EncodedCommand, IncomingLine, LineSplitter, ResponseLine, command_frame,
+    decode_response, decode_status, encode, parse_line,
 };
-pub use profile::{profile_by_id, SmartSdrOptions, SmartSdrProfile, SUPPORTED_PROFILES};
+pub use profile::{SUPPORTED_PROFILES, SmartSdrOptions, SmartSdrProfile, profile_by_id};

@@ -1,9 +1,9 @@
 use crate::{
+    RadioState, Result, RitXitOffsetHz,
     capabilities::Capability,
     command::{RadioCommand, ReceiverPath},
     error::RadioError,
     update::StatePatch,
-    RadioState, Result, RitXitOffsetHz,
 };
 
 use super::{DecodedFrame, EncodedCommand};
@@ -361,11 +361,7 @@ fn require_writable(capability: Capability, field: &'static str) -> Result<()> {
 }
 
 fn bool_digit(value: bool) -> char {
-    if value {
-        '1'
-    } else {
-        '0'
-    }
+    if value { '1' } else { '0' }
 }
 
 fn uses_rf_offset(profile: &KenwoodAsciiProfile) -> bool {

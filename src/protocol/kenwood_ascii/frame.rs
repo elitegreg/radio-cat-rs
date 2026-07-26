@@ -1,4 +1,4 @@
-use crate::{error::RadioError, Result};
+use crate::{Result, error::RadioError};
 
 const MAX_FRAME_BYTES: usize = 1024;
 

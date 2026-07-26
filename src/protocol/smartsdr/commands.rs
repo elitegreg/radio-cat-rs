@@ -1,8 +1,8 @@
 use crate::{
+    Frequency, LeveledSetting, Mode, Power, RadioState, Result, RitXitOffsetHz,
     command::{RadioCommand, ReceiverPath},
     error::RadioError,
     update::StatePatch,
-    Frequency, LeveledSetting, Mode, Power, RadioState, Result, RitXitOffsetHz,
 };
 
 use super::SmartSdrProfile;
@@ -862,19 +862,11 @@ fn zero_offset() -> RitXitOffsetHz {
 }
 
 fn bool_text(value: bool) -> &'static str {
-    if value {
-        "on"
-    } else {
-        "off"
-    }
+    if value { "on" } else { "off" }
 }
 
 fn bool_digit(value: bool) -> u8 {
-    if value {
-        1
-    } else {
-        0
-    }
+    if value { 1 } else { 0 }
 }
 
 fn decode_error(command: &'static str, message: &str) -> RadioError {
@@ -887,7 +879,7 @@ fn decode_error(command: &'static str, message: &str) -> RadioError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{protocol::smartsdr::profile_by_id, ReceiverState, TransmitterState};
+    use crate::{ReceiverState, TransmitterState, protocol::smartsdr::profile_by_id};
 
     fn profile() -> &'static SmartSdrProfile {
         profile_by_id("flexradio-smartsdr").unwrap()
@@ -1015,12 +1007,16 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::TxFrequency(Frequency::from_hz(14_025_000))));
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::TxPower(Power::from_watts(100))));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::TxFrequency(Frequency::from_hz(14_025_000)))
+        );
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::TxPower(Power::from_watts(100)))
+        );
     }
 
     #[test]
@@ -1033,22 +1029,30 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(14_074_000))));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::MainRxFrequency(Frequency::from_hz(14_074_000)))
+        );
         assert!(decoded.patches.contains(&StatePatch::TxMode(Mode::DataUsb)));
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxFilterBandwidth(2_400)));
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxFilterShift(1_500)));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::MainRxFilterBandwidth(2_400))
+        );
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::MainRxFilterShift(1_500))
+        );
         assert!(decoded.patches.contains(&StatePatch::MainRxNoiseReduction(
             LeveledSetting::enabled(25)
         )));
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxNoiseBlanker(LeveledSetting::disabled())));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::MainRxNoiseBlanker(LeveledSetting::disabled()))
+        );
         assert!(decoded.patches.contains(&StatePatch::MainRxAutoNotch(true)));
     }
 

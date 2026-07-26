@@ -1,15 +1,15 @@
 use super::VfoRouting;
 use crate::{
+    Mode, RadioState, Result,
     command::{RadioCommand, ReceiverPath},
     error::RadioError,
     update::StatePatch,
-    Mode, RadioState, Result,
 };
 
 use super::{DecodedFrame, EncodedCommand};
 use crate::protocol::kenwood_ascii::{
-    AsciiFrame, CommandPriority, ElecraftRttyDataSubmode, KenwoodAsciiOptions,
-    KenwoodAsciiProfile, OutgoingStep, ResponseMatcher,
+    AsciiFrame, CommandPriority, ElecraftRttyDataSubmode, KenwoodAsciiOptions, KenwoodAsciiProfile,
+    OutgoingStep, ResponseMatcher,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -32,7 +32,13 @@ pub fn encode_with_options(
     command: &RadioCommand,
     state: &RadioState,
 ) -> Result<Option<EncodedCommand>> {
-    encode_with_routing_and_options(profile, options, command, state, VfoRouting::for_profile(profile))
+    encode_with_routing_and_options(
+        profile,
+        options,
+        command,
+        state,
+        VfoRouting::for_profile(profile),
+    )
 }
 
 pub fn encode_with_routing(
@@ -320,7 +326,7 @@ fn encode_k2(mode: Mode) -> Result<(Vec<AsciiFrame>, ResponseMatcher)> {
             return Err(RadioError::InvalidValue {
                 field: "mode",
                 message: format!("mode {mode} is not supported by elecraft-k2"),
-            })
+            });
         }
     };
     Ok((
@@ -383,7 +389,7 @@ fn decode_ts590_da(
             return Err(RadioError::Decode {
                 command: "DA",
                 message: format!("unsupported DA flag {other:?}"),
-            })
+            });
         }
     };
 
@@ -420,7 +426,7 @@ fn decode_ts890_sf(
             return Err(RadioError::Decode {
                 command: "SF",
                 message: format!("unsupported SF target {:?}", other as char),
-            })
+            });
         }
     };
     let frequency = payload[1..12]
@@ -469,7 +475,7 @@ fn decode_ts990_om(
             return Err(RadioError::Decode {
                 command: "OM",
                 message: format!("unsupported OM target {:?}", other as char),
-            })
+            });
         }
     };
     let mode = decode_ts990_code(payload.as_bytes()[1] as char)?;
@@ -535,7 +541,7 @@ fn decode_k2_md(
             return Err(RadioError::Decode {
                 command: "MD",
                 message: format!("unsupported K2 mode code {other:?}"),
-            })
+            });
         }
     };
     Ok(mode_patches(
@@ -563,7 +569,7 @@ fn decode_yaesu_md(
                     return Err(RadioError::Decode {
                         command: "MD",
                         message: format!("unsupported Yaesu mode target {:?}", other as char),
-                    })
+                    });
                 }
             };
             (target, payload.as_bytes()[1] as char)
@@ -572,7 +578,7 @@ fn decode_yaesu_md(
             return Err(RadioError::Decode {
                 command: "MD",
                 message: format!("expected 1 or 2 character MD payload, got {len}"),
-            })
+            });
         }
     };
 
@@ -801,9 +807,15 @@ fn encode_elecraft_codes(
         Mode::Cw => Ok(('3', None)),
         Mode::Fm => Ok(('4', None)),
         Mode::Am => Ok(('5', None)),
-        Mode::Rtty => Ok(('6', Some(elecraft_rtty_data_submode_code(rtty_data_submode)))),
+        Mode::Rtty => Ok((
+            '6',
+            Some(elecraft_rtty_data_submode_code(rtty_data_submode)),
+        )),
         Mode::CwReverse => Ok(('7', None)),
-        Mode::RttyReverse => Ok(('9', Some(elecraft_rtty_data_submode_code(rtty_data_submode)))),
+        Mode::RttyReverse => Ok((
+            '9',
+            Some(elecraft_rtty_data_submode_code(rtty_data_submode)),
+        )),
         Mode::DataUsb => Ok(('6', Some('0'))),
         Mode::DataLsb => Ok(('9', Some('0'))),
         Mode::Psk => Ok(('6', Some('3'))),
@@ -979,7 +991,7 @@ fn is_yaesu(profile: &KenwoodAsciiProfile) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{protocol::kenwood_ascii::profile_by_id, Frequency, TransmitterState};
+    use crate::{Frequency, TransmitterState, protocol::kenwood_ascii::profile_by_id};
 
     #[test]
     fn ts590_data_mode_encodes_as_md_plus_da() {
@@ -1037,9 +1049,11 @@ mod tests {
         let decoded = decode(profile, &AsciiFrame::new("OM0D;").unwrap(), &state)
             .unwrap()
             .unwrap();
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxMode(Mode::DataUsb)));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::MainRxMode(Mode::DataUsb))
+        );
         assert!(decoded.patches.contains(&StatePatch::TxMode(Mode::DataUsb)));
     }
 
@@ -1136,12 +1150,16 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(encoded.frames[0].as_str(), "MD1C;");
-        assert!(encoded
-            .completion_patches
-            .contains(&StatePatch::SubRxMode(Mode::DataUsb)));
-        assert!(encoded
-            .completion_patches
-            .contains(&StatePatch::TxMode(Mode::DataUsb)));
+        assert!(
+            encoded
+                .completion_patches
+                .contains(&StatePatch::SubRxMode(Mode::DataUsb))
+        );
+        assert!(
+            encoded
+                .completion_patches
+                .contains(&StatePatch::TxMode(Mode::DataUsb))
+        );
 
         let ft991 = profile_by_id("yaesu-ft991").unwrap();
         let decoded = decode(
@@ -1151,9 +1169,11 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxMode(Mode::DigitalVoice)));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::MainRxMode(Mode::DigitalVoice))
+        );
     }
 
     #[test]
@@ -1213,8 +1233,10 @@ mod tests {
         let decoded = decode(profile, &AsciiFrame::new("DA1;").unwrap(), &state)
             .unwrap()
             .unwrap();
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxMode(Mode::DataUsb)));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::MainRxMode(Mode::DataUsb))
+        );
     }
 }

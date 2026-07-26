@@ -1,8 +1,8 @@
 use crate::{
+    Frequency, LeveledSetting, Mode, Power, RadioState, Result, RitXitOffsetHz,
     command::{RadioCommand, ReceiverPath},
     error::RadioError,
     update::StatePatch,
-    Frequency, LeveledSetting, Mode, Power, RadioState, Result, RitXitOffsetHz,
 };
 
 use super::{CivFrame, IcomCivOptions, IcomCivProfile, ResponseMatcher};
@@ -627,7 +627,7 @@ fn set_preamp(
                 return Err(RadioError::InvalidValue {
                     field: "preamp.level",
                     message: format!("expected 0, 1, or 2, got {other}"),
-                })
+                });
             }
         },
     };
@@ -1115,7 +1115,7 @@ fn decode_rit_offset(bytes: &[u8]) -> Result<RitXitOffsetHz> {
             return Err(RadioError::Decode {
                 command: "rit-offset",
                 message: format!("unsupported sign byte 0x{other:02x}"),
-            })
+            });
         }
     };
 
@@ -1436,7 +1436,9 @@ mod tests {
 
         assert_eq!(
             encoded.frames[0].as_bytes(),
-            &[0xfe, 0xfe, 0xa4, 0xe0, 0x25, 0x01, 0x00, 0x00, 0x03, 0x07, 0x00, 0xfd]
+            &[
+                0xfe, 0xfe, 0xa4, 0xe0, 0x25, 0x01, 0x00, 0x00, 0x03, 0x07, 0x00, 0xfd
+            ]
         );
         assert_eq!(encoded.matcher, ResponseMatcher::Ack);
     }
@@ -1487,9 +1489,11 @@ mod tests {
 
         let frame = CivFrame::new(0xe0, 0xa4, [0x26, 0x00, 0x17, 0x00, 0x03]).unwrap();
         let decoded = decode(profile(), &frame, &state, None).unwrap().unwrap();
-        assert!(decoded
-            .patches
-            .contains(&StatePatch::MainRxMode(Mode::DigitalVoice)));
+        assert!(
+            decoded
+                .patches
+                .contains(&StatePatch::MainRxMode(Mode::DigitalVoice))
+        );
     }
 
     #[test]

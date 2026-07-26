@@ -1,7 +1,9 @@
 use async_trait::async_trait;
-use tokio::time::{timeout, Duration, Instant};
+use tokio::time::{Duration, Instant, timeout};
 
 use crate::{
+    ConnectionState, KeyerState, RadioCapabilities, RadioCommand, RadioState, ReceiverPath,
+    ReceiverState, RitXitState, StatePatch, TransmitterState, UpdateSource,
     driver::{CommandCompletion, DriverDescriptor, RadioSession, StateSink},
     error::{RadioError, Result},
     protocol::{
@@ -17,8 +19,6 @@ use crate::{
         smartsdr::{self, LineSplitter as SmartSdrLineSplitter, SmartSdrProfile},
     },
     transport::CatTransport,
-    ConnectionState, KeyerState, RadioCapabilities, RadioCommand, RadioState, ReceiverPath,
-    ReceiverState, RitXitState, StatePatch, TransmitterState, UpdateSource,
 };
 
 const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
@@ -192,7 +192,7 @@ impl KenwoodAsciiRuntime {
                     Ok(false) => {
                         return Err(RadioError::Timeout {
                             command: "kenwood-step-response",
-                        })
+                        });
                     }
                     Err(RadioError::ProtocolBusy) if busy_retries > 0 => {
                         busy_retries -= 1;
@@ -648,13 +648,13 @@ impl RadioSession for KenwoodAsciiRuntime {
             if let Some(encoded) = encode_kenwood_query(self.profile, semantic, self.vfo_routing)?
                 && let Err(error) = self
                     .send_encoded(
-                    transport,
-                    encoded,
-                    UpdateSource::Poll,
-                    COMMAND_RESPONSE_TIMEOUT,
-                    ctx,
-                )
-                .await
+                        transport,
+                        encoded,
+                        UpdateSource::Poll,
+                        COMMAND_RESPONSE_TIMEOUT,
+                        ctx,
+                    )
+                    .await
             {
                 tracing::debug!(driver = %self.profile.id(), semantic, ?error, "poll query failed");
             }
@@ -817,7 +817,7 @@ impl IcomCivRuntime {
                         IcomWaitOutcome::Matched
                     } else {
                         IcomWaitOutcome::Timeout
-                    })
+                    });
                 }
             };
 
@@ -1248,13 +1248,13 @@ impl RadioSession for IcomCivRuntime {
             if let Some(encoded) = icom_civ::encode_query(self.profile, self.options, semantic)?
                 && let Err(error) = self
                     .send_encoded(
-                    transport,
-                    encoded,
-                    UpdateSource::Poll,
-                    COMMAND_RESPONSE_TIMEOUT,
-                    ctx,
-                )
-                .await
+                        transport,
+                        encoded,
+                        UpdateSource::Poll,
+                        COMMAND_RESPONSE_TIMEOUT,
+                        ctx,
+                    )
+                    .await
             {
                 tracing::debug!(driver = %self.profile.id(), semantic, ?error, "ICOM poll query failed");
             }
@@ -1421,7 +1421,7 @@ impl SmartSdrRuntime {
                         SmartSdrWaitOutcome::Matched
                     } else {
                         SmartSdrWaitOutcome::Timeout
-                    })
+                    });
                 }
             };
 
@@ -1788,15 +1788,13 @@ fn encode_kenwood_command(
     {
         return Ok(Some(encoded));
     }
-    if let Some(encoded) =
-        kenwood_ascii::mode::encode_with_routing_and_options(
-            profile,
-            options,
-            command,
-            current_state,
-            vfo_routing,
-        )?
-    {
+    if let Some(encoded) = kenwood_ascii::mode::encode_with_routing_and_options(
+        profile,
+        options,
+        command,
+        current_state,
+        vfo_routing,
+    )? {
         return Ok(Some(encoded));
     }
     if let Some(encoded) =
@@ -2332,7 +2330,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use crate::{
-        protocol::kenwood_ascii::profile_by_id, CatTransport, Frequency, Mode, StateReducer,
+        CatTransport, Frequency, Mode, StateReducer, protocol::kenwood_ascii::profile_by_id,
     };
 
     struct TestSink {
@@ -2869,9 +2867,10 @@ mod tests {
             sink.state().main_rx.frequency,
             Some(Frequency::from_hz(7_030_000))
         );
-        assert!(sink
-            .updates
-            .iter()
-            .any(|(_, source)| *source == UpdateSource::ManualRefresh));
+        assert!(
+            sink.updates
+                .iter()
+                .any(|(_, source)| *source == UpdateSource::ManualRefresh)
+        );
     }
 }

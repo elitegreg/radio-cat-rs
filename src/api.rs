@@ -3,17 +3,17 @@ use std::{fmt, sync::Arc};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::{
-    actor::{send_command, CommandEnvelope, RadioTask},
+    CommandOutcome, DriverDescriptor, Frequency, LeveledSetting, Mode, Power, RadioCapabilities,
+    RadioRegion, RitXitOffsetHz,
+    actor::{CommandEnvelope, RadioTask, send_command},
     command::{RadioCommand, ReceiverPath},
     driver::RadioSession,
     drivers,
     error::Result,
     transport::{
-        boxed_transport, open_transport, BoxedCatTransport, CatTransport, TransportConfig,
+        BoxedCatTransport, CatTransport, TransportConfig, boxed_transport, open_transport,
     },
     update::{SharedRadioState, StateUpdate},
-    CommandOutcome, DriverDescriptor, Frequency, LeveledSetting, Mode, Power, RadioCapabilities,
-    RadioRegion, RitXitOffsetHz,
 };
 
 /// Connection settings used to construct a [`Radio`].
@@ -755,30 +755,46 @@ mod tests {
 
     #[tokio::test]
     async fn supported_driver_list_contains_dummy_kenwood_icom_and_flex_profiles() {
-        assert!(supported_drivers()
-            .iter()
-            .any(|driver| driver.id == "dummy"));
-        assert!(supported_drivers()
-            .iter()
-            .any(|driver| driver.id == "kenwood-ts590"));
-        assert!(supported_drivers()
-            .iter()
-            .any(|driver| driver.id == "icom-ic705"));
-        assert!(supported_drivers()
-            .iter()
-            .any(|driver| driver.id == "icom-ic7300"));
-        assert!(supported_drivers()
-            .iter()
-            .any(|driver| driver.id == "icom-ic7100"));
-        assert!(supported_drivers()
-            .iter()
-            .any(|driver| driver.id == "icom-ic7610"));
-        assert!(supported_drivers()
-            .iter()
-            .any(|driver| driver.id == "icom-ic7760"));
-        assert!(supported_drivers()
-            .iter()
-            .any(|driver| driver.id == "flexradio-smartsdr"));
+        assert!(
+            supported_drivers()
+                .iter()
+                .any(|driver| driver.id == "dummy")
+        );
+        assert!(
+            supported_drivers()
+                .iter()
+                .any(|driver| driver.id == "kenwood-ts590")
+        );
+        assert!(
+            supported_drivers()
+                .iter()
+                .any(|driver| driver.id == "icom-ic705")
+        );
+        assert!(
+            supported_drivers()
+                .iter()
+                .any(|driver| driver.id == "icom-ic7300")
+        );
+        assert!(
+            supported_drivers()
+                .iter()
+                .any(|driver| driver.id == "icom-ic7100")
+        );
+        assert!(
+            supported_drivers()
+                .iter()
+                .any(|driver| driver.id == "icom-ic7610")
+        );
+        assert!(
+            supported_drivers()
+                .iter()
+                .any(|driver| driver.id == "icom-ic7760")
+        );
+        assert!(
+            supported_drivers()
+                .iter()
+                .any(|driver| driver.id == "flexradio-smartsdr")
+        );
 
         let radio = Radio::connect(RadioConfig::dummy()).await.unwrap();
         assert_eq!(
@@ -794,12 +810,14 @@ mod tests {
             kenwood.transport_requirement,
             crate::TransportRequirement::SerialOrTcp
         );
-        assert!(kenwood
-            .capabilities(Some(RadioRegion::IaruRegion2))
-            .unwrap()
-            .main_rx
-            .frequency
-            .is_supported());
+        assert!(
+            kenwood
+                .capabilities(Some(RadioRegion::IaruRegion2))
+                .unwrap()
+                .main_rx
+                .frequency
+                .is_supported()
+        );
 
         let icom = supported_drivers()
             .iter()
@@ -809,12 +827,13 @@ mod tests {
             icom.transport_requirement,
             crate::TransportRequirement::SerialOrTcp
         );
-        assert!(icom
-            .capabilities(Some(RadioRegion::IaruRegion2))
-            .unwrap()
-            .main_rx
-            .frequency
-            .is_supported());
+        assert!(
+            icom.capabilities(Some(RadioRegion::IaruRegion2))
+                .unwrap()
+                .main_rx
+                .frequency
+                .is_supported()
+        );
     }
 
     #[tokio::test]

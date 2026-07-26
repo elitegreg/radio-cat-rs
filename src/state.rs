@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{error::RangeError, Frequency, Mode};
+use crate::{Frequency, Mode, error::RangeError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RadioState {

@@ -3,6 +3,7 @@ mod dummy;
 use std::sync::OnceLock;
 
 use crate::{
+    DataPttRelationship, Frequency, Mode, RadioRegion, ValueRange,
     driver::{DriverDescriptor, RadioSession, TransportRequirement},
     error::{RadioError, Result},
     protocol::{
@@ -10,10 +11,9 @@ use crate::{
         smartsdr as smartsdr_protocol,
     },
     transport::TransportConfig,
-    DataPttRelationship, Frequency, Mode, RadioRegion, ValueRange,
 };
 
-use dummy::{DummyRadioSession, DUMMY_DRIVER};
+use dummy::{DUMMY_DRIVER, DummyRadioSession};
 
 trait RadioSessionFactory: Sync {
     fn descriptors(&self) -> Vec<DriverDescriptor>;
@@ -785,38 +785,46 @@ mod tests {
 
     #[test]
     fn physical_drivers_require_configured_transports() {
-        assert!(create_session(
-            "kenwood-ts590",
-            Some(RadioRegion::IaruRegion2),
-            "",
-            &TransportConfig::None,
-            false
-        )
-        .is_err());
-        assert!(create_session(
-            "icom-ic705",
-            Some(RadioRegion::IaruRegion2),
-            "",
-            &TransportConfig::None,
-            false
-        )
-        .is_err());
-        assert!(create_session(
-            "flexradio-smartsdr",
-            None,
-            "",
-            &TransportConfig::serial("ignored", 9_600),
-            false,
-        )
-        .is_err());
-        assert!(create_session(
-            "  flexradio-smartsdr  ",
-            None,
-            "",
-            &TransportConfig::None,
-            false,
-        )
-        .is_err());
+        assert!(
+            create_session(
+                "kenwood-ts590",
+                Some(RadioRegion::IaruRegion2),
+                "",
+                &TransportConfig::None,
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            create_session(
+                "icom-ic705",
+                Some(RadioRegion::IaruRegion2),
+                "",
+                &TransportConfig::None,
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            create_session(
+                "flexradio-smartsdr",
+                None,
+                "",
+                &TransportConfig::serial("ignored", 9_600),
+                false,
+            )
+            .is_err()
+        );
+        assert!(
+            create_session(
+                "  flexradio-smartsdr  ",
+                None,
+                "",
+                &TransportConfig::None,
+                false,
+            )
+            .is_err()
+        );
         assert!(
             create_session("flexradio-smartsdr", None, "", &TransportConfig::None, true,).is_ok()
         );

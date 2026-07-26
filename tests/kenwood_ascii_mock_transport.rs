@@ -2,11 +2,11 @@ use std::collections::VecDeque;
 
 use async_trait::async_trait;
 use radio_cat_rs::{
-    protocol::kenwood_ascii::{
-        filter, frequency, info, keyer, mode, profile_by_id, rf, rit_xit, split, tx, AsciiFrame,
-        FrameSplitter, StartupStep,
-    },
     CatTransport, Radio, RadioConfig, RadioError, RadioState, Result, StateReducer,
+    protocol::kenwood_ascii::{
+        AsciiFrame, FrameSplitter, StartupStep, filter, frequency, info, keyer, mode,
+        profile_by_id, rf, rit_xit, split, tx,
+    },
 };
 
 #[derive(Debug, Default)]

@@ -1,11 +1,12 @@
 use std::{env, error::Error, fmt};
 
 use radio_cat_rs::{
+    RadioRegion, ReceiverKind,
     capabilities::{
         Capability, RadioCapabilities, ReceiverCapabilities, ReceiverRfCapabilities,
         RitXitCapabilities, StateUpdateCapability, TransmitterCapabilities,
     },
-    supported_drivers, RadioRegion, ReceiverKind,
+    supported_drivers,
 };
 
 #[derive(Debug)]

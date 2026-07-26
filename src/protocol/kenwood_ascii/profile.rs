@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crate::{
+    Power,
     capabilities::{
         Capability, KeyerCapabilities, PowerCapability, PowerRange, RadioCapabilities,
         ReceiverCapabilities, ReceiverKind, ReceiverRfCapabilities, RitXitCapabilities,
@@ -8,7 +9,6 @@ use crate::{
     },
     driver::{DriverDescriptor, TransportRequirement},
     error::{RadioError, Result},
-    Power,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -124,7 +124,7 @@ impl KenwoodAsciiOptions {
                             return Err(RadioError::InvalidValue {
                                 field: "ptt_source",
                                 message: format!("expected front or usb, got {value:?}"),
-                            })
+                            });
                         }
                     };
                 }
@@ -144,7 +144,7 @@ impl KenwoodAsciiOptions {
                             return Err(RadioError::InvalidValue {
                                 field: "rtty_data_submode",
                                 message: format!("expected fsk or afsk, got {value:?}"),
-                            })
+                            });
                         }
                     };
                 }
@@ -1103,17 +1103,21 @@ mod tests {
     fn requested_yaesu_profiles_query_oi_and_switchable_models_query_vs() {
         for id in ["yaesu-ftdx10", "yaesu-ft710", "yaesu-ft891", "yaesu-ft991"] {
             let profile = profile_by_id(id).unwrap();
-            assert!(profile
-                .startup
-                .iter()
-                .any(|step| matches!(step, StartupStep::Query("OI"))));
+            assert!(
+                profile
+                    .startup
+                    .iter()
+                    .any(|step| matches!(step, StartupStep::Query("OI")))
+            );
         }
         for id in ["yaesu-ftdx10", "yaesu-ft710"] {
             let profile = profile_by_id(id).unwrap();
-            assert!(profile
-                .startup
-                .iter()
-                .any(|step| matches!(step, StartupStep::Query("VS"))));
+            assert!(
+                profile
+                    .startup
+                    .iter()
+                    .any(|step| matches!(step, StartupStep::Query("VS")))
+            );
         }
     }
 
@@ -1144,7 +1148,9 @@ mod tests {
     #[test]
     fn kenwood_options_reject_duplicate_canonical_keys() {
         assert!(KenwoodAsciiOptions::parse("ptt=front,ptt_source=usb").is_err());
-        assert!(KenwoodAsciiOptions::parse("rtty_data_submode=fsk,rtty_data_submode=afsk").is_err());
+        assert!(
+            KenwoodAsciiOptions::parse("rtty_data_submode=fsk,rtty_data_submode=afsk").is_err()
+        );
         assert!(KenwoodAsciiOptions::parse("rtty_data_submode=invalid").is_err());
         assert!(KenwoodAsciiOptions::parse("unknown=value").is_err());
     }
