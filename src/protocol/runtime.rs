@@ -26,6 +26,18 @@ const STARTUP_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 const SMARTSDR_STARTUP_TIMEOUT: Duration = Duration::from_millis(1_500);
 const TRANSPORT_IO_TIMEOUT: Duration = Duration::from_secs(1);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponseExpectation {
+    Required,
+    Optional,
+}
+
+impl ResponseExpectation {
+    fn permits_timeout(self) -> bool {
+        matches!(self, Self::Optional)
+    }
+}
+
 pub(crate) fn kenwood_session(
     profile: &'static KenwoodAsciiProfile,
     options: KenwoodAsciiOptions,
@@ -139,6 +151,7 @@ impl KenwoodAsciiRuntime {
         encoded: EncodedCommand,
         default_source: UpdateSource,
         _wait_timeout: Duration,
+        response_expectation: ResponseExpectation,
         ctx: &mut dyn StateSink,
     ) -> Result<CommandCompletion> {
         let mut completion = CommandCompletion::Written;
@@ -189,10 +202,14 @@ impl KenwoodAsciiRuntime {
                         };
                         break;
                     }
+                    Ok(false) if response_expectation.permits_timeout() => break,
                     Ok(false) => {
                         return Err(RadioError::Timeout {
                             command: "kenwood-step-response",
                         });
+                    }
+                    Err(RadioError::Timeout { .. }) if response_expectation.permits_timeout() => {
+                        break;
                     }
                     Err(RadioError::ProtocolBusy) if busy_retries > 0 => {
                         busy_retries -= 1;
@@ -409,6 +426,7 @@ impl RadioSession for KenwoodAsciiRuntime {
                             encoded,
                             UpdateSource::Native,
                             STARTUP_RESPONSE_TIMEOUT,
+                            ResponseExpectation::Required,
                             ctx,
                         )
                         .await
@@ -439,6 +457,7 @@ impl RadioSession for KenwoodAsciiRuntime {
                             encoded,
                             UpdateSource::Native,
                             STARTUP_RESPONSE_TIMEOUT,
+                            ResponseExpectation::Required,
                             ctx,
                         )
                         .await
@@ -495,6 +514,7 @@ impl RadioSession for KenwoodAsciiRuntime {
                         ),
                         UpdateSource::ManualRefresh,
                         STARTUP_RESPONSE_TIMEOUT,
+                        ResponseExpectation::Required,
                         ctx,
                     )
                     .await?;
@@ -510,6 +530,7 @@ impl RadioSession for KenwoodAsciiRuntime {
                         encoded,
                         UpdateSource::ManualRefresh,
                         STARTUP_RESPONSE_TIMEOUT,
+                        ResponseExpectation::Required,
                         ctx,
                     )
                     .await?;
@@ -546,7 +567,8 @@ impl RadioSession for KenwoodAsciiRuntime {
             return Ok(CommandCompletion::Accepted);
         };
 
-        if command_matches_state(&command, state_before) {
+        let response_expectation = mode_reapply_response_expectation(&command, state_before);
+        if command_matches_state(&command, state_before) && !is_mode_command(&command) {
             for semantic in kenwood_validation_queries(self.profile, &command, state_before) {
                 let Some(encoded) =
                     (match encode_kenwood_query(self.profile, semantic, self.vfo_routing) {
@@ -571,6 +593,7 @@ impl RadioSession for KenwoodAsciiRuntime {
                     encoded,
                     UpdateSource::CommandResponse,
                     COMMAND_RESPONSE_TIMEOUT,
+                    ResponseExpectation::Required,
                     ctx,
                 )
                 .await?;
@@ -602,6 +625,7 @@ impl RadioSession for KenwoodAsciiRuntime {
                 encoded,
                 UpdateSource::CommandResponse,
                 COMMAND_RESPONSE_TIMEOUT,
+                response_expectation,
                 ctx,
             )
             .await?;
@@ -652,6 +676,7 @@ impl RadioSession for KenwoodAsciiRuntime {
                         encoded,
                         UpdateSource::Poll,
                         COMMAND_RESPONSE_TIMEOUT,
+                        ResponseExpectation::Required,
                         ctx,
                     )
                     .await
@@ -710,6 +735,7 @@ impl IcomCivRuntime {
         encoded: icom_civ::EncodedCommand,
         default_source: UpdateSource,
         wait_timeout: Duration,
+        response_expectation: ResponseExpectation,
         ctx: &mut dyn StateSink,
     ) -> Result<CommandCompletion> {
         let icom_civ::EncodedCommand {
@@ -758,21 +784,24 @@ impl IcomCivRuntime {
                             ctx,
                         },
                     )
-                    .await?
+                    .await
                 {
-                    IcomWaitOutcome::Matched => {}
-                    IcomWaitOutcome::Timeout => {
+                    Err(RadioError::Timeout { .. }) if response_expectation.permits_timeout() => {}
+                    Err(error) => return Err(error),
+                    Ok(IcomWaitOutcome::Matched) => {}
+                    Ok(IcomWaitOutcome::Timeout) if response_expectation.permits_timeout() => {}
+                    Ok(IcomWaitOutcome::Timeout) => {
                         return Err(RadioError::Timeout {
                             command: "icom-command-response",
                         });
                     }
-                    IcomWaitOutcome::Rejected => {
+                    Ok(IcomWaitOutcome::Rejected) => {
                         return Err(RadioError::CommandRejected {
                             protocol: "icom-civ",
                             reason: "negative acknowledgement",
                         });
                     }
-                    IcomWaitOutcome::Collision => {
+                    Ok(IcomWaitOutcome::Collision) => {
                         return Err(RadioError::ProtocolCommunication);
                     }
                 }
@@ -1046,6 +1075,7 @@ impl RadioSession for IcomCivRuntime {
                             encoded,
                             UpdateSource::Native,
                             STARTUP_RESPONSE_TIMEOUT,
+                            ResponseExpectation::Required,
                             ctx,
                         )
                         .await
@@ -1101,6 +1131,7 @@ impl RadioSession for IcomCivRuntime {
                 encoded,
                 UpdateSource::ManualRefresh,
                 STARTUP_RESPONSE_TIMEOUT,
+                ResponseExpectation::Required,
                 ctx,
             )
             .await?;
@@ -1128,7 +1159,8 @@ impl RadioSession for IcomCivRuntime {
             return Ok(CommandCompletion::Accepted);
         };
 
-        if command_matches_state(&command, state_before) {
+        let response_expectation = mode_reapply_response_expectation(&command, state_before);
+        if command_matches_state(&command, state_before) && !is_mode_command(&command) {
             for semantic in icom_validation_queries(self.profile, &command, state_before) {
                 let Some(encoded) =
                     (match icom_civ::encode_query(self.profile, self.options, semantic) {
@@ -1154,6 +1186,7 @@ impl RadioSession for IcomCivRuntime {
                         encoded,
                         UpdateSource::CommandResponse,
                         COMMAND_RESPONSE_TIMEOUT,
+                        ResponseExpectation::Required,
                         ctx,
                     )
                     .await
@@ -1194,6 +1227,7 @@ impl RadioSession for IcomCivRuntime {
                 encoded,
                 UpdateSource::CommandResponse,
                 COMMAND_RESPONSE_TIMEOUT,
+                response_expectation,
                 ctx,
             )
             .await?;
@@ -1252,6 +1286,7 @@ impl RadioSession for IcomCivRuntime {
                         encoded,
                         UpdateSource::Poll,
                         COMMAND_RESPONSE_TIMEOUT,
+                        ResponseExpectation::Required,
                         ctx,
                     )
                     .await
@@ -1320,6 +1355,7 @@ impl SmartSdrRuntime {
         encoded: smartsdr::EncodedCommand,
         default_source: UpdateSource,
         wait_timeout: Duration,
+        response_expectation: ResponseExpectation,
         ctx: &mut dyn StateSink,
     ) -> Result<CommandCompletion> {
         let smartsdr::EncodedCommand {
@@ -1328,8 +1364,15 @@ impl SmartSdrRuntime {
         } = encoded;
 
         for command in commands {
-            self.send_command_body(transport, &command, default_source, wait_timeout, ctx)
-                .await?;
+            self.send_command_body(
+                transport,
+                &command,
+                default_source,
+                wait_timeout,
+                response_expectation,
+                ctx,
+            )
+            .await?;
         }
 
         if !completion_patches.is_empty() {
@@ -1345,6 +1388,7 @@ impl SmartSdrRuntime {
         command: &str,
         default_source: UpdateSource,
         wait_timeout: Duration,
+        response_expectation: ResponseExpectation,
         ctx: &mut dyn StateSink,
     ) -> Result<()> {
         let sequence = self.next_sequence;
@@ -1377,16 +1421,19 @@ impl SmartSdrRuntime {
                 Some(command),
                 ctx,
             )
-            .await?
+            .await
         {
-            SmartSdrWaitOutcome::Matched => Ok(()),
-            SmartSdrWaitOutcome::Timeout => Err(RadioError::Timeout {
+            Ok(SmartSdrWaitOutcome::Matched) => Ok(()),
+            Ok(SmartSdrWaitOutcome::Timeout) if response_expectation.permits_timeout() => Ok(()),
+            Err(RadioError::Timeout { .. }) if response_expectation.permits_timeout() => Ok(()),
+            Ok(SmartSdrWaitOutcome::Timeout) => Err(RadioError::Timeout {
                 command: "smartsdr-command-response",
             }),
-            SmartSdrWaitOutcome::Rejected { code, message } => Err(RadioError::Decode {
+            Ok(SmartSdrWaitOutcome::Rejected { code, message }) => Err(RadioError::Decode {
                 command: "smartsdr-response",
                 message: format!("radio rejected command with 0x{code:08X}: {message}"),
             }),
+            Err(error) => Err(error),
         }
     }
 
@@ -1615,6 +1662,7 @@ impl RadioSession for SmartSdrRuntime {
             &format!("sub slice {}", self.profile.slice),
             UpdateSource::Native,
             SMARTSDR_STARTUP_TIMEOUT,
+            ResponseExpectation::Required,
             ctx,
         )
         .await?;
@@ -1624,6 +1672,7 @@ impl RadioSession for SmartSdrRuntime {
             "sub cwx all",
             UpdateSource::Native,
             SMARTSDR_STARTUP_TIMEOUT,
+            ResponseExpectation::Required,
             ctx,
         )
         .await?;
@@ -1633,6 +1682,7 @@ impl RadioSession for SmartSdrRuntime {
             "sub tx all",
             UpdateSource::Native,
             SMARTSDR_STARTUP_TIMEOUT,
+            ResponseExpectation::Required,
             ctx,
         )
         .await?;
@@ -1681,6 +1731,7 @@ impl RadioSession for SmartSdrRuntime {
             &format!("sub slice {}", self.profile.slice),
             UpdateSource::ManualRefresh,
             SMARTSDR_STARTUP_TIMEOUT,
+            ResponseExpectation::Required,
             ctx,
         )
         .await?;
@@ -1689,6 +1740,7 @@ impl RadioSession for SmartSdrRuntime {
             "sub cwx all",
             UpdateSource::ManualRefresh,
             SMARTSDR_STARTUP_TIMEOUT,
+            ResponseExpectation::Required,
             ctx,
         )
         .await?;
@@ -1697,6 +1749,7 @@ impl RadioSession for SmartSdrRuntime {
             "sub tx all",
             UpdateSource::ManualRefresh,
             SMARTSDR_STARTUP_TIMEOUT,
+            ResponseExpectation::Required,
             ctx,
         )
         .await?;
@@ -1724,7 +1777,8 @@ impl RadioSession for SmartSdrRuntime {
             });
         };
 
-        if command_matches_state(&command, state_before) {
+        let response_expectation = mode_reapply_response_expectation(&command, state_before);
+        if command_matches_state(&command, state_before) && !is_mode_command(&command) {
             tracing::debug!(
                 driver = %self.profile.id(),
                 ?command,
@@ -1738,6 +1792,7 @@ impl RadioSession for SmartSdrRuntime {
             encoded,
             UpdateSource::CommandResponse,
             COMMAND_RESPONSE_TIMEOUT,
+            response_expectation,
             ctx,
         )
         .await
@@ -2124,6 +2179,24 @@ fn rit_offset_queries(
             ReceiverPath::Sub => vec!["RO$"],
         },
         _ => vec!["IF"],
+    }
+}
+
+fn is_mode_command(command: &RadioCommand) -> bool {
+    matches!(
+        command,
+        RadioCommand::SetReceiverMode { .. } | RadioCommand::SetTxMode(_)
+    )
+}
+
+fn mode_reapply_response_expectation(
+    command: &RadioCommand,
+    state: &RadioState,
+) -> ResponseExpectation {
+    if is_mode_command(command) && command_matches_state(command, state) {
+        ResponseExpectation::Optional
+    } else {
+        ResponseExpectation::Required
     }
 }
 
@@ -2788,6 +2861,36 @@ mod tests {
         assert_eq!(sink.state().main_rx.mode, Some(Mode::Rtty));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn kenwood_reapplies_current_elecraft_rtty_without_responses() {
+        let profile = profile_by_id("elecraft-k4").unwrap();
+        let mut runtime = KenwoodAsciiRuntime::new(
+            profile,
+            KenwoodAsciiOptions::parse("rtty_data_submode=fsk").unwrap(),
+        );
+        let mut transport = TestTransport {
+            pending_when_empty: true,
+            ..Default::default()
+        };
+        let mut state = RadioState::default();
+        state.main_rx.mode = Some(Mode::Rtty);
+        let mut sink = TestSink::new(state);
+        let command = RadioCommand::SetReceiverMode {
+            receiver: ReceiverPath::Main,
+            mode: Mode::Rtty,
+        };
+        let state_before = sink.state().clone();
+
+        let completion = runtime
+            .execute(Some(&mut transport), command, &state_before, &mut sink)
+            .await
+            .unwrap();
+
+        assert_eq!(completion, CommandCompletion::Written);
+        assert_eq!(transport.writes, vec![b"MD6;".to_vec(), b"DT2;".to_vec()]);
+        assert_eq!(sink.state().main_rx.mode, Some(Mode::Rtty));
+    }
+
     #[tokio::test]
     async fn kenwood_refresh_reissues_startup_steps_and_propagates_failure() {
         let profile = profile_by_id("kenwood-ts590").unwrap();
@@ -2834,6 +2937,51 @@ mod tests {
         );
         assert_eq!(sink.updates.len(), 1);
         assert_eq!(sink.updates[0].1, UpdateSource::CommandResponse);
+    }
+
+    #[test]
+    fn current_tx_mode_uses_optional_response_handling() {
+        let mut state = RadioState::default();
+        state.tx = Some(TransmitterState {
+            mode: Some(Mode::Cw),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            mode_reapply_response_expectation(&RadioCommand::SetTxMode(Mode::Cw), &state),
+            ResponseExpectation::Optional
+        );
+        assert_eq!(
+            mode_reapply_response_expectation(&RadioCommand::SetTxMode(Mode::Usb), &state),
+            ResponseExpectation::Required
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn smartsdr_reapplies_current_mode_without_a_response() {
+        let profile = smartsdr::profile_by_id("flexradio-smartsdr").unwrap();
+        let mut runtime = SmartSdrRuntime::new(*profile);
+        let mut transport = TestTransport {
+            pending_when_empty: true,
+            ..Default::default()
+        };
+        let mut state = runtime.initial_state();
+        state.main_rx.mode = Some(Mode::DataUsb);
+        let mut sink = TestSink::new(state);
+        let command = RadioCommand::SetReceiverMode {
+            receiver: ReceiverPath::Main,
+            mode: Mode::DataUsb,
+        };
+        let state_before = sink.state().clone();
+
+        let completion = runtime
+            .execute(Some(&mut transport), command, &state_before, &mut sink)
+            .await
+            .unwrap();
+
+        assert_eq!(completion, CommandCompletion::Accepted);
+        assert_eq!(transport.writes, vec![b"C1|slice s 0 mode=DIGU\n".to_vec()]);
+        assert_eq!(sink.state().main_rx.mode, Some(Mode::DataUsb));
     }
 
     #[tokio::test]
