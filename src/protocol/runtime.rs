@@ -237,7 +237,7 @@ impl KenwoodAsciiRuntime {
                 ));
             }
 
-            let mut matched_expected = false;
+            let mut matched_expected_in_batch = false;
             let frames = match self.frame_splitter.push(&buf[..count]) {
                 Ok(frames) => frames,
                 Err(error) => {
@@ -266,7 +266,7 @@ impl KenwoodAsciiRuntime {
                     continue;
                 }
 
-                if let Some(expected) = expected
+                let matched_expected = if let Some(expected) = expected
                     && expected.matches(&frame)
                 {
                     tracing::debug!(
@@ -275,8 +275,11 @@ impl KenwoodAsciiRuntime {
                         expected = ?expected,
                         "received expected CAT response"
                     );
-                    matched_expected = true;
-                }
+                    true
+                } else {
+                    false
+                };
+                matched_expected_in_batch |= matched_expected;
 
                 match decode_kenwood_frame(self.profile, &frame, ctx.state(), &mut self.vfo_routing)
                 {
@@ -326,7 +329,7 @@ impl KenwoodAsciiRuntime {
                 return Ok(saw_frames);
             }
 
-            if matched_expected {
+            if matched_expected_in_batch {
                 return Ok(true);
             }
         }
@@ -1786,7 +1789,13 @@ fn encode_kenwood_command(
         return Ok(Some(encoded));
     }
     if let Some(encoded) =
-        kenwood_ascii::mode::encode_with_routing(profile, command, current_state, vfo_routing)?
+        kenwood_ascii::mode::encode_with_routing_and_options(
+            profile,
+            options,
+            command,
+            current_state,
+            vfo_routing,
+        )?
     {
         return Ok(Some(encoded));
     }
@@ -2747,6 +2756,38 @@ mod tests {
         assert_eq!(completion, CommandCompletion::Observed);
         assert_eq!(transport.writes, vec![b"MD2;".to_vec(), b"DA1;".to_vec()]);
         assert_eq!(sink.state().main_rx.mode, Some(Mode::DataUsb));
+    }
+
+    #[tokio::test]
+    async fn kenwood_ignores_unhandled_frame_after_matched_response_in_same_batch() {
+        let profile = profile_by_id("elecraft-k4").unwrap();
+        let mut runtime = KenwoodAsciiRuntime::new(
+            profile,
+            KenwoodAsciiOptions::parse("rtty_data_submode=fsk").unwrap(),
+        );
+        let mut transport = TestTransport {
+            reads: VecDeque::from([b"MD6;".to_vec(), b"DT2;ZZ;".to_vec()]),
+            ..Default::default()
+        };
+        let mut sink = TestSink::new(RadioState::default());
+        let state_before = sink.state().clone();
+
+        let completion = runtime
+            .execute(
+                Some(&mut transport),
+                RadioCommand::SetReceiverMode {
+                    receiver: ReceiverPath::Main,
+                    mode: Mode::Rtty,
+                },
+                &state_before,
+                &mut sink,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(completion, CommandCompletion::Observed);
+        assert_eq!(transport.writes, vec![b"MD6;".to_vec(), b"DT2;".to_vec()]);
+        assert_eq!(sink.state().main_rx.mode, Some(Mode::Rtty));
     }
 
     #[tokio::test]

@@ -433,6 +433,7 @@ mod tests {
         let ts590 = profile_by_id("kenwood-ts590").unwrap();
         let usb = KenwoodAsciiOptions {
             ptt_source: KenwoodPttSource::Usb,
+            ..KenwoodAsciiOptions::defaults()
         };
 
         assert_eq!(

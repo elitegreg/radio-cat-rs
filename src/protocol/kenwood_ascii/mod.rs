@@ -10,7 +10,7 @@ pub use commands::{
 };
 pub use frame::{AsciiFrame, FrameSplitter, ProtocolErrorFrame};
 pub use profile::{
-    profile_by_id, Brand, FrequencyFormat, KenwoodAsciiOptions, KenwoodAsciiProfile,
-    KenwoodPttSource, PollPlan, StartupStep, SUPPORTED_PROFILES,
+    profile_by_id, Brand, ElecraftRttyDataSubmode, FrequencyFormat, KenwoodAsciiOptions,
+    KenwoodAsciiProfile, KenwoodPttSource, PollPlan, StartupStep, SUPPORTED_PROFILES,
 };
 pub use transaction::{CommandPriority, OutgoingStep, ResponseMatcher, StepCompletion};

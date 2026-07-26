@@ -69,20 +69,29 @@ pub enum KenwoodPttSource {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ElecraftRttyDataSubmode {
+    Afsk,
+    Fsk,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KenwoodAsciiOptions {
     pub ptt_source: KenwoodPttSource,
+    pub rtty_data_submode: ElecraftRttyDataSubmode,
 }
 
 impl KenwoodAsciiOptions {
     pub const fn defaults() -> Self {
         Self {
             ptt_source: KenwoodPttSource::Front,
+            rtty_data_submode: ElecraftRttyDataSubmode::Fsk,
         }
     }
 
     pub fn parse(options: &str) -> Result<Self> {
         let mut parsed = Self::defaults();
         let mut saw_ptt_source = false;
+        let mut saw_rtty_data_submode = false;
 
         for part in options.split(',') {
             let part = part.trim();
@@ -115,6 +124,26 @@ impl KenwoodAsciiOptions {
                             return Err(RadioError::InvalidValue {
                                 field: "ptt_source",
                                 message: format!("expected front or usb, got {value:?}"),
+                            })
+                        }
+                    };
+                }
+                "rtty_data_submode" => {
+                    if saw_rtty_data_submode {
+                        return Err(RadioError::InvalidValue {
+                            field: "options",
+                            message: "duplicate Kenwood ASCII option \"rtty_data_submode\""
+                                .to_string(),
+                        });
+                    }
+                    saw_rtty_data_submode = true;
+                    parsed.rtty_data_submode = match value.to_ascii_lowercase().as_str() {
+                        "fsk" => ElecraftRttyDataSubmode::Fsk,
+                        "afsk" => ElecraftRttyDataSubmode::Afsk,
+                        _ => {
+                            return Err(RadioError::InvalidValue {
+                                field: "rtty_data_submode",
+                                message: format!("expected fsk or afsk, got {value:?}"),
                             })
                         }
                     };
@@ -1100,11 +1129,23 @@ mod tests {
                 .ptt_source,
             KenwoodPttSource::Usb
         );
+        assert_eq!(
+            KenwoodAsciiOptions::defaults().rtty_data_submode,
+            ElecraftRttyDataSubmode::Fsk
+        );
+        assert_eq!(
+            KenwoodAsciiOptions::parse("rtty_data_submode=afsk")
+                .unwrap()
+                .rtty_data_submode,
+            ElecraftRttyDataSubmode::Afsk
+        );
     }
 
     #[test]
     fn kenwood_options_reject_duplicate_canonical_keys() {
         assert!(KenwoodAsciiOptions::parse("ptt=front,ptt_source=usb").is_err());
+        assert!(KenwoodAsciiOptions::parse("rtty_data_submode=fsk,rtty_data_submode=afsk").is_err());
+        assert!(KenwoodAsciiOptions::parse("rtty_data_submode=invalid").is_err());
         assert!(KenwoodAsciiOptions::parse("unknown=value").is_err());
     }
 }

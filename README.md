@@ -116,7 +116,7 @@ let radio = Radio::connect(RadioConfig::dummy()).await?;
 # }
 ```
 
-The `options` string is driver-specific. For example, Kenwood TS-590/890/990/480/2000 profiles support `ptt_source=front|usb` for `set_ptt(...)` behavior; the default is `front`. `set_data_ptt(...)` is always data/USB PTT on those radios.
+The `options` string is driver-specific. For example, Kenwood TS-590/890/990/480/2000 profiles support `ptt_source=front|usb` for `set_ptt(...)` behavior; the default is `front`. `set_data_ptt(...)` is always data/USB PTT on those radios. Elecraft K3/K4 profiles support `rtty_data_submode=fsk|afsk` for RTTY and RTTY Reversed requests; the default `fsk` sends data submode 2, while `afsk` sends data submode 1.
 
 Physical-radio profiles require `RadioRegion::IaruRegion1`, `IaruRegion2`, or
 `IaruRegion3` so their capabilities report the appropriate documented hardware

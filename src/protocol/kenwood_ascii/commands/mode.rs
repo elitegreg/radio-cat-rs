@@ -8,7 +8,8 @@ use crate::{
 
 use super::{DecodedFrame, EncodedCommand};
 use crate::protocol::kenwood_ascii::{
-    AsciiFrame, CommandPriority, KenwoodAsciiProfile, OutgoingStep, ResponseMatcher,
+    AsciiFrame, CommandPriority, ElecraftRttyDataSubmode, KenwoodAsciiOptions,
+    KenwoodAsciiProfile, OutgoingStep, ResponseMatcher,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -22,7 +23,16 @@ pub fn encode(
     command: &RadioCommand,
     state: &RadioState,
 ) -> Result<Option<EncodedCommand>> {
-    encode_with_routing(profile, command, state, VfoRouting::for_profile(profile))
+    encode_with_options(profile, KenwoodAsciiOptions::defaults(), command, state)
+}
+
+pub fn encode_with_options(
+    profile: &KenwoodAsciiProfile,
+    options: KenwoodAsciiOptions,
+    command: &RadioCommand,
+    state: &RadioState,
+) -> Result<Option<EncodedCommand>> {
+    encode_with_routing_and_options(profile, options, command, state, VfoRouting::for_profile(profile))
 }
 
 pub fn encode_with_routing(
@@ -31,9 +41,26 @@ pub fn encode_with_routing(
     state: &RadioState,
     vfo_routing: VfoRouting,
 ) -> Result<Option<EncodedCommand>> {
+    encode_with_routing_and_options(
+        profile,
+        KenwoodAsciiOptions::defaults(),
+        command,
+        state,
+        vfo_routing,
+    )
+}
+
+pub fn encode_with_routing_and_options(
+    profile: &KenwoodAsciiProfile,
+    options: KenwoodAsciiOptions,
+    command: &RadioCommand,
+    state: &RadioState,
+    vfo_routing: VfoRouting,
+) -> Result<Option<EncodedCommand>> {
     match command {
         RadioCommand::SetReceiverMode { receiver, mode } => encode_mode_for_target(
             profile,
+            options,
             receiver_target(*receiver),
             *mode,
             state,
@@ -42,6 +69,7 @@ pub fn encode_with_routing(
         .map(Some),
         RadioCommand::SetTxMode(mode) => encode_mode_for_target(
             profile,
+            options,
             receiver_target(vfo_routing.receiver_for_vfo(vfo_routing.tx_vfo())),
             *mode,
             state,
@@ -150,6 +178,7 @@ pub(crate) fn decode_yaesu_if_mode(profile: &KenwoodAsciiProfile, code: char) ->
 
 fn encode_mode_for_target(
     profile: &KenwoodAsciiProfile,
+    options: KenwoodAsciiOptions,
     target: ModeTarget,
     mode: Mode,
     state: &RadioState,
@@ -164,7 +193,7 @@ fn encode_mode_for_target(
     } else if is_standard_kenwood(profile) {
         encode_standard_md(mode)?
     } else if is_elecraft_family(profile) {
-        encode_elecraft_mode(target, mode)?
+        encode_elecraft_mode(target, mode, options.rtty_data_submode)?
     } else if profile.id() == "elecraft-k2" {
         encode_k2(mode)?
     } else if is_yaesu(profile) {
@@ -262,12 +291,13 @@ fn encode_ts990(target: ModeTarget, mode: Mode) -> Result<(Vec<AsciiFrame>, Resp
 fn encode_elecraft_mode(
     target: ModeTarget,
     mode: Mode,
+    rtty_data_submode: ElecraftRttyDataSubmode,
 ) -> Result<(Vec<AsciiFrame>, ResponseMatcher)> {
     let suffix = match target {
         ModeTarget::Main => "",
         ModeTarget::Sub => "$",
     };
-    let (md_code, dt_code) = encode_elecraft_codes(mode)?;
+    let (md_code, dt_code) = encode_elecraft_codes(mode, rtty_data_submode)?;
     let mut frames = vec![AsciiFrame::new(format!("MD{suffix}{md_code};"))?];
     if let Some(dt_code) = dt_code {
         frames.push(AsciiFrame::new(format!("DT{suffix}{dt_code};"))?);
@@ -761,16 +791,19 @@ fn encode_ts990_code(mode: Mode) -> Result<char> {
     }
 }
 
-fn encode_elecraft_codes(mode: Mode) -> Result<(char, Option<char>)> {
+fn encode_elecraft_codes(
+    mode: Mode,
+    rtty_data_submode: ElecraftRttyDataSubmode,
+) -> Result<(char, Option<char>)> {
     match mode {
         Mode::Lsb => Ok(('1', None)),
         Mode::Usb => Ok(('2', None)),
         Mode::Cw => Ok(('3', None)),
         Mode::Fm => Ok(('4', None)),
         Mode::Am => Ok(('5', None)),
-        Mode::Rtty => Ok(('6', Some('2'))),
+        Mode::Rtty => Ok(('6', Some(elecraft_rtty_data_submode_code(rtty_data_submode)))),
         Mode::CwReverse => Ok(('7', None)),
-        Mode::RttyReverse => Ok(('9', Some('2'))),
+        Mode::RttyReverse => Ok(('9', Some(elecraft_rtty_data_submode_code(rtty_data_submode)))),
         Mode::DataUsb => Ok(('6', Some('0'))),
         Mode::DataLsb => Ok(('9', Some('0'))),
         Mode::Psk => Ok(('6', Some('3'))),
@@ -779,6 +812,13 @@ fn encode_elecraft_codes(mode: Mode) -> Result<(char, Option<char>)> {
             field: "mode",
             message: format!("mode {mode} is not supported by Elecraft MD/DT"),
         }),
+    }
+}
+
+fn elecraft_rtty_data_submode_code(submode: ElecraftRttyDataSubmode) -> char {
+    match submode {
+        ElecraftRttyDataSubmode::Afsk => '1',
+        ElecraftRttyDataSubmode::Fsk => '2',
     }
 }
 
@@ -1018,6 +1058,40 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(dt.patches.contains(&StatePatch::MainRxMode(Mode::Rtty)));
+    }
+
+    #[test]
+    fn elecraft_rtty_data_submode_option_controls_dt_code() {
+        let profile = profile_by_id("elecraft-k4").unwrap();
+        let state = RadioState::default();
+
+        let fsk = encode_with_options(
+            profile,
+            KenwoodAsciiOptions::defaults(),
+            &RadioCommand::SetReceiverMode {
+                receiver: ReceiverPath::Main,
+                mode: Mode::RttyReverse,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(fsk.frames[0].as_str(), "MD9;");
+        assert_eq!(fsk.frames[1].as_str(), "DT2;");
+
+        let afsk = encode_with_options(
+            profile,
+            KenwoodAsciiOptions::parse("rtty_data_submode=afsk").unwrap(),
+            &RadioCommand::SetReceiverMode {
+                receiver: ReceiverPath::Main,
+                mode: Mode::Rtty,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(afsk.frames[0].as_str(), "MD6;");
+        assert_eq!(afsk.frames[1].as_str(), "DT1;");
     }
 
     #[test]
