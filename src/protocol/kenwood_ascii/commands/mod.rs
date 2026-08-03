@@ -20,6 +20,10 @@ pub struct EncodedCommand {
     pub(crate) frames: Vec<AsciiFrame>,
     pub(crate) matcher: ResponseMatcher,
     pub completion_patches: Vec<StatePatch>,
+    /// Apply completion patches after every successful transaction step. This is
+    /// needed when intermediate replies must not be decoded using the old VFO
+    /// routing.
+    pub apply_patches_on_success: bool,
     pub(crate) priority: CommandPriority,
 }
 
@@ -43,6 +47,7 @@ impl EncodedCommand {
             frames,
             matcher,
             completion_patches,
+            apply_patches_on_success: false,
             priority,
         }
     }
@@ -62,8 +67,15 @@ impl EncodedCommand {
             frames,
             matcher,
             completion_patches,
+            apply_patches_on_success: false,
             priority,
         }
+    }
+
+    pub fn transaction(steps: Vec<OutgoingStep>, completion_patches: Vec<StatePatch>) -> Self {
+        let mut encoded = Self::with_steps(steps, completion_patches);
+        encoded.apply_patches_on_success = true;
+        encoded
     }
 }
 

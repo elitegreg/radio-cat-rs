@@ -5,7 +5,9 @@ use crate::{
     update::StatePatch,
 };
 
-use super::{DecodedFrame, EncodedCommand, FrequencyCommandTarget, VfoRouting};
+use super::{
+    DecodedFrame, EncodedCommand, FrequencyCommandTarget, OutgoingStep, PhysicalVfo, VfoRouting,
+};
 use crate::protocol::kenwood_ascii::{
     AsciiFrame, CommandPriority, FrequencyFormat, KenwoodAsciiProfile, ResponseMatcher,
 };
@@ -21,7 +23,7 @@ pub fn encode(
 pub fn encode_with_routing(
     profile: &KenwoodAsciiProfile,
     command: &RadioCommand,
-    _state: &RadioState,
+    state: &RadioState,
     vfo_routing: VfoRouting,
 ) -> Result<Option<EncodedCommand>> {
     match command {
@@ -35,6 +37,22 @@ pub fn encode_with_routing(
             frequency_optimistic_patch(receiver_target(*receiver), *frequency, vfo_routing),
         )?)),
         RadioCommand::SetTxFrequency(frequency) => {
+            if should_disable_split_for_tx_frequency(state, *frequency) {
+                return super::split::encode_with_routing(
+                    profile,
+                    &RadioCommand::SetSplit(false),
+                    state,
+                    vfo_routing,
+                );
+            }
+            if should_enable_split_for_tx_frequency(state, *frequency) {
+                return Ok(Some(encode_tx_frequency_with_split(
+                    profile,
+                    *frequency,
+                    state,
+                    vfo_routing,
+                )?));
+            }
             let target = receiver_target(vfo_routing.receiver_for_vfo(vfo_routing.tx_vfo()));
             let optimistic = frequency_optimistic_patch(target, *frequency, vfo_routing);
             Ok(Some(encode_targeted_frequency(
@@ -46,6 +64,103 @@ pub fn encode_with_routing(
         }
         _ => Ok(None),
     }
+}
+
+fn should_disable_split_for_tx_frequency(state: &RadioState, frequency: Frequency) -> bool {
+    state.tx.as_ref().and_then(|tx| tx.split) == Some(true)
+        && state.main_rx.frequency == Some(frequency)
+}
+
+fn should_enable_split_for_tx_frequency(state: &RadioState, frequency: Frequency) -> bool {
+    state.tx.as_ref().and_then(|tx| tx.split) != Some(true)
+        && state
+            .main_rx
+            .frequency
+            .is_some_and(|main| main != frequency)
+}
+
+fn encode_tx_frequency_with_split(
+    profile: &KenwoodAsciiProfile,
+    frequency: Frequency,
+    state: &RadioState,
+    routing: VfoRouting,
+) -> Result<EncodedCommand> {
+    let mut steps = Vec::new();
+    let mut split_routing = routing;
+
+    if routing.switchable && routing.main_vfo == PhysicalVfo::B {
+        let main = state.main_rx.frequency.expect("checked by caller");
+        let sub = state
+            .sub_rx
+            .as_ref()
+            .and_then(|receiver| receiver.frequency)
+            .ok_or_else(|| RadioError::InvalidValue {
+                field: "sub_rx.frequency",
+                message: "cannot normalize active VFO B without a known sub frequency".to_string(),
+            })?;
+        steps.push(frequency_step(profile, FrequencyCommandTarget::Main, main)?);
+        steps.push(frequency_step(profile, FrequencyCommandTarget::Sub, sub)?);
+        steps.push(select_vfo_a_step(profile)?);
+        split_routing.select(PhysicalVfo::A);
+    }
+
+    steps.push(frequency_step(
+        profile,
+        FrequencyCommandTarget::Sub,
+        frequency,
+    )?);
+    let split = super::split::encode_with_routing(
+        profile,
+        &RadioCommand::SetSplit(true),
+        state,
+        split_routing,
+    )?
+    .expect("all Kenwood ASCII profiles support split");
+    steps.extend(
+        split
+            .steps
+            .into_iter()
+            .map(|step| OutgoingStep::matched(step.frame, step.expected, step.priority)),
+    );
+
+    Ok(EncodedCommand::transaction(
+        steps,
+        vec![
+            StatePatch::SubRxFrequency(frequency),
+            StatePatch::TxFrequency(frequency),
+            StatePatch::Split(true),
+        ],
+    ))
+}
+
+fn frequency_step(
+    profile: &KenwoodAsciiProfile,
+    target: FrequencyCommandTarget,
+    frequency: Frequency,
+) -> Result<OutgoingStep> {
+    let command = command_for_target(target);
+    let frame = AsciiFrame::new(format!(
+        "{command}{:0digits$};",
+        frequency.hz(),
+        digits = frequency_digits(profile)
+    ))?;
+    Ok(OutgoingStep::matched(
+        frame,
+        ResponseMatcher::Prefix(command),
+        CommandPriority::Normal,
+    ))
+}
+
+fn select_vfo_a_step(profile: &KenwoodAsciiProfile) -> Result<OutgoingStep> {
+    let (frame, expected) = match profile.id() {
+        "yaesu-ftdx10" | "yaesu-ft710" => ("VS0;", ResponseMatcher::Prefix("VS")),
+        _ => ("FR0;", ResponseMatcher::Prefix("FR")),
+    };
+    Ok(OutgoingStep::matched(
+        AsciiFrame::new(frame)?,
+        expected,
+        CommandPriority::Normal,
+    ))
 }
 
 pub fn encode_query(
@@ -367,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn routed_tx_frequency_uses_active_vfo_when_split_is_off() {
+    fn tx_frequency_enables_split_and_normalizes_active_vfo_b() {
         let profile = profile_by_id("kenwood-ts590").unwrap();
         let state = routed_state(false, Frequency::from_hz(7_074_000));
         let mut routing = VfoRouting::for_profile(profile);
@@ -383,7 +498,28 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(encoded.frames[0].as_str(), "FB00007100000;");
+        assert_eq!(
+            encoded
+                .frames
+                .iter()
+                .map(|frame| frame.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "FA00014074000;",
+                "FB00007074000;",
+                "FR0;",
+                "FB00007100000;",
+                "FT1;",
+            ]
+        );
+        assert_eq!(
+            encoded.completion_patches,
+            vec![
+                StatePatch::SubRxFrequency(Frequency::from_hz(7_100_000)),
+                StatePatch::TxFrequency(Frequency::from_hz(7_100_000)),
+                StatePatch::Split(true),
+            ]
+        );
     }
 
     #[test]
@@ -570,12 +706,91 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(encoded.frames[0].as_str(), "FA00014075000;");
+        assert_eq!(
+            encoded
+                .frames
+                .iter()
+                .map(|frame| frame.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "FA00014074000;",
+                "FB00014074000;",
+                "FR0;",
+                "FB00014075000;",
+                "FT1;",
+            ]
+        );
         assert_eq!(
             encoded.completion_patches,
             vec![
                 StatePatch::SubRxFrequency(Frequency::from_hz(14_075_000)),
                 StatePatch::TxFrequency(Frequency::from_hz(14_075_000)),
+                StatePatch::Split(true),
+            ]
+        );
+    }
+
+    #[test]
+    fn tx_frequency_different_from_main_writes_sub_then_enables_split() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let state = routed_state(false, Frequency::from_hz(7_074_000));
+
+        let encoded = encode_with_routing(
+            profile,
+            &RadioCommand::SetTxFrequency(Frequency::from_hz(7_076_000)),
+            &state,
+            VfoRouting::for_profile(profile),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            encoded
+                .frames
+                .iter()
+                .map(|frame| frame.as_str())
+                .collect::<Vec<_>>(),
+            vec!["FB00007076000;", "FT1;"]
+        );
+        assert_eq!(
+            encoded.completion_patches,
+            vec![
+                StatePatch::SubRxFrequency(Frequency::from_hz(7_076_000)),
+                StatePatch::TxFrequency(Frequency::from_hz(7_076_000)),
+                StatePatch::Split(true),
+            ]
+        );
+    }
+
+    #[test]
+    fn tx_frequency_equal_to_main_disables_existing_split() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let state = routed_state(true, Frequency::from_hz(7_076_000));
+        let mut routing = VfoRouting::for_profile(profile);
+        routing.set_tx_vfo(PhysicalVfo::B);
+
+        let encoded = encode_with_routing(
+            profile,
+            &RadioCommand::SetTxFrequency(Frequency::from_hz(14_074_000)),
+            &state,
+            routing,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            encoded
+                .frames
+                .iter()
+                .map(|frame| frame.as_str())
+                .collect::<Vec<_>>(),
+            vec!["FT0;"]
+        );
+        assert_eq!(
+            encoded.completion_patches,
+            vec![
+                StatePatch::Split(false),
+                StatePatch::TxFrequency(Frequency::from_hz(14_074_000)),
             ]
         );
     }

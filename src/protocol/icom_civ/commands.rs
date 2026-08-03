@@ -129,6 +129,12 @@ pub fn encode(
             )?))
         }
         RadioCommand::SetTxFrequency(frequency) => {
+            if should_disable_split_for_tx_frequency(state, *frequency) {
+                return Ok(Some(set_split(options, false)?));
+            }
+            if should_enable_split_for_tx_frequency(state, *frequency) {
+                return Ok(Some(set_tx_frequency_with_split(options, *frequency)?));
+            }
             let receiver = tx_receiver_from_state(state);
             Ok(Some(set_vfo_frequency(
                 options,
@@ -188,6 +194,42 @@ pub fn encode(
             unreachable!("refresh is dispatched through RadioSession::refresh")
         }
     }
+}
+
+fn should_disable_split_for_tx_frequency(state: &RadioState, frequency: Frequency) -> bool {
+    state.tx.as_ref().and_then(|tx| tx.split) == Some(true)
+        && state.main_rx.frequency == Some(frequency)
+}
+
+fn should_enable_split_for_tx_frequency(state: &RadioState, frequency: Frequency) -> bool {
+    state.tx.as_ref().and_then(|tx| tx.split) != Some(true)
+        && state
+            .main_rx
+            .frequency
+            .is_some_and(|main| main != frequency)
+}
+
+fn set_tx_frequency_with_split(
+    options: IcomCivOptions,
+    requested: Frequency,
+) -> Result<EncodedCommand> {
+    let frequency = set_vfo_frequency(
+        options,
+        receiver_selector(ReceiverPath::Sub),
+        requested,
+        Vec::new(),
+    )?;
+    let split = set_split(options, true)?;
+    Ok(EncodedCommand::new(
+        vec![frequency.frames[0].clone(), split.frames[0].clone()],
+        ResponseMatcher::Ack,
+        Some(ReceiverPath::Sub),
+        vec![
+            StatePatch::SubRxFrequency(requested),
+            StatePatch::TxFrequency(requested),
+            StatePatch::Split(true),
+        ],
+    ))
 }
 
 pub fn encode_query(
@@ -1441,6 +1483,65 @@ mod tests {
             ]
         );
         assert_eq!(encoded.matcher, ResponseMatcher::Ack);
+    }
+
+    #[test]
+    fn tx_frequency_different_from_main_sets_sub_then_enables_split() {
+        let mut state = RadioState::default();
+        state.main_rx.frequency = Some(Frequency::from_hz(7_074_000));
+        state.tx = Some(TransmitterState {
+            frequency: Some(Frequency::from_hz(7_074_000)),
+            split: Some(false),
+            ..TransmitterState::default()
+        });
+
+        let encoded = encode(
+            profile(),
+            options(),
+            &RadioCommand::SetTxFrequency(Frequency::from_hz(7_076_000)),
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(encoded.frames.len(), 2);
+        assert_eq!(
+            encoded.frames[0].payload(),
+            &[0x25, 0x01, 0x00, 0x60, 0x07, 0x07, 0x00]
+        );
+        assert_eq!(encoded.frames[1].payload(), &[0x0f, 0x01]);
+        assert_eq!(
+            encoded.completion_patches,
+            vec![
+                StatePatch::SubRxFrequency(Frequency::from_hz(7_076_000)),
+                StatePatch::TxFrequency(Frequency::from_hz(7_076_000)),
+                StatePatch::Split(true),
+            ]
+        );
+    }
+
+    #[test]
+    fn tx_frequency_equal_to_main_disables_existing_split() {
+        let mut state = RadioState::default();
+        state.main_rx.frequency = Some(Frequency::from_hz(7_074_000));
+        state.tx = Some(TransmitterState {
+            frequency: Some(Frequency::from_hz(7_076_000)),
+            split: Some(true),
+            ..TransmitterState::default()
+        });
+
+        let encoded = encode(
+            profile(),
+            options(),
+            &RadioCommand::SetTxFrequency(Frequency::from_hz(7_074_000)),
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(encoded.frames.len(), 1);
+        assert_eq!(encoded.frames[0].payload(), &[0x0f, 0x00]);
+        assert_eq!(encoded.completion_patches, vec![StatePatch::Split(false)]);
     }
 
     #[test]

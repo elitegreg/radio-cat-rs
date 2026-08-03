@@ -1,8 +1,8 @@
 use crate::{RadioState, Result, command::RadioCommand, error::RadioError, update::StatePatch};
 
-use super::{DecodedFrame, EncodedCommand, PhysicalVfo, VfoRouting};
+use super::{DecodedFrame, EncodedCommand, OutgoingStep, PhysicalVfo, VfoRouting};
 use crate::protocol::kenwood_ascii::{
-    AsciiFrame, CommandPriority, KenwoodAsciiProfile, ResponseMatcher,
+    AsciiFrame, CommandPriority, FrequencyFormat, KenwoodAsciiProfile, ResponseMatcher,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -96,6 +96,9 @@ fn encode_set_split(
     state: &RadioState,
     routing: VfoRouting,
 ) -> Result<EncodedCommand> {
+    if split && routing.switchable && routing.main_vfo == PhysicalVfo::B {
+        return encode_split_after_normalizing_vfo_a(profile, state, routing);
+    }
     if uses_routed_ft(profile) {
         let rx_vfo = routing_vfo(routing.main_vfo);
         let tx_vfo = if split { rx_vfo.opposite() } else { rx_vfo };
@@ -156,6 +159,67 @@ fn encode_set_split(
         matcher,
         optimistic,
         CommandPriority::Normal,
+    ))
+}
+
+fn encode_split_after_normalizing_vfo_a(
+    profile: &KenwoodAsciiProfile,
+    state: &RadioState,
+    routing: VfoRouting,
+) -> Result<EncodedCommand> {
+    let main = state
+        .main_rx
+        .frequency
+        .ok_or_else(|| RadioError::InvalidValue {
+            field: "main_rx.frequency",
+            message: "cannot normalize active VFO B without a known main frequency".to_string(),
+        })?;
+    let sub = state
+        .sub_rx
+        .as_ref()
+        .and_then(|receiver| receiver.frequency)
+        .ok_or_else(|| RadioError::InvalidValue {
+            field: "sub_rx.frequency",
+            message: "cannot normalize active VFO B without a known sub frequency".to_string(),
+        })?;
+    let digits = match profile.frequency_format {
+        FrequencyFormat::Hertz9Digit => 9,
+        FrequencyFormat::Hertz11Digit => 11,
+    };
+    let mut steps = vec![
+        OutgoingStep::matched(
+            AsciiFrame::new(format!("FA{:0digits$};", main.hz()))?,
+            ResponseMatcher::Prefix("FA"),
+            CommandPriority::Normal,
+        ),
+        OutgoingStep::matched(
+            AsciiFrame::new(format!("FB{:0digits$};", sub.hz()))?,
+            ResponseMatcher::Prefix("FB"),
+            CommandPriority::Normal,
+        ),
+    ];
+    let (select, matcher) = match profile.id() {
+        "yaesu-ftdx10" | "yaesu-ft710" => ("VS0;", ResponseMatcher::Prefix("VS")),
+        _ => ("FR0;", ResponseMatcher::Prefix("FR")),
+    };
+    steps.push(OutgoingStep::matched(
+        AsciiFrame::new(select)?,
+        matcher,
+        CommandPriority::Normal,
+    ));
+
+    let mut normalized_routing = routing;
+    normalized_routing.select(PhysicalVfo::A);
+    let split = encode_set_split(profile, true, state, normalized_routing)?;
+    steps.extend(
+        split
+            .steps
+            .into_iter()
+            .map(|step| OutgoingStep::matched(step.frame, step.expected, step.priority)),
+    );
+    Ok(EncodedCommand::transaction(
+        steps,
+        direct_split_patches(true, RoutingVfo::Sub, state, normalized_routing),
     ))
 }
 
@@ -386,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn routed_ft_split_uses_opposite_vfo() {
+    fn routed_ft_split_normalizes_active_vfo_b_before_enabling_split() {
         let profile = profile_by_id("kenwood-ts590").unwrap();
         let mut state = routed_state(false, Frequency::from_hz(7_074_000));
         let old_main = state.main_rx.clone();
@@ -400,7 +464,14 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(encoded.frames[0].as_str(), "FT0;");
+        assert_eq!(
+            encoded
+                .frames
+                .iter()
+                .map(|frame| frame.as_str())
+                .collect::<Vec<_>>(),
+            vec!["FA00007074000;", "FB00014074000;", "FR0;", "FT1;",]
+        );
         assert_eq!(
             encoded.completion_patches,
             vec![

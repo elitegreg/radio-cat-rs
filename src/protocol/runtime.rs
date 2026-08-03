@@ -548,6 +548,9 @@ impl RadioSession for KenwoodAsciiRuntime {
         state_before: &RadioState,
         ctx: &mut dyn StateSink,
     ) -> Result<CommandCompletion> {
+        if is_tx_frequency_noop(&command, state_before) {
+            return Ok(CommandCompletion::Observed);
+        }
         let Some(encoded) = encode_kenwood_command(
             self.profile,
             self.options,
@@ -563,7 +566,7 @@ impl RadioSession for KenwoodAsciiRuntime {
 
         let Some(transport) = transport else {
             ctx.publish_patches(encoded.completion_patches, UpdateSource::CommandResponse);
-            apply_kenwood_routing_command(&mut self.vfo_routing, &command);
+            apply_kenwood_routing_command(&mut self.vfo_routing, &command, state_before);
             return Ok(CommandCompletion::Accepted);
         };
 
@@ -618,6 +621,7 @@ impl RadioSession for KenwoodAsciiRuntime {
         );
 
         let completion_patches = encoded.completion_patches.clone();
+        let apply_patches_on_success = encoded.apply_patches_on_success;
 
         let completion = self
             .send_encoded(
@@ -629,9 +633,9 @@ impl RadioSession for KenwoodAsciiRuntime {
                 ctx,
             )
             .await?;
-        if completion == CommandCompletion::Written {
+        if completion == CommandCompletion::Written || apply_patches_on_success {
             ctx.publish_patches(completion_patches, UpdateSource::CommandResponse);
-            apply_kenwood_routing_command(&mut self.vfo_routing, &command);
+            apply_kenwood_routing_command(&mut self.vfo_routing, &command, state_before);
         }
         Ok(completion)
     }
@@ -1147,6 +1151,9 @@ impl RadioSession for IcomCivRuntime {
         state_before: &RadioState,
         ctx: &mut dyn StateSink,
     ) -> Result<CommandCompletion> {
+        if is_tx_frequency_noop(&command, state_before) {
+            return Ok(CommandCompletion::Observed);
+        }
         let Some(encoded) = icom_civ::encode(self.profile, self.options, &command, state_before)?
         else {
             return Err(RadioError::UnsupportedCapability {
@@ -1764,6 +1771,9 @@ impl RadioSession for SmartSdrRuntime {
         state_before: &RadioState,
         ctx: &mut dyn StateSink,
     ) -> Result<CommandCompletion> {
+        if is_tx_frequency_noop(&command, state_before) {
+            return Ok(CommandCompletion::Observed);
+        }
         let Some(encoded) = smartsdr::encode(&self.profile, &command, state_before)? else {
             return Err(RadioError::UnsupportedCapability {
                 capability: "command",
@@ -1878,10 +1888,39 @@ fn encode_kenwood_command(
     Ok(None)
 }
 
-fn apply_kenwood_routing_command(routing: &mut kenwood_ascii::VfoRouting, command: &RadioCommand) {
+fn apply_kenwood_routing_command(
+    routing: &mut kenwood_ascii::VfoRouting,
+    command: &RadioCommand,
+    state: &RadioState,
+) {
     if let RadioCommand::SetSplit(split) = command {
+        if *split && routing.switchable && routing.main_vfo == kenwood_ascii::PhysicalVfo::B {
+            routing.main_vfo = kenwood_ascii::PhysicalVfo::A;
+        }
         routing.set_split(*split);
     }
+    if let RadioCommand::SetTxFrequency(frequency) = command
+        && state
+            .main_rx
+            .frequency
+            .is_some_and(|main| main != *frequency)
+    {
+        routing.main_vfo = kenwood_ascii::PhysicalVfo::A;
+        routing.set_split(true);
+    }
+    if let RadioCommand::SetTxFrequency(frequency) = command
+        && state.tx.as_ref().and_then(|tx| tx.split) == Some(true)
+        && state.main_rx.frequency == Some(*frequency)
+    {
+        routing.set_split(false);
+    }
+}
+
+fn is_tx_frequency_noop(command: &RadioCommand, state: &RadioState) -> bool {
+    matches!(command, RadioCommand::SetTxFrequency(frequency)
+        if state.tx.as_ref().and_then(|tx| tx.frequency) == Some(*frequency)
+            && !(state.tx.as_ref().and_then(|tx| tx.split) == Some(true)
+                && state.main_rx.frequency == Some(*frequency)))
 }
 
 fn encode_kenwood_query(

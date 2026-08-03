@@ -77,7 +77,7 @@ impl RadioSession for DummyRadioSession {
         &mut self,
         _transport: Option<&mut dyn CatTransport>,
         command: RadioCommand,
-        _state_before: &RadioState,
+        state_before: &RadioState,
         sink: &mut dyn StateSink,
     ) -> Result<CommandCompletion> {
         tracing::debug!(?command, "dummy session handling command");
@@ -133,6 +133,12 @@ impl RadioSession for DummyRadioSession {
                 StatePatch::MainRxAutoNotch(enabled),
                 StatePatch::SubRxAutoNotch(enabled),
             ),
+            RadioCommand::SetTxFrequency(frequency)
+                if state_before.tx.as_ref().and_then(|tx| tx.split) == Some(true)
+                    && state_before.main_rx.frequency == Some(frequency) =>
+            {
+                vec![StatePatch::Split(false)]
+            }
             RadioCommand::SetTxFrequency(frequency) => vec![StatePatch::TxFrequency(frequency)],
             RadioCommand::SetTxMode(mode) => vec![StatePatch::TxMode(mode)],
             RadioCommand::SetTxPower(power) => {
