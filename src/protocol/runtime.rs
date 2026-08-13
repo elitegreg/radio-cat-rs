@@ -2900,6 +2900,36 @@ mod tests {
         assert_eq!(sink.state().main_rx.mode, Some(Mode::Rtty));
     }
 
+    #[tokio::test]
+    async fn kenwood_elecraft_mode_change_does_not_wait_for_unchanged_md() {
+        let profile = profile_by_id("elecraft-k4").unwrap();
+        let mut runtime = KenwoodAsciiRuntime::new(
+            profile,
+            KenwoodAsciiOptions::parse("rtty_data_submode=fsk").unwrap(),
+        );
+        let mut transport = TestTransport {
+            reads: VecDeque::from([b"DT2;".to_vec()]),
+            ..Default::default()
+        };
+        let mut state = RadioState::default();
+        state.main_rx.mode = Some(Mode::DataUsb);
+        let mut sink = TestSink::new(state);
+        let command = RadioCommand::SetReceiverMode {
+            receiver: ReceiverPath::Main,
+            mode: Mode::Rtty,
+        };
+        let state_before = sink.state().clone();
+
+        let completion = runtime
+            .execute(Some(&mut transport), command, &state_before, &mut sink)
+            .await
+            .unwrap();
+
+        assert_eq!(completion, CommandCompletion::Observed);
+        assert_eq!(transport.writes, vec![b"DT2;".to_vec()]);
+        assert_eq!(sink.state().main_rx.mode, Some(Mode::Rtty));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn kenwood_reapplies_current_elecraft_rtty_without_responses() {
         let profile = profile_by_id("elecraft-k4").unwrap();

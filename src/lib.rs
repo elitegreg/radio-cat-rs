@@ -32,6 +32,9 @@ pub mod state;
 pub mod transport;
 /// State update events and reduction utilities.
 pub mod update;
+/// Optional flrig-compatible XML-RPC control server.
+#[cfg(feature = "xml-rpc")]
+pub mod xml_rpc;
 
 pub use api::{Radio, RadioConfig, supported_drivers};
 pub use capabilities::{

@@ -8,11 +8,14 @@ license = "MIT"
 [features]
 default = []
 advanced-protocol-api = []
+xml-rpc = ["dep:dxr", "dep:dxr_server"]
 
 [dependencies]
 async-trait = "0.1"
 bitflags = "2"
 cw-serial-keyer = { git = "https://github.com/elitegreg/cw-serial-keyer-rs.git" }
+dxr = { version = "0.8", optional = true }
+dxr_server = { version = "0.8", features = ["axum", "multicall"], optional = true }
 smallvec = "1"
 thiserror = "1.0"
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
@@ -38,6 +41,11 @@ required-features = ["advanced-protocol-api"]
 name = "flexradio_smartsdr_mock_transport"
 path = "tests/flexradio_smartsdr_mock_transport.rs"
 required-features = ["advanced-protocol-api"]
+
+[[test]]
+name = "xml_rpc_server"
+path = "tests/xml_rpc_server.rs"
+required-features = ["xml-rpc"]
 
 [[example]]
 name = "capabilities"

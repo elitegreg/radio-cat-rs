@@ -191,7 +191,7 @@ fn encode_mode_for_target(
     vfo_routing: VfoRouting,
 ) -> Result<EncodedCommand> {
     let (frames, matcher) = if profile.id() == "kenwood-ts590" {
-        encode_ts590(mode)?
+        encode_ts590(target, mode, state)?
     } else if profile.id() == "kenwood-ts890" {
         encode_standard_md(mode)?
     } else if profile.id() == "kenwood-ts990" {
@@ -199,7 +199,7 @@ fn encode_mode_for_target(
     } else if is_standard_kenwood(profile) {
         encode_standard_md(mode)?
     } else if is_elecraft_family(profile) {
-        encode_elecraft_mode(target, mode, options.rtty_data_submode)?
+        encode_elecraft_mode(target, mode, state, options.rtty_data_submode)?
     } else if profile.id() == "elecraft-k2" {
         encode_k2(mode)?
     } else if is_yaesu(profile) {
@@ -210,6 +210,7 @@ fn encode_mode_for_target(
 
     let patches = mode_patches(profile, target, mode, state, vfo_routing);
     if frames.len() == 1 {
+        let matcher = mode_response_matcher(&frames[0]).unwrap_or(matcher);
         return Ok(EncodedCommand::new(
             frames,
             matcher,
@@ -221,18 +222,24 @@ fn encode_mode_for_target(
     let steps = frames
         .into_iter()
         .map(|frame| {
-            let expected = match frame.command() {
-                "MD" => ResponseMatcher::Prefix("MD"),
-                "DA" => ResponseMatcher::Prefix("DA"),
-                "MD$" => ResponseMatcher::Prefix("MD$"),
-                "DT" => ResponseMatcher::Prefix("DT"),
-                "DT$" => ResponseMatcher::Prefix("DT$"),
-                command => unreachable!("unexpected multi-frame mode command {command}"),
-            };
+            let expected = mode_response_matcher(&frame).unwrap_or_else(|| {
+                unreachable!("unexpected multi-frame mode command {}", frame.command())
+            });
             OutgoingStep::decoded(frame, expected, CommandPriority::Normal)
         })
         .collect();
     Ok(EncodedCommand::with_steps(steps, patches))
+}
+
+fn mode_response_matcher(frame: &AsciiFrame) -> Option<ResponseMatcher> {
+    match frame.command() {
+        "MD" => Some(ResponseMatcher::Prefix("MD")),
+        "DA" => Some(ResponseMatcher::Prefix("DA")),
+        "MD$" => Some(ResponseMatcher::Prefix("MD$")),
+        "DT" => Some(ResponseMatcher::Prefix("DT")),
+        "DT$" => Some(ResponseMatcher::Prefix("DT$")),
+        _ => None,
+    }
 }
 
 fn decode_md(
@@ -273,11 +280,22 @@ fn encode_standard_md(mode: Mode) -> Result<(Vec<AsciiFrame>, ResponseMatcher)> 
     ))
 }
 
-fn encode_ts590(mode: Mode) -> Result<(Vec<AsciiFrame>, ResponseMatcher)> {
+fn encode_ts590(
+    target: ModeTarget,
+    mode: Mode,
+    state: &RadioState,
+) -> Result<(Vec<AsciiFrame>, ResponseMatcher)> {
     let (md_code, da_flag) = encode_ts590_mode(mode)?;
-    let mut frames = vec![AsciiFrame::new(format!("MD{md_code};"))?];
+    let current = current_mode(target, state);
+    let mut frames = Vec::new();
+    if current == Some(mode) || current_ts590_base_code(current) != Some(md_code) {
+        frames.push(AsciiFrame::new(format!("MD{md_code};"))?);
+    }
     if let Some(flag) = da_flag {
         frames.push(AsciiFrame::new(format!("DA{};", if flag { 1 } else { 0 }))?);
+    }
+    if frames.is_empty() {
+        frames.push(AsciiFrame::new(format!("MD{md_code};"))?);
     }
     Ok((frames, ResponseMatcher::Prefix("MD")))
 }
@@ -297,6 +315,7 @@ fn encode_ts990(target: ModeTarget, mode: Mode) -> Result<(Vec<AsciiFrame>, Resp
 fn encode_elecraft_mode(
     target: ModeTarget,
     mode: Mode,
+    state: &RadioState,
     rtty_data_submode: ElecraftRttyDataSubmode,
 ) -> Result<(Vec<AsciiFrame>, ResponseMatcher)> {
     let suffix = match target {
@@ -304,9 +323,17 @@ fn encode_elecraft_mode(
         ModeTarget::Sub => "$",
     };
     let (md_code, dt_code) = encode_elecraft_codes(mode, rtty_data_submode)?;
-    let mut frames = vec![AsciiFrame::new(format!("MD{suffix}{md_code};"))?];
+    let mut frames = Vec::new();
+    if current_mode(target, state) == Some(mode)
+        || current_elecraft_md_code(target, state) != Some(md_code)
+    {
+        frames.push(AsciiFrame::new(format!("MD{suffix}{md_code};"))?);
+    }
     if let Some(dt_code) = dt_code {
         frames.push(AsciiFrame::new(format!("DT{suffix}{dt_code};"))?);
+    }
+    if frames.is_empty() {
+        frames.push(AsciiFrame::new(format!("MD{suffix}{md_code};"))?);
     }
     Ok((
         frames,
@@ -1072,6 +1099,51 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(dt.patches.contains(&StatePatch::MainRxMode(Mode::Rtty)));
+    }
+
+    #[test]
+    fn elecraft_mode_change_omits_an_unchanged_md_selector() {
+        let profile = profile_by_id("elecraft-k4").unwrap();
+        let mut state = RadioState::default();
+        state.main_rx.mode = Some(Mode::DataUsb);
+
+        let encoded = encode_with_options(
+            profile,
+            KenwoodAsciiOptions::defaults(),
+            &RadioCommand::SetReceiverMode {
+                receiver: ReceiverPath::Main,
+                mode: Mode::Rtty,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(encoded.frames.len(), 1);
+        assert_eq!(encoded.frames[0].as_str(), "DT2;");
+        assert_eq!(encoded.steps[0].expected, ResponseMatcher::Prefix("DT"));
+    }
+
+    #[test]
+    fn ts590_mode_change_omits_an_unchanged_md_selector() {
+        let profile = profile_by_id("kenwood-ts590").unwrap();
+        let mut state = RadioState::default();
+        state.main_rx.mode = Some(Mode::Usb);
+
+        let encoded = encode(
+            profile,
+            &RadioCommand::SetReceiverMode {
+                receiver: ReceiverPath::Main,
+                mode: Mode::DataUsb,
+            },
+            &state,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(encoded.frames.len(), 1);
+        assert_eq!(encoded.frames[0].as_str(), "DA1;");
+        assert_eq!(encoded.steps[0].expected, ResponseMatcher::Prefix("DA"));
     }
 
     #[test]

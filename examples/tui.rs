@@ -1,5 +1,8 @@
 use std::{env, error::Error, fmt, fs::OpenOptions, str::FromStr, time::Duration};
 
+#[cfg(feature = "xml-rpc")]
+use std::net::SocketAddr;
+
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
@@ -39,6 +42,8 @@ struct LaunchConfig {
     log_level: tracing::Level,
     log_level_label: String,
     log_file: Option<String>,
+    #[cfg(feature = "xml-rpc")]
+    xml_rpc_port: Option<u16>,
 }
 
 #[tokio::main]
@@ -54,6 +59,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         log_level,
         log_level_label,
         log_file,
+        #[cfg(feature = "xml-rpc")]
+        xml_rpc_port,
     } = launch;
 
     init_tracing(log_level, log_file.as_deref())?;
@@ -62,6 +69,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let session_summary = format!(
         "radio={radio_label} transport={transport_label} log={log_level_label}->{log_target}"
     );
+
+    #[cfg(feature = "xml-rpc")]
+    let session_summary = match xml_rpc_port {
+        Some(port) => format!("{session_summary} xml-rpc=0.0.0.0:{port}"),
+        None => session_summary,
+    };
 
     tracing::info!(
         radio = %radio_label,
@@ -72,6 +85,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let radio = Radio::connect(radio_config).await?;
+
+    #[cfg(feature = "xml-rpc")]
+    let xml_rpc = if let Some(port) = xml_rpc_port {
+        let address = SocketAddr::from(([0, 0, 0, 0], port));
+        let task = radio_cat_rs::xml_rpc::XmlRpcServerTask::bind(radio.clone(), address).await?;
+        let bound_address = task.local_addr();
+        let shutdown = task.shutdown_handle();
+        let join = tokio::spawn(task.run());
+        tracing::info!(address = %bound_address, "TUI XML-RPC server enabled");
+        Some((shutdown, join))
+    } else {
+        None
+    };
+
     let mut updates = radio.subscribe_updates();
     let mut state = radio.latest_state();
     let mut last_update = String::from("no updates yet");
@@ -94,14 +121,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     tracing::info!("tui loop exited");
 
+    #[cfg(feature = "xml-rpc")]
+    if let Some((shutdown, _)) = &xml_rpc {
+        shutdown.shutdown();
+    }
+
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    result
+    #[cfg(feature = "xml-rpc")]
+    let xml_rpc_result = if let Some((_, join)) = xml_rpc {
+        match join.await {
+            Ok(result) => result.map_err(|error| Box::new(error) as Box<dyn Error>),
+            Err(error) => Err(Box::new(error) as Box<dyn Error>),
+        }
+    } else {
+        Ok(())
+    };
+
+    result?;
+    #[cfg(feature = "xml-rpc")]
+    xml_rpc_result?;
+    Ok(())
 }
 
 fn parse_launch_config() -> Result<Option<LaunchConfig>, CliError> {
+    parse_launch_config_from(env::args().skip(1))
+}
+
+fn parse_launch_config_from<I>(args: I) -> Result<Option<LaunchConfig>, CliError>
+where
+    I: IntoIterator<Item = String>,
+{
     let mut driver = String::from("dummy");
     let mut options = String::new();
     let mut serial_path: Option<String> = None;
@@ -113,8 +165,10 @@ fn parse_launch_config() -> Result<Option<LaunchConfig>, CliError> {
     let mut log_level_label = DEFAULT_LOG_LEVEL.to_string();
     let mut log_file: Option<String> = None;
     let mut region: Option<RadioRegion> = None;
+    #[cfg(feature = "xml-rpc")]
+    let mut xml_rpc_port: Option<u16> = None;
 
-    let mut args = env::args().skip(1);
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
@@ -158,6 +212,15 @@ fn parse_launch_config() -> Result<Option<LaunchConfig>, CliError> {
                 log_level_label = value.to_ascii_lowercase();
             }
             "--log-file" => log_file = Some(next_arg_value(&mut args, "--log-file")?),
+            #[cfg(feature = "xml-rpc")]
+            "--xml-rpc-port" => {
+                let value = next_arg_value(&mut args, "--xml-rpc-port")?;
+                xml_rpc_port = Some(
+                    value
+                        .parse::<u16>()
+                        .map_err(|_| CliError(format!("invalid XML-RPC port: {value}")))?,
+                );
+            }
             other => {
                 return Err(CliError(format!(
                     "unknown argument: {other} (use --help for usage)"
@@ -183,6 +246,8 @@ fn parse_launch_config() -> Result<Option<LaunchConfig>, CliError> {
         log_level,
         log_level_label,
         log_file,
+        #[cfg(feature = "xml-rpc")]
+        xml_rpc_port,
     }))
 }
 
@@ -310,6 +375,8 @@ fn print_usage() {
         "      --log-level <lvl>   Log level: trace|debug|info|warn|error (default: {DEFAULT_LOG_LEVEL})"
     );
     println!("      --log-file <path>   Append logs to file instead of stderr");
+    #[cfg(feature = "xml-rpc")]
+    println!("      --xml-rpc-port <n>  Enable XML-RPC on 0.0.0.0:<n>");
     println!("      --list-radios       Show supported radio ids and exit");
     println!("  -h, --help              Show this help and exit");
 }
@@ -826,4 +893,32 @@ fn help_text() -> String {
         "quit",
     ]
     .join(" | ")
+}
+
+#[cfg(all(test, feature = "xml-rpc"))]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Option<LaunchConfig>, CliError> {
+        parse_launch_config_from(args.iter().map(|value| (*value).to_string()))
+    }
+
+    #[test]
+    fn xml_rpc_listener_is_runtime_opt_in() {
+        assert_eq!(parse(&[]).unwrap().unwrap().xml_rpc_port, None);
+        assert_eq!(
+            parse(&["--xml-rpc-port", "12345"])
+                .unwrap()
+                .unwrap()
+                .xml_rpc_port,
+            Some(12_345)
+        );
+    }
+
+    #[test]
+    fn xml_rpc_port_errors_are_reported() {
+        assert!(parse(&["--xml-rpc-port"]).is_err());
+        assert!(parse(&["--xml-rpc-port", "not-a-port"]).is_err());
+        assert!(parse(&["--xml-rpc-port", "65536"]).is_err());
+    }
 }

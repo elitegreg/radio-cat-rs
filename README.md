@@ -171,6 +171,36 @@ radio-cat-rs = { version = "0.1", features = ["advanced-protocol-api"] }
 This feature exposes built-in protocol details; it does not provide a custom
 driver registration mechanism.
 
+## Optional XML-RPC server
+
+Enable the `xml-rpc` feature to expose a flrig-compatible XML-RPC server task.
+The feature only makes the task available; it never opens a listener unless an
+application explicitly binds and runs one.
+
+```rust
+use radio_cat_rs::{Radio, RadioConfig, xml_rpc::XmlRpcServerTask};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let radio = Radio::connect(RadioConfig::dummy()).await?;
+let task = XmlRpcServerTask::bind(radio.clone(), "127.0.0.1:12345".parse()?).await?;
+let shutdown = task.shutdown_handle();
+let server = tokio::spawn(task.run());
+
+// Use the radio and XML-RPC server until the application is ready to exit.
+shutdown.shutdown();
+server.await??;
+# Ok(())
+# }
+```
+
+The server maps flrig VFO A to the normalized Main receiver and VFO B to Sub;
+the `rig.get_bw*` and `rig.set_bw*` methods read and set each receiver's filter
+bandwidth in Hz.
+PTT methods use data PTT. Calls for capabilities or state that the selected
+radio does not provide return XML-RPC faults. The HTTP endpoint is `/RPC2`.
+FSK text is not exposed because `radio-cat-rs` does not provide an FSK transmit
+API.
+
 ## TUI example
 
 Run the dummy radio TUI:
@@ -178,6 +208,16 @@ Run the dummy radio TUI:
 ```bash
 cargo run --example tui
 ```
+
+Build with XML-RPC support and opt in at runtime by supplying a listen port:
+
+```bash
+cargo run --features xml-rpc --example tui -- --xml-rpc-port 12345
+```
+
+The TUI XML-RPC option binds `0.0.0.0:<port>` and is therefore reachable from
+other hosts allowed by the system firewall. Omit the option to run without an
+XML-RPC listener.
 
 The TUI displays the latest state snapshot and applies live updates from the broadcast `StateUpdate` stream (`update.state`).
 
