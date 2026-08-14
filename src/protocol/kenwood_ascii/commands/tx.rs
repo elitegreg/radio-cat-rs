@@ -77,6 +77,18 @@ pub fn encode_query(
     profile: &KenwoodAsciiProfile,
     semantic: &str,
 ) -> Result<Option<EncodedCommand>> {
+    if semantic == "TQ" {
+        if !is_elecraft_k3_or_k4(profile) {
+            return Ok(None);
+        }
+        return Ok(Some(EncodedCommand::new(
+            vec![AsciiFrame::new("TQ;")?],
+            ResponseMatcher::Prefix("TQ"),
+            Vec::new(),
+            CommandPriority::Normal,
+        )));
+    }
+
     if semantic != "PC"
         || profile
             .capabilities
@@ -99,6 +111,7 @@ pub fn encode_query(
 pub fn decode(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result<Option<DecodedFrame>> {
     match frame.command() {
         "PC" => decode_power_frame(profile, frame).map(Some),
+        "TQ" if is_elecraft_k3_or_k4(profile) => decode_tq_frame(frame).map(Some),
         command if command.starts_with("TX") || command == "RX" => {
             decode_ptt_frame(profile, frame).map(Some)
         }
@@ -159,6 +172,23 @@ fn decode_ptt_frame(profile: &KenwoodAsciiProfile, frame: &AsciiFrame) -> Result
                     message: format!("unexpected TX/RX frame {:?}", frame.as_str()),
                 });
             }
+        }
+    };
+
+    Ok(DecodedFrame::new(vec![StatePatch::Transmitting(
+        transmitting,
+    )]))
+}
+
+fn decode_tq_frame(frame: &AsciiFrame) -> Result<DecodedFrame> {
+    let transmitting = match frame.payload() {
+        "0" => false,
+        "1" => true,
+        payload => {
+            return Err(RadioError::Decode {
+                command: "TQ",
+                message: format!("expected TQ payload 0/1, got {payload:?}"),
+            });
         }
     };
 
@@ -263,6 +293,10 @@ fn is_yaesu(profile: &KenwoodAsciiProfile) -> bool {
 
 fn is_k4(profile: &KenwoodAsciiProfile) -> bool {
     profile.id() == "elecraft-k4"
+}
+
+fn is_elecraft_k3_or_k4(profile: &KenwoodAsciiProfile) -> bool {
+    matches!(profile.id(), "elecraft-k3" | "elecraft-k4")
 }
 
 #[cfg(test)]
@@ -466,5 +500,40 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(ptt.patches, vec![StatePatch::Transmitting(false)]);
+    }
+
+    #[test]
+    fn elecraft_tq_query_and_responses_report_transmit_state() {
+        for id in ["elecraft-k3", "elecraft-k4"] {
+            let profile = profile_by_id(id).unwrap();
+            let query = encode_query(profile, "TQ").unwrap().unwrap();
+            assert_eq!(query.frames[0].as_str(), "TQ;");
+            assert_eq!(query.matcher, ResponseMatcher::Prefix("TQ"));
+
+            let receiving = decode(profile, &AsciiFrame::new("TQ0;").unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(receiving.patches, vec![StatePatch::Transmitting(false)]);
+
+            let transmitting = decode(profile, &AsciiFrame::new("TQ1;").unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(transmitting.patches, vec![StatePatch::Transmitting(true)]);
+        }
+    }
+
+    #[test]
+    fn elecraft_tq_rejects_invalid_status_and_other_profiles_do_not_query_it() {
+        let k3 = profile_by_id("elecraft-k3").unwrap();
+        let error = decode(k3, &AsciiFrame::new("TQ2;").unwrap()).unwrap_err();
+        assert!(matches!(error, RadioError::Decode { command: "TQ", .. }));
+
+        let ts590 = profile_by_id("kenwood-ts590").unwrap();
+        assert!(encode_query(ts590, "TQ").unwrap().is_none());
+        assert!(
+            decode(ts590, &AsciiFrame::new("TQ1;").unwrap())
+                .unwrap()
+                .is_none()
+        );
     }
 }

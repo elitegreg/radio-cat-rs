@@ -271,6 +271,7 @@ const NATIVE: StateUpdateCapability = StateUpdateCapability::Native;
 const HYBRID: StateUpdateCapability = StateUpdateCapability::Hybrid;
 
 const IF232_POLL: Duration = Duration::from_secs(2);
+const ELECRAFT_K3_TQ_POLL: Duration = Duration::from_millis(500);
 
 const TS590_STARTUP: &[StartupStep] = &[
     StartupStep::AutoInfo("AI2;"),
@@ -412,8 +413,9 @@ const IF232_STARTUP: &[StartupStep] = &[
 ];
 
 const ELECRAFT_K4_STARTUP: &[StartupStep] = &[
-    StartupStep::AutoInfo("AI2;"),
+    StartupStep::AutoInfo("AI5;"),
     StartupStep::AutoInfo("AID250;"),
+    StartupStep::Query("TQ"),
     StartupStep::Query("FA"),
     StartupStep::Query("FB"),
     StartupStep::Query("FT"),
@@ -446,6 +448,7 @@ const ELECRAFT_K4_STARTUP: &[StartupStep] = &[
 
 const ELECRAFT_K3_STARTUP: &[StartupStep] = &[
     StartupStep::AutoInfo("AI2;"),
+    StartupStep::Query("TQ"),
     StartupStep::Query("IF"),
     StartupStep::Query("FA"),
     StartupStep::Query("FB"),
@@ -585,6 +588,7 @@ const YAESU_FT991_STARTUP: &[StartupStep] = &[
 ];
 
 const IF232_POLL_QUERIES: &[&str] = &["IF", "FA", "FB", "SP", "MD", "RT", "XT"];
+const ELECRAFT_K3_TQ_POLL_QUERIES: &[&str] = &["TQ"];
 
 const fn descriptor(
     id: &'static str,
@@ -852,7 +856,10 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
         ),
         update_strategy: NATIVE,
         startup: ELECRAFT_K3_STARTUP,
-        poll: None,
+        poll: Some(PollPlan {
+            interval: ELECRAFT_K3_TQ_POLL,
+            queries: ELECRAFT_K3_TQ_POLL_QUERIES,
+        }),
     },
     KenwoodAsciiProfile {
         descriptor: descriptor(
@@ -1001,10 +1008,16 @@ mod tests {
     #[test]
     fn metadata_contains_startup_and_poll_plans() {
         let profile = profile_by_id("elecraft-k4").unwrap();
-        assert_eq!(profile.startup[0].label(), "AI2;");
+        assert_eq!(profile.startup[0].label(), "AI5;");
         assert_eq!(profile.startup[1].label(), "AID250;");
+        assert!(profile.startup.iter().any(|step| step.label() == "TQ"));
         assert!(profile.startup.iter().any(|step| step.label() == "BW$"));
         assert!(profile.poll.is_none());
+
+        let k3 = profile_by_id("elecraft-k3").unwrap();
+        assert!(k3.startup.iter().any(|step| step.label() == "TQ"));
+        assert_eq!(k3.poll.unwrap().interval, ELECRAFT_K3_TQ_POLL);
+        assert_eq!(k3.poll.unwrap().queries, ELECRAFT_K3_TQ_POLL_QUERIES);
     }
 
     #[test]
@@ -1074,7 +1087,7 @@ mod tests {
 
         for profile in SUPPORTED_PROFILES
             .iter()
-            .filter(|profile| profile.id() != "kenwood-if232")
+            .filter(|profile| !matches!(profile.id(), "kenwood-if232" | "elecraft-k3"))
         {
             assert_eq!(profile.update_strategy, StateUpdateCapability::Native);
             assert!(

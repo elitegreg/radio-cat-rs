@@ -2476,6 +2476,8 @@ mod tests {
             let session = kenwood_session(profile, KenwoodAsciiOptions::defaults()).unwrap();
             if profile.id() == "kenwood-if232" {
                 assert_eq!(session.poll_interval(), Some(Duration::from_secs(2)));
+            } else if profile.id() == "elecraft-k3" {
+                assert_eq!(session.poll_interval(), Some(Duration::from_millis(500)));
             } else {
                 assert_eq!(
                     session.poll_interval(),
