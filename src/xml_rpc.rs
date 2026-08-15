@@ -161,6 +161,7 @@ enum Operation {
     SetCwWpm,
     CwText,
     CwSend,
+    FskioText,
     CopyVfoAToB,
     CopyFreqAToB,
     CopyModeAToB,
@@ -338,6 +339,11 @@ impl RpcHandler {
                 self.radio.send_cw(text).await.map_err(radio_fault)?;
                 Ok(Value::Integer(1))
             }
+            Operation::FskioText => {
+                let text = one_string(params, "FSK text")?;
+                self.radio.send_data(text).await.map_err(radio_fault)?;
+                Ok(Value::Integer(1))
+            }
             Operation::CwSend => {
                 let enabled = one_flag(params, "CW send")?;
                 if !enabled {
@@ -414,6 +420,7 @@ fn build_handlers(radio: Radio) -> HandlerMap {
         ("rig.cwio_set_wpm", O::SetCwWpm),
         ("rig.cwio_text", O::CwText),
         ("rig.cwio_send", O::CwSend),
+        ("rig.fskio_text", O::FskioText),
         ("rig.vfoA2B", O::CopyVfoAToB),
         ("rig.freqA2B", O::CopyFreqAToB),
         ("rig.modeA2B", O::CopyModeAToB),
@@ -814,7 +821,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn requested_method_surface_is_registered_without_fsk() {
+    async fn requested_method_surface_is_registered_with_fsk() {
         let radio = Radio::connect(RadioConfig::dummy()).await.unwrap();
         let handlers = build_handlers(radio.clone());
         let expected = [
@@ -861,13 +868,14 @@ mod tests {
             "rig.cwio_set_wpm",
             "rig.cwio_text",
             "rig.cwio_send",
+            "rig.fskio_text",
             "rig.vfoA2B",
             "rig.freqA2B",
             "rig.modeA2B",
         ];
         assert_eq!(handlers.len(), expected.len());
         assert!(expected.iter().all(|name| handlers.contains_key(name)));
-        assert!(!handlers.contains_key("rig.fskio_text"));
+        assert!(handlers.contains_key("rig.fskio_text"));
         radio.shutdown();
     }
 
@@ -903,6 +911,24 @@ mod tests {
         radio.shutdown();
     }
 
+    #[tokio::test]
+    async fn fskio_text_sends_data() {
+        let radio = Radio::connect(RadioConfig::dummy()).await.unwrap();
+        let text = RpcHandler {
+            name: "rig.fskio_text",
+            operation: Operation::FskioText,
+            radio: radio.clone(),
+        };
+        assert_eq!(
+            text.execute(&[Value::String("CQ".to_string())])
+                .await
+                .unwrap(),
+            Value::Integer(1)
+        );
+        assert_eq!(radio.latest_state().keyer().unwrap().sending(), Some(true));
+        radio.shutdown();
+    }
+
     #[test]
     fn unknown_methods_are_logged_at_error_level() {
         let buffer = LogBuffer(Arc::new(Mutex::new(Vec::new())));
@@ -912,7 +938,7 @@ mod tests {
             .with_writer(buffer.clone())
             .finish();
         let body = MethodCall {
-            name: Cow::Borrowed("rig.fskio_text"),
+            name: Cow::Borrowed("rig.fskio_send"),
             params: vec![],
         }
         .to_xml()
@@ -924,7 +950,7 @@ mod tests {
 
         let output = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
         assert!(output.contains("ERROR"), "{output}");
-        assert!(output.contains("rig.fskio_text"), "{output}");
+        assert!(output.contains("rig.fskio_send"), "{output}");
         assert!(output.contains("unknown XML-RPC method called"), "{output}");
     }
 }

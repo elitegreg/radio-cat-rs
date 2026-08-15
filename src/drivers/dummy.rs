@@ -183,6 +183,8 @@ impl RadioSession for DummyRadioSession {
             RadioCommand::SetKeyerSpeed(wpm) => vec![StatePatch::KeyerSpeed(wpm)],
             RadioCommand::SendCw(_) => vec![StatePatch::KeyerSending(true)],
             RadioCommand::StopCw => vec![StatePatch::KeyerSending(false)],
+            RadioCommand::SendData(_) => vec![StatePatch::KeyerSending(true)],
+            RadioCommand::StopData => vec![StatePatch::KeyerSending(false)],
             RadioCommand::Refresh => {
                 unreachable!("refresh is dispatched through RadioSession::refresh")
             }

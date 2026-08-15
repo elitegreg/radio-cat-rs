@@ -1,4 +1,6 @@
-use crate::{Result, command::RadioCommand, error::RadioError, update::StatePatch};
+use crate::{
+    Mode, RadioState, Result, command::RadioCommand, error::RadioError, update::StatePatch,
+};
 
 use super::{DecodedFrame, EncodedCommand};
 use crate::protocol::kenwood_ascii::{
@@ -8,6 +10,7 @@ use crate::protocol::kenwood_ascii::{
 pub fn encode(
     profile: &KenwoodAsciiProfile,
     command: &RadioCommand,
+    state: &RadioState,
 ) -> Result<Option<EncodedCommand>> {
     match command {
         RadioCommand::SetKeyerSpeed(wpm) => {
@@ -22,6 +25,9 @@ pub fn encode(
         }
         RadioCommand::SendCw(text) => {
             require_send_cw(profile)?;
+            if is_elecraft_k3_or_k4(profile) {
+                require_mode(state, "keyer.cw", is_cw_mode, "CW or CW-R")?;
+            }
             validate_cw_text(profile, text)?;
             Ok(Some(EncodedCommand::new(
                 vec![AsciiFrame::new(format!("KY {text};"))?],
@@ -34,6 +40,31 @@ pub fn encode(
             require_stop_cw(profile)?;
             Ok(Some(EncodedCommand::new(
                 vec![AsciiFrame::new(stop_frame(profile))?],
+                ResponseMatcher::None,
+                Vec::new(),
+                CommandPriority::High,
+            )))
+        }
+        RadioCommand::SendData(text) => {
+            require_send_data(profile)?;
+            require_mode(
+                state,
+                "keyer.data",
+                is_data_mode,
+                "RTTY, RTTY-R, PSK, or PSK-R",
+            )?;
+            validate_data_text(profile, text)?;
+            Ok(Some(EncodedCommand::new(
+                vec![AsciiFrame::new(format!("KY {text};"))?],
+                ResponseMatcher::None,
+                Vec::new(),
+                CommandPriority::Normal,
+            )))
+        }
+        RadioCommand::StopData => {
+            require_stop_data(profile)?;
+            Ok(Some(EncodedCommand::new(
+                vec![AsciiFrame::new("KY |;")?],
                 ResponseMatcher::None,
                 Vec::new(),
                 CommandPriority::High,
@@ -120,6 +151,54 @@ fn require_stop_cw(profile: &KenwoodAsciiProfile) -> Result<()> {
     }
 }
 
+fn require_send_data(profile: &KenwoodAsciiProfile) -> Result<()> {
+    match profile.capabilities.keyer {
+        Some(keyer) if keyer.send_data.is_supported() => Ok(()),
+        _ => Err(RadioError::UnsupportedCapability {
+            capability: "keyer.send_data",
+        }),
+    }
+}
+
+fn require_stop_data(profile: &KenwoodAsciiProfile) -> Result<()> {
+    match profile.capabilities.keyer {
+        Some(keyer) if keyer.stop_data.is_supported() => Ok(()),
+        _ => Err(RadioError::UnsupportedCapability {
+            capability: "keyer.stop_data",
+        }),
+    }
+}
+
+fn require_mode(
+    state: &RadioState,
+    field: &'static str,
+    supported: fn(Mode) -> bool,
+    expected: &'static str,
+) -> Result<()> {
+    match state.tx().and_then(|tx| tx.mode()) {
+        Some(mode) if supported(mode) => Ok(()),
+        Some(mode) => Err(RadioError::InvalidValue {
+            field,
+            message: format!("requires {expected} mode, current transmit mode is {mode}"),
+        }),
+        None => Err(RadioError::InvalidValue {
+            field,
+            message: format!("requires {expected} mode, but transmit mode is unknown"),
+        }),
+    }
+}
+
+fn is_cw_mode(mode: Mode) -> bool {
+    matches!(mode, Mode::Cw | Mode::CwReverse)
+}
+
+fn is_data_mode(mode: Mode) -> bool {
+    matches!(
+        mode,
+        Mode::Rtty | Mode::RttyReverse | Mode::Psk | Mode::PskReverse
+    )
+}
+
 fn validate_keyer_speed(profile: &KenwoodAsciiProfile, wpm: u8) -> Result<()> {
     let (min, max) = keyer_range(profile);
     if (min..=max).contains(&wpm) {
@@ -133,29 +212,54 @@ fn validate_keyer_speed(profile: &KenwoodAsciiProfile, wpm: u8) -> Result<()> {
 }
 
 fn validate_cw_text(profile: &KenwoodAsciiProfile, text: &str) -> Result<()> {
+    validate_keyer_text(profile, text, "keyer.cw", "CW", false)
+}
+
+fn validate_data_text(profile: &KenwoodAsciiProfile, text: &str) -> Result<()> {
+    validate_keyer_text(profile, text, "keyer.data", "data", true)
+}
+
+fn validate_keyer_text(
+    profile: &KenwoodAsciiProfile,
+    text: &str,
+    field: &'static str,
+    label: &'static str,
+    reject_pipe: bool,
+) -> Result<()> {
     if text.is_empty() {
         return Err(RadioError::InvalidValue {
-            field: "keyer.cw",
-            message: "CW text must not be empty".to_string(),
+            field,
+            message: format!("{label} text must not be empty"),
         });
     }
     if text.len() > cw_buffer_limit(profile) {
         return Err(RadioError::InvalidValue {
-            field: "keyer.cw",
+            field,
             message: format!(
-                "CW text exceeds {} byte buffer for {}",
+                "{label} text exceeds {} byte buffer for {}",
                 cw_buffer_limit(profile),
                 profile.id()
             ),
         });
     }
-    if !text.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ') || text.contains(';') {
+    if !text.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ')
+        || text.contains(';')
+        || (reject_pipe && text.contains('|'))
+    {
         return Err(RadioError::InvalidValue {
-            field: "keyer.cw",
-            message: "CW text must be printable ASCII without semicolons".to_string(),
+            field,
+            message: if reject_pipe {
+                format!("{label} text must be printable ASCII without semicolons or pipes")
+            } else {
+                format!("{label} text must be printable ASCII without semicolons")
+            },
         });
     }
     Ok(())
+}
+
+fn is_elecraft_k3_or_k4(profile: &KenwoodAsciiProfile) -> bool {
+    matches!(profile.id(), "elecraft-k3" | "elecraft-k4")
 }
 
 fn keyer_range(profile: &KenwoodAsciiProfile) -> (u8, u8) {
@@ -192,12 +296,23 @@ fn supports_ky_query(profile: &KenwoodAsciiProfile) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::kenwood_ascii::profile_by_id;
+    use crate::{StateReducer, protocol::kenwood_ascii::profile_by_id};
+
+    fn state_with_tx_mode(mode: Mode) -> RadioState {
+        let mut reducer = StateReducer::new(RadioState::default());
+        reducer.apply_patches([StatePatch::TxPresent(true), StatePatch::TxMode(mode)]);
+        reducer.state().clone()
+    }
 
     #[test]
     fn keyer_speed_validates_profile_range() {
         let ts2000 = profile_by_id("kenwood-ts2000").unwrap();
-        let error = encode(ts2000, &RadioCommand::SetKeyerSpeed(5)).unwrap_err();
+        let error = encode(
+            ts2000,
+            &RadioCommand::SetKeyerSpeed(5),
+            &RadioState::default(),
+        )
+        .unwrap_err();
         assert!(matches!(
             error,
             RadioError::InvalidValue {
@@ -212,12 +327,18 @@ mod tests {
         let ts590 = profile_by_id("kenwood-ts590").unwrap();
         let k4 = profile_by_id("elecraft-k4").unwrap();
 
-        let ts590_send = encode(ts590, &RadioCommand::SendCw("CQ TEST".to_string()))
-            .unwrap()
-            .unwrap();
+        let ts590_send = encode(
+            ts590,
+            &RadioCommand::SendCw("CQ TEST".to_string()),
+            &RadioState::default(),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(ts590_send.frames[0].as_str(), "KY CQ TEST;");
 
-        let k4_stop = encode(k4, &RadioCommand::StopCw).unwrap().unwrap();
+        let k4_stop = encode(k4, &RadioCommand::StopCw, &RadioState::default())
+            .unwrap()
+            .unwrap();
         assert_eq!(k4_stop.frames[0].as_str(), "KY @;");
         assert_eq!(k4_stop.priority, CommandPriority::High);
     }
@@ -225,7 +346,12 @@ mod tests {
     #[test]
     fn yaesu_cw_send_is_unsupported() {
         let yaesu = profile_by_id("yaesu-ftdx10").unwrap();
-        let error = encode(yaesu, &RadioCommand::SendCw("CQ".to_string())).unwrap_err();
+        let error = encode(
+            yaesu,
+            &RadioCommand::SendCw("CQ".to_string()),
+            &RadioState::default(),
+        )
+        .unwrap_err();
         assert!(matches!(
             error,
             RadioError::UnsupportedCapability {
@@ -241,5 +367,60 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(decoded.patches, vec![StatePatch::KeyerSending(true)]);
+    }
+
+    #[test]
+    fn elecraft_data_and_cw_sends_require_their_respective_modes() {
+        let k4 = profile_by_id("elecraft-k4").unwrap();
+        let cw_state = state_with_tx_mode(Mode::CwReverse);
+        let data_state = state_with_tx_mode(Mode::Psk);
+
+        let cw = encode(k4, &RadioCommand::SendCw("CQ".to_string()), &cw_state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cw.frames[0].as_str(), "KY CQ;");
+
+        let data = encode(k4, &RadioCommand::SendData("CQ".to_string()), &data_state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(data.frames[0].as_str(), "KY CQ;");
+
+        let error = encode(k4, &RadioCommand::SendData("CQ".to_string()), &cw_state).unwrap_err();
+        assert!(matches!(
+            error,
+            RadioError::InvalidValue {
+                field: "keyer.data",
+                ..
+            }
+        ));
+
+        let error = encode(k4, &RadioCommand::SendCw("CQ".to_string()), &data_state).unwrap_err();
+        assert!(matches!(
+            error,
+            RadioError::InvalidValue {
+                field: "keyer.cw",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn elecraft_data_stop_uses_pipe_and_data_text_rejects_pipe() {
+        let k3 = profile_by_id("elecraft-k3").unwrap();
+        let state = state_with_tx_mode(Mode::Rtty);
+        let stop = encode(k3, &RadioCommand::StopData, &state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stop.frames[0].as_str(), "KY |;");
+        assert_eq!(stop.priority, CommandPriority::High);
+
+        let error = encode(k3, &RadioCommand::SendData("A|B".to_string()), &state).unwrap_err();
+        assert!(matches!(
+            error,
+            RadioError::InvalidValue {
+                field: "keyer.data",
+                ..
+            }
+        ));
     }
 }

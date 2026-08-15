@@ -154,7 +154,7 @@ async fn multicall_and_unknown_methods_use_xml_rpc_faults() {
 
     let response = call(
         address,
-        "rig.fskio_text",
+        "rig.fskio_send",
         vec![Value::String("TEST".into())],
     )
     .await;

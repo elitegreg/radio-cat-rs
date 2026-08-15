@@ -198,8 +198,7 @@ the `rig.get_bw*` and `rig.set_bw*` methods read and set each receiver's filter
 bandwidth in Hz.
 PTT methods use data PTT. Calls for capabilities or state that the selected
 radio does not provide return XML-RPC faults. The HTTP endpoint is `/RPC2`.
-FSK text is not exposed because `radio-cat-rs` does not provide an FSK transmit
-API.
+`rig.fskio_text` sends FSK/PSK text on supported Elecraft K3/K4-family radios.
 
 ## TUI example
 

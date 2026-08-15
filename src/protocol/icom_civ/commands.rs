@@ -190,6 +190,7 @@ pub fn encode(
         RadioCommand::SetKeyerSpeed(wpm) => Ok(Some(set_keyer_speed(options, *wpm)?)),
         RadioCommand::SendCw(text) => Ok(Some(send_cw(options, text)?)),
         RadioCommand::StopCw => Ok(Some(stop_cw(options)?)),
+        RadioCommand::SendData(_) | RadioCommand::StopData => Ok(None),
         RadioCommand::Refresh => {
             unreachable!("refresh is dispatched through RadioSession::refresh")
         }

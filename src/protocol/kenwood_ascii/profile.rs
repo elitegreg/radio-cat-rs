@@ -264,6 +264,8 @@ const K2_RIT_XIT: RitXitCapabilities = RitXitCapabilities::new(
 );
 
 const FULL_KEYER: KeyerCapabilities = KeyerCapabilities::new(RW, EMULATED, WO, WO);
+const ELECRAFT_KEYER: KeyerCapabilities =
+    KeyerCapabilities::new(RW, EMULATED, WO, WO).with_data_commands(WO, WO);
 const YAESU_KEYER: KeyerCapabilities =
     KeyerCapabilities::new(RW, UNSUPPORTED, UNSUPPORTED, UNSUPPORTED);
 
@@ -832,7 +834,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             FULL_RX,
             full_tx(K4_POWER),
             K4_RIT_XIT,
-            Some(FULL_KEYER),
+            Some(ELECRAFT_KEYER),
         ),
         update_strategy: NATIVE,
         startup: ELECRAFT_K4_STARTUP,
@@ -852,7 +854,7 @@ pub const SUPPORTED_PROFILES: &[KenwoodAsciiProfile] = &[
             K3_RX,
             full_tx(POWER_0_110),
             MAIN_RIT_XIT,
-            Some(FULL_KEYER),
+            Some(ELECRAFT_KEYER),
         ),
         update_strategy: NATIVE,
         startup: ELECRAFT_K3_STARTUP,
@@ -1058,6 +1060,24 @@ mod tests {
             RitXitOffsetType::Shared
         );
         assert_eq!(k4.capabilities.keyer.unwrap().sending, Capability::Emulated);
+        assert_eq!(
+            k4.capabilities.keyer.unwrap().send_data,
+            Capability::WriteOnly
+        );
+        assert_eq!(
+            k4.capabilities.keyer.unwrap().stop_data,
+            Capability::WriteOnly
+        );
+
+        let k3 = profile_by_id("elecraft-k3").unwrap();
+        assert_eq!(
+            k3.capabilities.keyer.unwrap().send_data,
+            Capability::WriteOnly
+        );
+
+        let k2_keyer = k2.capabilities.keyer.unwrap();
+        assert_eq!(k2_keyer.send_data, Capability::Unsupported);
+        assert_eq!(k2_keyer.stop_data, Capability::Unsupported);
 
         let yaesu = profile_by_id("yaesu-ftdx10").unwrap();
         let keyer = yaesu.capabilities.keyer.unwrap();

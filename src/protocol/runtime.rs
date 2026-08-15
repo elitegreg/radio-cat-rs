@@ -1881,7 +1881,7 @@ fn encode_kenwood_command(
     if let Some(encoded) = kenwood_ascii::tx::encode(profile, options, command)? {
         return Ok(Some(encoded));
     }
-    if let Some(encoded) = kenwood_ascii::keyer::encode(profile, command)? {
+    if let Some(encoded) = kenwood_ascii::keyer::encode(profile, command, current_state)? {
         return Ok(Some(encoded));
     }
 
@@ -2051,7 +2051,10 @@ fn kenwood_validation_queries(
         RadioCommand::SetXitOffset { receiver, .. }
         | RadioCommand::SetRitXitOffset { receiver, .. } => rit_offset_queries(profile, *receiver),
         RadioCommand::SetKeyerSpeed(_) => vec!["KS"],
-        RadioCommand::SendCw(_) | RadioCommand::StopCw => vec!["KY"],
+        RadioCommand::SendCw(_)
+        | RadioCommand::StopCw
+        | RadioCommand::SendData(_)
+        | RadioCommand::StopData => vec!["KY"],
         RadioCommand::Refresh => Vec::new(),
     }
 }
@@ -2342,7 +2345,11 @@ fn command_matches_state(command: &RadioCommand, state: &RadioState) -> bool {
             .as_ref()
             .and_then(|keyer| keyer.speed_wpm)
             .is_some_and(|current| current == *wpm),
-        RadioCommand::SendCw(_) | RadioCommand::StopCw | RadioCommand::Refresh => false,
+        RadioCommand::SendCw(_)
+        | RadioCommand::StopCw
+        | RadioCommand::SendData(_)
+        | RadioCommand::StopData
+        | RadioCommand::Refresh => false,
     }
 }
 
@@ -2410,7 +2417,11 @@ fn icom_validation_queries(
         | RadioCommand::SetXitOffset { .. }
         | RadioCommand::SetRitXitOffset { .. } => vec!["rit-offset"],
         RadioCommand::SetKeyerSpeed(_) => vec!["keyer-speed"],
-        RadioCommand::SendCw(_) | RadioCommand::StopCw | RadioCommand::Refresh => Vec::new(),
+        RadioCommand::SendCw(_)
+        | RadioCommand::StopCw
+        | RadioCommand::SendData(_)
+        | RadioCommand::StopData
+        | RadioCommand::Refresh => Vec::new(),
     }
 }
 

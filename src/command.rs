@@ -76,6 +76,8 @@ pub enum RadioCommand {
     SetKeyerSpeed(u8),
     SendCw(String),
     StopCw,
+    SendData(String),
+    StopData,
 
     Refresh,
 }

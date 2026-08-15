@@ -237,6 +237,8 @@ fn print_optional_keyer(caps: Option<radio_cat_rs::KeyerCapabilities>) {
             println!("  sending: {}", describe_capability(caps.sending));
             println!("  send cw: {}", describe_capability(caps.send_cw));
             println!("  stop cw: {}", describe_capability(caps.stop_cw));
+            println!("  send data: {}", describe_capability(caps.send_data));
+            println!("  stop data: {}", describe_capability(caps.stop_data));
             println!();
         }
         None => println!("keyer: not available\n"),

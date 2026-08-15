@@ -498,7 +498,7 @@ fn draw(
     frame.render_widget(body, chunks[1]);
 
     let help = Paragraph::new(format!(
-        "status: {status}\nlast update: {last_update}\nexamples: set-freq-main 14074000 | set-mode-main usb | set-power 50 | set-rit-main on | set-offset 250 | set-offset-xit 250 | send-cw CQ TEST\ncommands: help, refresh, set-*-main/sub/tx, set-power, set-ptt, set-data-ptt, set-split, set-xit, set-keyer-speed, stop-cw"
+        "status: {status}\nlast update: {last_update}\nexamples: set-freq-main 14074000 | set-mode-main usb | set-power 50 | set-rit-main on | set-offset 250 | set-offset-xit 250 | send-cw CQ TEST | send-data CQ TEST\ncommands: help, refresh, set-*-main/sub/tx, set-power, set-ptt, set-data-ptt, set-split, set-xit, set-keyer-speed, stop-cw, stop-data"
     ))
     .block(Block::default().title("Command Help").borders(Borders::ALL))
     .wrap(Wrap { trim: false });
@@ -782,6 +782,19 @@ async fn execute_command(
             radio.stop_cw().await?;
             Ok("stop cw requested".to_string())
         }
+        "send-data" => {
+            let text = line
+                .strip_prefix("send-data")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| CliError("send-data requires text".to_string()))?;
+            radio.send_data(text).await?;
+            Ok(format!("sending data: {text}"))
+        }
+        "stop-data" => {
+            radio.stop_data().await?;
+            Ok("stop data requested".to_string())
+        }
         "status" => Ok(format_state(state)),
         other => Err(Box::new(CliError(format!("unknown command: {other}")))),
     }
@@ -890,6 +903,8 @@ fn help_text() -> String {
         "set-keyer-speed <wpm>",
         "send-cw <text>",
         "stop-cw",
+        "send-data <text>",
+        "stop-data",
         "quit",
     ]
     .join(" | ")

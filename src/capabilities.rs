@@ -534,6 +534,22 @@ impl RadioCapabilities {
                     .stop_cw,
                 "keyer.stop_cw",
             ),
+            C::SendData(_) => require_write(
+                self.keyer
+                    .ok_or(crate::RadioError::UnsupportedCapability {
+                        capability: "keyer",
+                    })?
+                    .send_data,
+                "keyer.send_data",
+            ),
+            C::StopData => require_write(
+                self.keyer
+                    .ok_or(crate::RadioError::UnsupportedCapability {
+                        capability: "keyer",
+                    })?
+                    .stop_data,
+                "keyer.stop_data",
+            ),
             C::Refresh => Ok(()),
         }
     }
@@ -1081,6 +1097,8 @@ pub struct KeyerCapabilities {
     pub sending: Capability,
     pub send_cw: Capability,
     pub stop_cw: Capability,
+    pub send_data: Capability,
+    pub stop_data: Capability,
 }
 
 impl KeyerCapabilities {
@@ -1091,6 +1109,8 @@ impl KeyerCapabilities {
             sending: Capability::ReadWrite,
             send_cw: Capability::WriteOnly,
             stop_cw: Capability::WriteOnly,
+            send_data: Capability::WriteOnly,
+            stop_data: Capability::WriteOnly,
         }
     }
 
@@ -1110,11 +1130,23 @@ impl KeyerCapabilities {
             sending,
             send_cw,
             stop_cw,
+            send_data: Capability::Unsupported,
+            stop_data: Capability::Unsupported,
         }
     }
 
     pub const fn with_speed_range(mut self, min: u8, max: u8) -> Self {
         self.speed_range_wpm = Some(ValueRange::new(min, max, 1));
+        self
+    }
+
+    pub const fn with_data_commands(
+        mut self,
+        send_data: Capability,
+        stop_data: Capability,
+    ) -> Self {
+        self.send_data = send_data;
+        self.stop_data = stop_data;
         self
     }
 }

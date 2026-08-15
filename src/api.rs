@@ -622,6 +622,16 @@ impl Radio {
     pub async fn stop_cw(&self) -> Result<()> {
         self.command(RadioCommand::StopCw).await.map(|_| ())
     }
+
+    pub async fn send_data(&self, text: impl Into<String>) -> Result<()> {
+        self.command(RadioCommand::SendData(text.into()))
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn stop_data(&self) -> Result<()> {
+        self.command(RadioCommand::StopData).await.map(|_| ())
+    }
 }
 
 /// Returns descriptors for every driver built into this crate.
