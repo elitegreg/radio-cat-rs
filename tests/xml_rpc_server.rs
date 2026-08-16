@@ -179,6 +179,44 @@ async fn multicall_and_unknown_methods_use_xml_rpc_faults() {
 }
 
 #[tokio::test]
+async fn system_list_methods_reports_the_callable_method_surface() {
+    let (radio, address, shutdown, join) = start_server().await;
+
+    let response = call(address, "system.listMethods", vec![]).await;
+    let Value::Array(methods) = MethodResponse::from_xml(&response).unwrap().value else {
+        panic!("method list response should be an array")
+    };
+    let methods: Vec<_> = methods
+        .into_iter()
+        .map(|method| match method {
+            Value::String(method) => method,
+            value => panic!("method list member should be a string, got {value:?}"),
+        })
+        .collect();
+
+    assert!(methods.windows(2).all(|pair| pair[0] < pair[1]));
+    for method in [
+        "main.get_version",
+        "rig.get_vfoA",
+        "system.listMethods",
+        "system.multicall",
+    ] {
+        assert!(methods.iter().any(|listed| listed == method), "{method}");
+    }
+
+    let response = call(address, "system.listMethods", vec![Value::Integer(1)]).await;
+    assert_eq!(FaultResponse::from_xml(&response).unwrap().fault.code(), 400);
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), join)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    radio.shutdown();
+}
+
+#[tokio::test]
 async fn shutdown_requested_before_run_is_not_lost() {
     let radio = Radio::connect(RadioConfig::dummy()).await.unwrap();
     let task = XmlRpcServerTask::bind(radio.clone(), "127.0.0.1:0".parse().unwrap())

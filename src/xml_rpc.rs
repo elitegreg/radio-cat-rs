@@ -21,6 +21,8 @@ const INVALID_PARAMS: i32 = 400;
 const UNAVAILABLE_STATE: i32 = 503;
 const RADIO_FAILURE: i32 = 500;
 const XML_RPC_ROUTE: &str = "/RPC2";
+const SYSTEM_LIST_METHODS: &str = "system.listMethods";
+const SYSTEM_MULTICALL: &str = "system.multicall";
 
 /// Errors returned while binding or running an XML-RPC server task.
 #[derive(Debug, Error)]
@@ -77,8 +79,13 @@ impl XmlRpcServerTask {
             .map_err(|source| XmlRpcServerError::Bind { address, source })?;
 
         let handlers = build_handlers(radio);
-        let known_methods: Arc<HashSet<&'static str>> =
-            Arc::new(handlers.keys().copied().collect());
+        let known_methods: Arc<HashSet<&'static str>> = Arc::new(
+            handlers
+                .keys()
+                .copied()
+                .chain(std::iter::once(SYSTEM_MULTICALL))
+                .collect(),
+        );
         let server_handlers = handlers.clone();
         let route = Router::new().route(
             XML_RPC_ROUTE,
@@ -172,6 +179,24 @@ struct RpcHandler {
     name: &'static str,
     operation: Operation,
     radio: Radio,
+}
+
+#[derive(Debug)]
+struct MethodListHandler {
+    methods: Vec<&'static str>,
+}
+
+#[dxr_server::async_trait]
+impl Handler for MethodListHandler {
+    async fn handle(&self, params: &[Value], _headers: HeaderMap) -> Result<Value, Fault> {
+        no_params(params)?;
+        Ok(Value::Array(
+            self.methods
+                .iter()
+                .map(|method| Value::String((*method).to_string()))
+                .collect(),
+        ))
+    }
 }
 
 #[dxr_server::async_trait]
@@ -426,7 +451,7 @@ fn build_handlers(radio: Radio) -> HandlerMap {
         ("rig.modeA2B", O::CopyModeAToB),
     ];
 
-    let handlers: HashMap<&'static str, Box<dyn Handler>> = methods
+    let mut handlers: HashMap<&'static str, Box<dyn Handler>> = methods
         .into_iter()
         .map(|(name, operation)| {
             let handler: Box<dyn Handler> = Box::new(RpcHandler {
@@ -437,6 +462,18 @@ fn build_handlers(radio: Radio) -> HandlerMap {
             (name, handler)
         })
         .collect();
+    let mut method_list: Vec<_> = handlers
+        .keys()
+        .copied()
+        .chain([SYSTEM_LIST_METHODS, SYSTEM_MULTICALL])
+        .collect();
+    method_list.sort_unstable();
+    handlers.insert(
+        SYSTEM_LIST_METHODS,
+        Box::new(MethodListHandler {
+            methods: method_list,
+        }),
+    );
     Arc::new(handlers)
 }
 
@@ -445,7 +482,7 @@ fn log_requested_methods(body: &str, known_methods: &HashSet<&'static str>) {
         return;
     };
 
-    if call.name == "system.multicall" {
+    if call.name == SYSTEM_MULTICALL {
         if let Ok(calls) = dxr::multicall::from_multicall_params(call.params) {
             for (name, params) in calls.into_iter().flatten() {
                 tracing::debug!(method = %name, ?params, "received XML-RPC multicall member");
@@ -872,6 +909,7 @@ mod tests {
             "rig.vfoA2B",
             "rig.freqA2B",
             "rig.modeA2B",
+            "system.listMethods",
         ];
         assert_eq!(handlers.len(), expected.len());
         assert!(expected.iter().all(|name| handlers.contains_key(name)));
